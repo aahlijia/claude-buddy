@@ -460,32 +460,46 @@ ART_W=14
 ART_COUNT=${#ALL_LINES[@]}
 
 # ─── Stats panel (optional leftmost column) ─────────────────────────────────
-# One line per stat: "LABEL(9) BAR(20) VAL(3) MARKER(2)" → 36 display cols.
-# Bars are sliced from full 20-char templates (no multibyte tr, which is
-# byte-oriented and would corrupt █/░). Peak gets ▲, dump gets ▼.
+# One line per stat: "ICON ABBR(9) PIPS(10) VAL(3) MARKER(2)" → 26 display
+# cols. Pips are sliced from full 10-char templates (no multibyte tr, which
+# is byte-oriented and would corrupt ▣/░). Peak gets ▲, dump gets ▼. Each
+# stat gets its own color (icon+label+pips) so the panel reads at a glance
+# instead of one uniform companion-theme color; ▲/▼ stay green/red since
+# that's a rank signal, not the stat's own hue. Icons come from the Geometric
+# Shapes block (U+25A0-25FF, same family as ▲▼) — guaranteed single-width in
+# every terminal, unlike dingbats/emoji-presentation glyphs (e.g. ⏳ ★) which
+# render double-width in some fonts despite being one codepoint, silently
+# breaking column alignment. No dwidth() fork needed either way.
 STATS_LINES=()
-STATS_W=36
+STATS_W=26
 if [ "$SHOW_STATS" = "true" ] && [ -n "$STATS_TSV" ]; then
     IFS=$'\t' read -r _S_DBG _S_PAT _S_CHA _S_WIS _S_SNK _S_PEAK _S_DUMP <<< "$STATS_TSV"
     case "$_S_DBG" in
         ''|*[!0-9]*) ;;  # missing/non-numeric (old status.json) → skip panel
         *)
-            _FULL_BAR='████████████████████'
-            _EMPTY_BAR='░░░░░░░░░░░░░░░░░░░░'
+            _FULL_PIPS='▣▣▣▣▣▣▣▣▣▣'
+            _EMPTY_PIPS='░░░░░░░░░░'
             _GREEN=$'\033[32m'
             _RED=$'\033[31m'
+            _BLUE=$'\033[34m'
+            _YELLOW=$'\033[33m'
+            _MAGENTA=$'\033[35m'
             _SDIM=$'\033[2m'
             _stat_names=(DEBUGGING PATIENCE CHAOS WISDOM SNARK)
+            _stat_icons=("■ DBG" "◆ PAT" "▶ CHA" "● WIS" "◀ SNK")
+            _stat_colors=("$_RED" "$_BLUE" "$_MAGENTA" "$_YELLOW" "$_GREEN")
             _stat_vals=("$_S_DBG" "$_S_PAT" "$_S_CHA" "$_S_WIS" "$_S_SNK")
             _si=0
             for _sn in "${_stat_names[@]}"; do
                 _val=${_stat_vals[$_si]}
+                _icon=${_stat_icons[$_si]}
+                _scolor=${_stat_colors[$_si]}
                 _si=$(( _si + 1 ))
                 case "$_val" in ''|*[!0-9]*) _val=0 ;; esac
-                _filled=$(( _val / 5 ))
-                [ "$_filled" -gt 20 ] && _filled=20
-                _bar="${_FULL_BAR:0:_filled}${_EMPTY_BAR:0:$(( 20 - _filled ))}"
-                _label=$(printf '%-9s' "$_sn")
+                _filled=$(( _val / 10 ))
+                [ "$_filled" -gt 10 ] && _filled=10
+                _bar="${_FULL_PIPS:0:_filled}${_EMPTY_PIPS:0:$(( 10 - _filled ))}"
+                _label=$(printf '%-9s' "$_icon")
                 _valstr=$(printf '%3d' "$_val")
                 if [ "$_sn" = "$_S_PEAK" ]; then
                     _mark=" ${_GREEN}▲${NC}"
@@ -494,20 +508,19 @@ if [ "$SHOW_STATS" = "true" ] && [ -n "$STATS_TSV" ]; then
                 else
                     _mark="  "
                 fi
-                STATS_LINES+=("${_SDIM}${_label}${NC} ${C}${_bar}${NC} ${_SDIM}${_valstr}${NC}${_mark}")
+                STATS_LINES+=("${_scolor}${_label}${NC} ${_scolor}${_bar}${NC} ${_SDIM}${_valstr}${NC}${_mark}")
             done
 
-            # XP progress row, below the 5 stat bars. Same bar style; shows a
+            # XP progress row, below the 5 stat bars. Same pip style; shows a
             # transient blue "+N XP" toast for ~10s after an award.
-            _BLUE=$'\033[34m'
             IFS=$'\t' read -r _XP_AMT _XP_AT <<< "$XP_GAIN_TSV"
             case "$_XP_AMT" in ''|*[!0-9]*) _XP_AMT=0 ;; esac
             case "$_XP_AT" in ''|*[!0-9]*) _XP_AT=0 ;; esac
             case "$XP_PCT" in ''|*[!0-9]*) XP_PCT=0 ;; esac
-            _xp_filled=$(( XP_PCT / 5 ))
-            [ "$_xp_filled" -gt 20 ] && _xp_filled=20
+            _xp_filled=$(( XP_PCT / 10 ))
+            [ "$_xp_filled" -gt 10 ] && _xp_filled=10
             [ "$_xp_filled" -lt 0 ] && _xp_filled=0
-            _xp_bar="${_FULL_BAR:0:_xp_filled}${_EMPTY_BAR:0:$(( 20 - _xp_filled ))}"
+            _xp_bar="${_FULL_PIPS:0:_xp_filled}${_EMPTY_PIPS:0:$(( 10 - _xp_filled ))}"
             _xp_label=$(printf '%-9s' "Lv${LEVEL}")
             _xp_pctstr=$(printf '%3d%%' "$XP_PCT")
             # The transient toast adds width to this one row. Fold that width
@@ -517,16 +530,16 @@ if [ "$SHOW_STATS" = "true" ] && [ -n "$STATS_TSV" ]; then
             # "shifts" (and can truncate). Growing STATS_W keeps the art pinned:
             # its position is independent of STATS_W (the extra width is absorbed
             # from the mid-line slack), so the buddy stays put. Plain (ANSI-free)
-            # widths: Lv row is label 9 + 1 + bar 20 + 1 + pct 4 = 35 cols; the
+            # widths: Lv row is label 9 + 1 + bar 10 + 1 + pct 4 = 25 cols; the
             # toast " +N XP" is 5 + len(N).
             _xp_toast=""
-            _xp_row_w=35
+            _xp_row_w=25
             if [ "$_XP_AMT" -gt 0 ] && [ "$_XP_AT" -gt 0 ]; then
                 _xp_at_s=$(( _XP_AT / 1000 ))
                 _xp_age=$(( NOW - _xp_at_s ))
                 if [ "$_xp_age" -ge 0 ] && [ "$_xp_age" -le 10 ]; then
                     _xp_toast=" ${_BLUE}+${_XP_AMT} XP${NC}"
-                    _xp_row_w=$(( 35 + 5 + ${#_XP_AMT} ))
+                    _xp_row_w=$(( 25 + 5 + ${#_XP_AMT} ))
                 fi
             fi
             if [ "$_xp_row_w" -gt "$STATS_W" ]; then

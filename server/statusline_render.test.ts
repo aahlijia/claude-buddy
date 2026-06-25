@@ -231,43 +231,43 @@ describe("buddy-status.sh prestige title", () => {
 describe("buddy-status.sh stats panel", () => {
   test("renders the stat panel when showStats is on", () => {
     const out = renderStatus({ showStats: true });
-    for (const label of ["DEBUGGING", "PATIENCE", "CHAOS", "WISDOM", "SNARK"]) {
+    for (const label of ["DBG", "PAT", "CHA", "WIS", "SNK"]) {
       expect(out).toContain(label);
     }
     // Bars + values from the fixture (strip ANSI: color codes sit between
     // the bar and the number in raw output).
     const plain = stripAnsi(out);
-    expect(plain).toMatch(/SNARK\s+█+░+\s+76/);
-    expect(plain).toMatch(/WISDOM\s+█+░+\s+5/);
+    expect(plain).toMatch(/SNK\s+▣+░*\s+76/);
+    expect(plain).toMatch(/WIS\s+▣*░+\s+5/);
   });
 
   test("marks the peak with ▲ and the dump with ▼", () => {
     const out = renderStatus({ showStats: true });
-    expect(out).toMatch(/SNARK[^\n]*▲/); // peak
-    expect(out).toMatch(/WISDOM[^\n]*▼/); // dump
+    expect(out).toMatch(/SNK[^\n]*▲/); // peak
+    expect(out).toMatch(/WIS[^\n]*▼/); // dump
   });
 
   test("hides the panel when showStats is off", () => {
     const out = renderStatus({ showStats: false });
-    expect(out).not.toContain("DEBUGGING");
+    expect(out).not.toContain("DBG");
     expect(out).not.toContain("▲");
   });
 
   test("hides the panel by default (no config.json)", () => {
     const out = renderStatus({});
-    expect(out).not.toContain("DEBUGGING");
+    expect(out).not.toContain("DBG");
   });
 
   test("skips the panel gracefully when status.json has no stats (old server)", () => {
     const out = renderStatus({ showStats: true, omitStats: true });
-    expect(out).not.toContain("DEBUGGING");
+    expect(out).not.toContain("DBG");
     // The buddy itself must still render.
     expect(out).toContain("Waffle");
   });
 
   test("shows stats and the speech bubble together (three columns)", () => {
     const out = renderStatus({ showStats: true, reaction: "nice commit" });
-    expect(out).toContain("DEBUGGING");
+    expect(out).toContain("DBG");
     expect(out).toContain("nice commit");
     expect(out).toContain("Waffle");
   });
@@ -277,7 +277,7 @@ describe("buddy-status.sh XP progress row", () => {
   test("renders level, bar, and percent below the stat bars", () => {
     const out = renderStatus({ showStats: true, level: 7, xpPct: 68 });
     const plain = stripAnsi(out);
-    expect(plain).toMatch(/Lv7\s+█+░+\s+68%/);
+    expect(plain).toMatch(/Lv7\s+▣+░+\s+68%/);
   });
 
   test("shows the blue +N XP toast within the 10s window", () => {
@@ -592,7 +592,7 @@ describe("buddy-status.sh idle wander (base horizontal)", () => {
   test("columns left of the art are byte-identical across every offset", () => {
     const frames = sweep();
     // Stats labels (leftmost column) never move.
-    for (const label of ["DEBUGGING", "SNARK"]) {
+    for (const label of ["DBG", "SNK"]) {
       const cols = frames.map((f) => colOf(f, label));
       expect(new Set(cols).size).toBe(1);
     }
@@ -729,7 +729,7 @@ describe("buddy-status.sh idle wander (vertical hop)", () => {
 
   test("bubble and stats hold their row while the buddy hops (no bob)", () => {
     const frames = hopSweep();
-    for (const landmark of [REACTION, "DEBUGGING", "SNARK"]) {
+    for (const landmark of [REACTION, "DBG", "SNK"]) {
       const rows = frames.map((f) => rowOf(f, landmark));
       expect(new Set(rows).size).toBe(1);
     }
@@ -885,7 +885,7 @@ describe("buddy-status.sh idle wander (bubble follows buddy)", () => {
   });
 
   test("stats column stays left-pinned even as the bubble travels", () => {
-    const cols = SEQ.map((_, k) => colOf(render(k), "DEBUGGING"));
+    const cols = SEQ.map((_, k) => colOf(render(k), "DBG"));
     expect(new Set(cols).size).toBe(1);
   });
 
