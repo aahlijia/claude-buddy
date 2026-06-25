@@ -25,74 +25,158 @@ SID="${SID:-default}"
 
 [ -f "$STATE" ] || exit 0
 
-MUTED=$(jq -r '.muted // false' "$STATE" 2>/dev/null)
+# Wall clock (overridable for snapshot tests). Needed by the consolidated
+# status read below to resolve the animation frame + wander offsets in one pass.
+NOW=${BUDDY_FAKE_NOW:-$(date +%s)}
+
+# ─── Single config.json read (perf: ~11 jq forks → 1) ───────────────────────
+# The status line runs every ~1s; one jq fork per field was ~11 process spawns
+# per tick. Fetch every config field in a single jq pass instead. rainbowColors
+# is an array → joined with commas here, re-split in bash. All the per-field
+# defaulting/validation the scattered reads used to do is re-applied just below.
+GAME_FEEL="subtle"
+_CFG_THEME="auto"
+_RAINBOW_CSV=""
+REACTION_TTL=0
+INNER_W=44
+MARGIN=8
+WANDER_WIDE="false"
+WANDER_BUBBLE="false"
+SHOW_STATS="false"
+SHOW_PRESTIGE_BADGE="false"
+USE_COMBINED="false"
+if [ -f "$CONFIG_FILE" ]; then
+    # Join with 0x1F (non-whitespace) rather than @tsv: an empty field (e.g. no
+    # rainbowColors) would COLLAPSE under IFS=$'\t' (tab is IFS-whitespace),
+    # silently shifting every later field and misreading the booleans.
+    IFS=$'\x1f' read -r \
+        GAME_FEEL _CFG_THEME _RAINBOW_CSV \
+        REACTION_TTL INNER_W MARGIN \
+        WANDER_WIDE WANDER_BUBBLE \
+        SHOW_STATS SHOW_PRESTIGE_BADGE USE_COMBINED \
+    <<< "$(jq -r '[
+        (.gameFeel // "subtle"),
+        (.theme // "auto"),
+        ((.rainbowColors // []) | join(",")),
+        ((.reactionTTL // 0) | tostring),
+        ((.bubbleWidth // 44) | tostring),
+        ((.bubbleMargin // 8) | tostring),
+        ((.wanderWide // false) | tostring),
+        ((.wanderBubble // false) | tostring),
+        ((.showStats // false) | tostring),
+        ((.showPrestigeBadge // false) | tostring),
+        ((.useCombinedStatus // false) | tostring)
+    ] | join("")' "$CONFIG_FILE" 2>/dev/null)"
+fi
+# Re-apply the exact per-field validation/defaulting the old scattered reads did,
+# so a missing/garbled value (incl. an empty read on malformed JSON) still falls
+# back to the documented default.
+case "$GAME_FEEL" in off|subtle|full) ;; *) GAME_FEEL="subtle" ;; esac
+case "$REACTION_TTL" in ''|*[!0-9]*) REACTION_TTL=0 ;; esac
+case "$INNER_W" in ''|*[!0-9]*) INNER_W=44 ;; esac
+case "$MARGIN" in ''|*[!0-9]*) MARGIN=8 ;; esac
+[ "$WANDER_WIDE" = "true" ] || WANDER_WIDE="false"
+[ "$WANDER_BUBBLE" = "true" ] || WANDER_BUBBLE="false"
+[ "$SHOW_STATS" = "true" ] || SHOW_STATS="false"
+[ "$SHOW_PRESTIGE_BADGE" = "true" ] || SHOW_PRESTIGE_BADGE="false"
+[ "$USE_COMBINED" = "true" ] || USE_COMBINED="false"
+
+# ─── Single status.json read (perf: ~17 jq forks → 1) ───────────────────────
+# All status.json fields PLUS the celebration-freshness, frame-pick (game-feel
+# FR-A3) and idle-wander offset logic that used to be separate jq calls are
+# resolved in one pass. Fields are joined with the ASCII Unit Separator (0x1F,
+# same idiom as the combined-metrics read below) so the inner @tsv blobs
+# (stats / xp / celebration) keep their own tabs and split downstream exactly as
+# before. The multi-line frame art is base64'd to survive the single-line read,
+# then decoded after the early-exit checks. Free-text fields are tab/newline-
+# sanitized so a stray control char can't shift the columns.
+_STATUS=$(jq -r --argjson now "$NOW" --arg gf "$GAME_FEEL" '
+    # Celebration freshness — mirrors the old bash TTL/age math, gameFeel-gated.
+    (if $gf == "off" then 0
+     else
+       (.celebration.text // "") as $ct
+       | (.celebration.at // 0) as $ca
+       | (if ($ct | type) == "string" and $ct != "" and $ct != "null"
+             and ($ca | type) == "number" and $ca > 0 then
+            (if $gf == "subtle" then 6 else 10 end) as $ttl
+            | ($now - ($ca / 1000 | floor)) as $age
+            | (if $age >= 0 and $age <= $ttl then 1 else 0 end)
+          else 0 end)
+     end) as $celeb_fresh
+    # Frame source: animate the flourish set only while a celebration is fresh.
+    | (if ((.flourishFrames | type) == "array")
+          and ((.flourishFrames | length) > 0) then 1 else 0 end) as $has_fl
+    | (if $celeb_fresh == 1 and $has_fl == 1
+       then .flourishSequence else .frameSequence end) as $seq
+    | (if $celeb_fresh == 1 and $has_fl == 1
+       then .flourishFrames else .frames end) as $frms
+    | ($seq | length) as $slen
+    | (if $slen > 0 then ($seq[$now % $slen] // 0) else 0 end) as $idx
+    | ($frms[$idx] // "") as $frame
+    # Wander offsets — only at gameFeel=full with no fresh celebration; all three
+    # stay 0 otherwise (parity with the old gf==full && !celeb_fresh gate, incl.
+    # WANDER_ROW_MAX, which must not reserve hop headroom when wander is idle).
+    | (if $gf == "full" and $celeb_fresh != 1
+       then ((.wanderSequence // []) as $w
+             | if ($w | length) > 0 then ($w[$now % ($w | length)] // 0) else 0 end)
+       else 0 end) as $woff
+    | (if $gf == "full" and $celeb_fresh != 1
+       then ((.wanderRowSequence // []) as $w
+             | if ($w | length) > 0 then ($w[$now % ($w | length)] // 0) else 0 end)
+       else 0 end) as $wrow
+    | (if $gf == "full" and $celeb_fresh != 1
+       then (((.wanderRowSequence // []) | max) // 0)
+       else 0 end) as $wrmax
+    | [
+        ((.muted // false) | tostring),
+        ((.name // "") | gsub("[\t\n\r]"; " ")),
+        ((.rarity // "common") | gsub("[\t\n\r]"; " ")),
+        ((.shiny // false) | tostring),
+        ((.reaction // "") | gsub("[\t\n\r]"; " ")),
+        ((.achievement // "") | gsub("[\t\n\r]"; " ")),
+        ((.level // 1) | tostring),
+        ((.mood // "focused") | gsub("[\t\n\r]"; " ")),
+        ((.title // "") | gsub("[\t\n\r]"; " ")),
+        ((.prestigeLevel // 0) | tostring),
+        ((.streak // 0) | tostring),
+        ([.stats.DEBUGGING, .stats.PATIENCE, .stats.CHAOS, .stats.WISDOM, .stats.SNARK, .peak, .dump] | @tsv),
+        ((.xpPct // 0) | tostring),
+        ([(.lastXpGain.amount // 0), (.lastXpGain.at // 0)] | @tsv),
+        ([(.celebration.text // ""), (.celebration.at // 0)] | @tsv),
+        ($has_fl | tostring),
+        ($celeb_fresh | tostring),
+        ($woff | tostring),
+        ($wrow | tostring),
+        ($wrmax | tostring),
+        ($frame | @base64)
+      ] | join("")
+' "$STATE" 2>/dev/null)
+
+IFS=$'\x1f' read -r \
+    MUTED NAME RARITY SHINY REACTION ACHIEVEMENT \
+    LEVEL MOOD TITLE PRESTIGE STREAK \
+    STATS_TSV XP_PCT XP_GAIN_TSV CELEB_TSV \
+    _HAS_FLOURISH _CELEB_FRESH WANDER_OFF WANDER_ROW WANDER_ROW_MAX \
+    _FRAME_B64 <<< "$_STATUS"
+
 [ "$MUTED" = "true" ] && exit 0
-
-NAME=$(jq -r '.name // ""' "$STATE" 2>/dev/null)
 [ -z "$NAME" ] && exit 0
-
-RARITY=$(jq -r '.rarity // "common"' "$STATE" 2>/dev/null)
-SHINY=$(jq -r '.shiny // false' "$STATE" 2>/dev/null)
-REACTION=$(jq -r '.reaction // ""' "$STATE" 2>/dev/null)
-ACHIEVEMENT=$(jq -r '.achievement // ""' "$STATE" 2>/dev/null)
-LEVEL=$(jq -r '.level // 1' "$STATE" 2>/dev/null)
-MOOD=$(jq -r '.mood // "focused"' "$STATE" 2>/dev/null)
-TITLE=$(jq -r '.title // ""' "$STATE" 2>/dev/null)
-# Prestige tier + streak for the optional badge (default 0 on older status.json).
-PRESTIGE=$(jq -r '.prestigeLevel // 0' "$STATE" 2>/dev/null)
-STREAK=$(jq -r '.streak // 0' "$STATE" 2>/dev/null)
-# Stats panel data: 5 values + peak/dump as a single TSV line. Empty when
-# status.json predates the stats field (older server) — the panel is skipped.
-STATS_TSV=$(jq -r '[.stats.DEBUGGING, .stats.PATIENCE, .stats.CHAOS, .stats.WISDOM, .stats.SNARK, .peak, .dump] | @tsv' "$STATE" 2>/dev/null)
-# XP progress bar row + transient gain toast. Defaults to 0/null on older
-# status.json so the row renders as an empty bar instead of erroring.
-XP_PCT=$(jq -r '.xpPct // 0' "$STATE" 2>/dev/null)
-XP_GAIN_TSV=$(jq -r '[(.lastXpGain.amount // 0), (.lastXpGain.at // 0)] | @tsv' "$STATE" 2>/dev/null)
-# Celebration channel (game-feel §2): text + epoch-ms timestamp. Empty/0 on
-# older status.json so the bubble falls back to the normal reaction.
-CELEB_TSV=$(jq -r '[(.celebration.text // ""), (.celebration.at // 0)] | @tsv' "$STATE" 2>/dev/null)
 
 CC_INPUT=$(cat)  # capture stdin JSON (model/context/rate-limit data)
 
-# ─── Animation: pick current frame from server-rendered frames ──────────────
-NOW=${BUDDY_FAKE_NOW:-$(date +%s)}
+# Decode the base64'd frame art (it's multi-line, so it couldn't ride the TSV
+# raw). Empty on a degraded/missing file → the fallback art below kicks in.
+FRAME_BODY=$(printf '%s' "$_FRAME_B64" | base64 -d 2>/dev/null)
 
-# Game-feel intensity (game-feel FR-E1) + celebration freshness, computed once
-# here so they gate BOTH the frame flourish (just below) and the bubble toast
-# (later). off suppresses celebrations entirely; subtle/full differ only in the
-# toast's dwell time.
-GAME_FEEL="subtle"
-if [ -f "$CONFIG_FILE" ]; then
-    _gf=$(jq -r '.gameFeel // "subtle"' "$CONFIG_FILE" 2>/dev/null || echo subtle)
-    case "$_gf" in off|subtle|full) GAME_FEEL="$_gf" ;; esac
-fi
-_CELEB_FRESH=0
-if [ "$GAME_FEEL" != "off" ]; then
-    IFS=$'\t' read -r _CELEB_TEXT _CELEB_AT <<< "$CELEB_TSV"
-    case "$_CELEB_AT" in ''|*[!0-9]*) _CELEB_AT=0 ;; esac
-    if [ -n "$_CELEB_TEXT" ] && [ "$_CELEB_TEXT" != "null" ] && [ "$_CELEB_AT" -gt 0 ]; then
-        _CELEB_TTL=10
-        [ "$GAME_FEEL" = "subtle" ] && _CELEB_TTL=6
-        _CELEB_AGE=$(( NOW - _CELEB_AT / 1000 ))
-        [ "$_CELEB_AGE" -ge 0 ] && [ "$_CELEB_AGE" -le "$_CELEB_TTL" ] && _CELEB_FRESH=1
-    fi
-fi
+# Celebration text for the bubble toast (its freshness is already resolved in the
+# single read above as _CELEB_FRESH).
+IFS=$'\t' read -r _CELEB_TEXT _CELEB_AT <<< "$CELEB_TSV"
 
-# Frame source (game-feel FR-A3): while a celebration is fresh AND the server
-# wrote a flourish set, animate the flourish; otherwise the neutral idle frames.
-# Stale flourishFrames left in the file after the window are simply never picked,
-# so the flourish self-reverts on the celebration's own TTL — no second write.
-_HAS_FLOURISH=$(jq -r 'if ((.flourishFrames | type) == "array") and ((.flourishFrames | length) > 0) then 1 else 0 end' "$STATE" 2>/dev/null || echo 0)
-FRAME_SRC_FRAMES='.frames'
-FRAME_SRC_SEQ='.frameSequence'
-if [ "$_CELEB_FRESH" = 1 ] && [ "$_HAS_FLOURISH" = 1 ]; then
-    FRAME_SRC_FRAMES='.flourishFrames'
-    FRAME_SRC_SEQ='.flourishSequence'
-fi
-FRAME_BODY=$(jq -r --argjson now "$NOW" "
-    ${FRAME_SRC_SEQ}[\$now % (${FRAME_SRC_SEQ} | length)] as \$idx
-    | ${FRAME_SRC_FRAMES}[\$idx] // \"\"
-" "$STATE" 2>/dev/null)
+# Wander offset sanitizers — the jq pass already gates these to gameFeel=full &&
+# no fresh celebration (0 otherwise); guard against a non-numeric on a bad file.
+case "$WANDER_OFF" in ''|*[!0-9]*) WANDER_OFF=0 ;; esac
+case "$WANDER_ROW" in ''|*[!0-9]*) WANDER_ROW=0 ;; esac
+case "$WANDER_ROW_MAX" in ''|*[!0-9]*) WANDER_ROW_MAX=0 ;; esac
 
 # Fallback when status.json lacks .frames — e.g. server/bash version skew
 # during install or while the MCP server hasn't rewritten the file yet. Keep
@@ -107,11 +191,9 @@ while IFS= read -r line; do
 done <<< "$FRAME_BODY"
 
 # ─── Rarity color (theme-aware) ─────────────────────────────────────────────
+# _CFG_THEME comes from the single config read above.
 _THEME="dark"
-if [ -f "$CONFIG_FILE" ]; then
-    _cfg_theme=$(jq -r '.theme // "auto"' "$CONFIG_FILE" 2>/dev/null)
-    [ "$_cfg_theme" = "light" ] && _THEME="light"
-fi
+[ "$_CFG_THEME" = "light" ] && _THEME="light"
 
 NC=$'\033[0m'
 case "$RARITY" in
@@ -147,39 +229,50 @@ RAINBOW=(
   $'\033[38;2;180;50;220m'
 )
 
-if [ -f "$CONFIG_FILE" ]; then
-    _custom=$(jq -r '(.rainbowColors // []) | @tsv' "$CONFIG_FILE" 2>/dev/null)
-    if [ -n "$_custom" ]; then
-        RAINBOW=()
-        for _hex in $_custom; do
-            RAINBOW+=("$(_hex_to_ansi "$_hex")")
-        done
-    fi
+# _RAINBOW_CSV (comma-joined rainbowColors) comes from the single config read.
+if [ -n "$_RAINBOW_CSV" ]; then
+    RAINBOW=()
+    IFS=',' read -ra _RAINBOW_HEXES <<< "$_RAINBOW_CSV"
+    for _hex in "${_RAINBOW_HEXES[@]}"; do
+        RAINBOW+=("$(_hex_to_ansi "$_hex")")
+    done
 fi
 
 RAINBOW_LEN=${#RAINBOW[@]}
 RAINBOW_OFFSET=$(( NOW % RAINBOW_LEN ))
 
 # ─── Terminal width ──────────────────────────────────────────────────────────
+# CC's statusline stdin carries no width field (verified against the live
+# payload), so the width is found by walking up the process tree to the
+# controlling PTY. This reruns every ~1s, so the per-iteration forks are trimmed
+# vs. the obvious form: strip whitespace with `read` (a builtin) instead of
+# forking `tr`, parse `stty size` with `read` instead of `awk`, and skip the
+# Linux /proc probe entirely on hosts without /proc (e.g. macOS). Same result —
+# breaks on the first PTY that reports a sane width — validated identical across
+# a real PTY and the no-TTY fallback.
 COLS=0
+_HAS_PROC=0
+[ -d /proc ] && _HAS_PROC=1
 PID=$$
 for _ in 1 2 3 4 5; do
-    PID=$(ps -o ppid= -p "$PID" 2>/dev/null | tr -d ' ')
+    read -r PID < <(ps -o ppid= -p "$PID" 2>/dev/null)
     [ -z "$PID" ] || [ "$PID" = "1" ] && break
 
-    # Linux: read PTY device from /proc
-    PTY=$(readlink "/proc/${PID}/fd/0" 2>/dev/null)
-    if [ -c "$PTY" ] 2>/dev/null; then
-        COLS=$(stty size < "$PTY" 2>/dev/null | awk '{print $2}')
-        [ "${COLS:-0}" -gt 40 ] 2>/dev/null && break
+    # Linux: read PTY device from /proc (skipped where /proc doesn't exist).
+    if [ "$_HAS_PROC" = 1 ]; then
+        PTY=$(readlink "/proc/${PID}/fd/0" 2>/dev/null)
+        if [ -c "$PTY" ] 2>/dev/null; then
+            read -r _ COLS < <(stty size < "$PTY" 2>/dev/null)
+            [ "${COLS:-0}" -gt 40 ] 2>/dev/null && break
+        fi
     fi
 
-    # macOS: /proc doesn't exist — get TTY name from process table
-    TTY_NAME=$(ps -o tty= -p "$PID" 2>/dev/null | tr -d ' ')
+    # macOS/BSD: /proc doesn't exist — get the TTY name from the process table.
+    read -r TTY_NAME < <(ps -o tty= -p "$PID" 2>/dev/null)
     if [ -n "$TTY_NAME" ] && [ "$TTY_NAME" != "??" ] && [ "$TTY_NAME" != "?" ]; then
         TTY_DEV="/dev/$TTY_NAME"
         if [ -c "$TTY_DEV" ] 2>/dev/null; then
-            COLS=$(stty size < "$TTY_DEV" 2>/dev/null | awk '{print $2}')
+            read -r _ COLS < <(stty size < "$TTY_DEV" 2>/dev/null)
             [ "${COLS:-0}" -gt 40 ] 2>/dev/null && break
         fi
     fi
@@ -198,40 +291,54 @@ if [ -n "$ACHIEVEMENT" ] && [ "$ACHIEVEMENT" != "null" ] && [ "$ACHIEVEMENT" != 
     BUBBLE=$'\xf0\x9f\x8f\x86'" $ACHIEVEMENT"
 fi
 REACTION_FILE="$BUDDY_STATE_DIR/reaction.$SID.json"
-REACTION_TTL=0
-INNER_W=44
-MARGIN=8
-if [ -f "$CONFIG_FILE" ]; then
-    _ttl=$(jq -r '.reactionTTL // 0' "$CONFIG_FILE" 2>/dev/null || echo 0)
-    case "$_ttl" in ''|*[!0-9]*) ;; *) REACTION_TTL="$_ttl" ;; esac
-    _bw=$(jq -r '.bubbleWidth // 44' "$CONFIG_FILE" 2>/dev/null || echo 44)
-    case "$_bw" in ''|*[!0-9]*) ;; *) INNER_W="$_bw" ;; esac
-    _bm=$(jq -r '.bubbleMargin // 8' "$CONFIG_FILE" 2>/dev/null || echo 8)
-    case "$_bm" in ''|*[!0-9]*) ;; *) MARGIN="$_bm" ;; esac
+# REACTION_TTL / INNER_W / MARGIN come (validated) from the single config read.
+
+# ─── Idle wander clamp (movement design-movement §5b / §7.B / §7.C) ─────────
+# The corridor is reclaimed from the right MARGIN; bash owns the clamp because
+# only it knows MARGIN/COLS (the baked sequence carries raw offsets). §7.C
+# resize robustness is automatic — MARGIN/COLS are recomputed every tick, so a
+# shrink caps WANDER_OFF on the next tick and the buddy never clips. §7.B wide
+# mode (flag wanderWide, full-gated) opens a left lane: it shifts the whole
+# bubble+art block left by a CONSTANT WANDER_LEFT (folded into PAD below, once)
+# so the corridor can span WANDER_RANGE_WIDE without the per-tick offset moving
+# anything. WANDER_PAD is plain spaces (never trimmed). WANDER_MAX=0 ⇒ park.
+# WANDER_WIDE / WANDER_BUBBLE come from the single config read above. wanderBubble
+# (design-movement §5e): when true the bubble+connector travel WITH the buddy as
+# one rigid block (connector stays attached) instead of the bubble staying pinned
+# + connector retracting. Pure render flags.
+WANDER_RANGE=6
+WANDER_RANGE_WIDE=10
+WANDER_SAFETY=2
+WANDER_LEFT=0
+WANDER_RANGE_EFF=$WANDER_RANGE
+if [ "$GAME_FEEL" = "full" ] && [ "$WANDER_WIDE" = "true" ]; then
+    WANDER_RANGE_EFF=$WANDER_RANGE_WIDE
+    WANDER_LEFT=$(( WANDER_RANGE_WIDE - (MARGIN - WANDER_SAFETY) ))
+    [ "$WANDER_LEFT" -lt 0 ] && WANDER_LEFT=0
+fi
+WANDER_MAX=$(( MARGIN + WANDER_LEFT - WANDER_SAFETY ))
+[ "$WANDER_MAX" -lt 0 ] && WANDER_MAX=0
+[ "$WANDER_MAX" -gt "$WANDER_RANGE_EFF" ] && WANDER_MAX=$WANDER_RANGE_EFF
+[ "$WANDER_OFF" -gt "$WANDER_MAX" ] && WANDER_OFF=$WANDER_MAX
+WANDER_PAD=$(printf '%*s' "$WANDER_OFF" '')
+# Where the horizontal offset is inserted (§5e). Default: before the art only, so
+# the buddy slides right and the bubble stays pinned (connector retracts). With
+# wanderBubble on: before the whole bubble cluster, so bubble+connector+art
+# translate together as one block (connector stays attached). Exactly one of
+# these two pads is non-empty per tick; both modes shift the art's right edge by
+# the same WANDER_OFF, so the corridor budget (WANDER_MAX) is unchanged.
+if [ "$WANDER_BUBBLE" = "true" ]; then
+    WANDER_PAD_BUBBLE="$WANDER_PAD"
+    WANDER_PAD_ART=""
+else
+    WANDER_PAD_BUBBLE=""
+    WANDER_PAD_ART="$WANDER_PAD"
 fi
 
-# Stats panel toggle (config.json, read live each tick → no restart on toggle).
-SHOW_STATS="false"
-if [ -f "$CONFIG_FILE" ]; then
-    _ss=$(jq -r '.showStats // false' "$CONFIG_FILE" 2>/dev/null || echo false)
-    [ "$_ss" = "true" ] && SHOW_STATS="true"
-fi
-
-# Prestige/streak badge toggle (config.json, read live each tick).
-SHOW_PRESTIGE_BADGE="false"
-if [ -f "$CONFIG_FILE" ]; then
-    _spb=$(jq -r '.showPrestigeBadge // false' "$CONFIG_FILE" 2>/dev/null || echo false)
-    [ "$_spb" = "true" ] && SHOW_PRESTIGE_BADGE="true"
-fi
-
-# Combined-mode toggle (config.json) — adds a model/context/usage/reset row
-# to the stats column below. Independent of SHOW_STATS so it works whether
-# or not the game-stats bars are on.
-USE_COMBINED="false"
-if [ -f "$CONFIG_FILE" ]; then
-    _uc=$(jq -r '.useCombinedStatus // false' "$CONFIG_FILE" 2>/dev/null || echo false)
-    [ "$_uc" = "true" ] && USE_COMBINED="true"
-fi
+# SHOW_STATS (stats panel), SHOW_PRESTIGE_BADGE (prestige/streak badge) and
+# USE_COMBINED (model/context/usage/reset row) all come from the single config
+# read above — still live each tick (the whole script reruns at ~1 Hz), so a
+# config toggle still applies without a restart.
 # Celebration channel (game-feel §2): a transient message that overrides the
 # normal reaction in the bubble while fresh. Freshness (_CELEB_FRESH) and the
 # text (_CELEB_TEXT) were computed once up in the animation block, so the toast
@@ -246,6 +353,16 @@ if [ "$_CELEB_FRESH" = 1 ]; then
     CELEB_SHOWN=1
 fi
 
+# Sticky bubble: status.json's .reaction is volatile — an incidental status
+# refresh (writeStatusState with no reaction) clears it to "". The per-session
+# reaction.$SID.json instead persists the LAST real reaction (hooks only ever
+# write it with content), so fall back to it when the live field is empty. The
+# bubble then stays until a new message replaces it. The TTL check below still
+# uses this file's timestamp, so an opt-in reactionTTL>0 keeps expiring as before.
+if { [ -z "$REACTION" ] || [ "$REACTION" = "null" ]; } && [ -f "$REACTION_FILE" ]; then
+    REACTION=$(jq -r '.reaction // ""' "$REACTION_FILE" 2>/dev/null || echo "")
+fi
+
 if [ "$CELEB_SHOWN" -eq 0 ] && [ -n "$REACTION" ] && [ "$REACTION" != "null" ] && [ "$REACTION" != "" ]; then
     FRESH=0
     if [ "$REACTION_TTL" -eq 0 ]; then
@@ -253,7 +370,8 @@ if [ "$CELEB_SHOWN" -eq 0 ] && [ -n "$REACTION" ] && [ "$REACTION" != "null" ] &
     elif [ -f "$REACTION_FILE" ]; then
         TS=$(jq -r '.timestamp // 0' "$REACTION_FILE" 2>/dev/null || echo 0)
         if [ "$TS" != "0" ]; then
-            NOW=$(date +%s)
+            # Use the top-level NOW (honors BUDDY_FAKE_NOW), consistent with the
+            # celebration/xp age checks — don't re-fetch the real clock here.
             AGE=$(( NOW - TS / 1000 ))
             [ "$AGE" -lt "$REACTION_TTL" ] && FRESH=1
         fi
@@ -603,7 +721,10 @@ STATS_LEFT_MARGIN=1
 TOTAL_W=$ART_W
 [ $BUBBLE_COUNT -gt 0 ] && TOTAL_W=$(( BOX_W + GAP + TOTAL_W ))
 [ $STATS_COUNT -gt 0 ] && TOTAL_W=$(( STATS_W + STATS_GAP + TOTAL_W ))
-PAD=$(( COLS - TOTAL_W - MARGIN ))
+# §7.B wide: reserve the left lane once, here — shifts the bubble+art block left
+# by the constant WANDER_LEFT (0 unless wide). Offset-independent, so the bubble
+# position is identical on every tick.
+PAD=$(( COLS - TOTAL_W - MARGIN - WANDER_LEFT ))
 [ "$PAD" -lt 0 ] && PAD=0
 
 if [ $STATS_COUNT -gt 0 ]; then
@@ -626,14 +747,39 @@ esac
 MID_SPACER=$(printf '%*s' "$MID_PAD" '')
 STATS_GAP_STR=$(printf '%*s' "$STATS_GAP" '')
 
-# Vertically center each left column on the art
+# ─── Idle wander hop headroom (movement §7.A, flag wanderHop) ───────────────
+# Reserve HOP_RESERVE blank rows above the art ONLY when the server baked a
+# non-empty wanderRowSequence (hop on). Headroom = the sequence's max so it is
+# constant across ticks — the block height never changes, so the bubble/stats
+# (centered on the total height below) can't bob. Collapse to 0 if the block
+# would blow the height budget (degrade, NFR7); WANDER_ROW resets so the
+# connector logic and art position stay consistent with "no hop".
+HOP_RESERVE=0
+if [ "$WANDER_ROW_MAX" -gt 0 ]; then
+    HOP_RESERVE=$WANDER_ROW_MAX
+    HOP_CAP=2
+    [ "$HOP_RESERVE" -gt "$HOP_CAP" ] && HOP_RESERVE=$HOP_CAP
+    HOP_BUDGET=12
+    if [ $(( ART_COUNT + HOP_RESERVE )) -gt "$HOP_BUDGET" ]; then
+        HOP_RESERVE=0
+        WANDER_ROW=0
+    fi
+fi
+ART_COUNT_TOTAL=$(( ART_COUNT + HOP_RESERVE ))
+# Art's top row within the block: WANDER_ROW=0 rests on the floor (below the
+# headroom); WANDER_ROW=HOP_RESERVE touches the ceiling.
+ART_TOP=$(( HOP_RESERVE - WANDER_ROW ))
+[ "$ART_TOP" -lt 0 ] && ART_TOP=0
+
+# Vertically center each left column on the FLOOR baseline (the full block
+# height incl. headroom), independent of the live hop row → no vertical bob.
 BUBBLE_START=0
-if [ $BUBBLE_COUNT -gt 0 ] && [ $BUBBLE_COUNT -lt $ART_COUNT ]; then
-    BUBBLE_START=$(( (ART_COUNT - BUBBLE_COUNT) / 2 ))
+if [ $BUBBLE_COUNT -gt 0 ] && [ $BUBBLE_COUNT -lt $ART_COUNT_TOTAL ]; then
+    BUBBLE_START=$(( (ART_COUNT_TOTAL - BUBBLE_COUNT) / 2 ))
 fi
 STATS_START=0
-if [ $STATS_COUNT -gt 0 ] && [ $STATS_COUNT -lt $ART_COUNT ]; then
-    STATS_START=$(( (ART_COUNT - STATS_COUNT) / 2 ))
+if [ $STATS_COUNT -gt 0 ] && [ $STATS_COUNT -lt $ART_COUNT_TOTAL ]; then
+    STATS_START=$(( (ART_COUNT_TOTAL - STATS_COUNT) / 2 ))
 fi
 
 # ─── Find the connector line (middle text line → points to buddy's mouth) ─────
@@ -645,17 +791,30 @@ if [ $BUBBLE_COUNT -gt 2 ]; then
     LAST_TEXT=$(( BUBBLE_COUNT - 2 ))
     CONNECTOR_BI=$(( (FIRST_TEXT + LAST_TEXT) / 2 ))
 fi
+# Idle wander (design-movement §5c): retract the connector while the buddy is
+# away from home — the bubble box stays whole, it just stops pointing at thin
+# air. Reattaches at offset 0 (home). The "   " gap keeps the width identical.
+# §5e exception: when wanderBubble is on, the bubble travels WITH the buddy, so
+# the connector stays attached for horizontal motion — only a vertical hop
+# (WANDER_ROW>0), where the mouth is on a different row, still retracts it.
+if [ "$WANDER_BUBBLE" = "true" ]; then
+    [ "$WANDER_ROW" -gt 0 ] && CONNECTOR_BI=-1
+else
+    { [ "$WANDER_OFF" -gt 0 ] || [ "$WANDER_ROW" -gt 0 ]; } && CONNECTOR_BI=-1
+fi
 
 # ─── Output: merged stats panel + bubble + connector + art per line ──────────
 TOTAL_BUBBLE=$(( BUBBLE_START + BUBBLE_COUNT ))
 TOTAL_STATS=$(( STATS_START + STATS_COUNT ))
-MAX_LINES=$ART_COUNT
+MAX_LINES=$ART_COUNT_TOTAL
 [ $TOTAL_BUBBLE -gt $MAX_LINES ] && MAX_LINES=$TOTAL_BUBBLE
 [ $TOTAL_STATS -gt $MAX_LINES ] && MAX_LINES=$TOTAL_STATS
 for (( i=0; i<MAX_LINES; i++ )); do
-    # Art part: actual art line or blank filler
-    if [ $i -lt $ART_COUNT ]; then
-        art_part="${ALL_COLORS[$i]}${ALL_LINES[$i]}${NC}"
+    # Art part: actual art line (shifted down by the hop headroom, up by the
+    # live hop row) or blank filler.
+    ai=$(( i - ART_TOP ))
+    if [ $ai -ge 0 ] && [ $ai -lt $ART_COUNT ]; then
+        art_part="${ALL_COLORS[$ai]}${ALL_LINES[$ai]}${NC}"
     else
         art_part=$(printf '%*s' "$ART_W" '')
     fi
@@ -673,6 +832,12 @@ for (( i=0; i<MAX_LINES; i++ )); do
         line_out+="$STATS_GAP_STR"
         line_out+="$MID_SPACER"
     fi
+
+    # §5e: when the bubble travels with the buddy, the offset is inserted here —
+    # before the whole bubble cluster — so bubble+connector+art shift together.
+    # Empty (no-op) in the default pinned-bubble mode. Applied on every row so
+    # blank-bubble rows (top/bottom art) translate by the same amount.
+    line_out+="$WANDER_PAD_BUBBLE"
 
     # Bubble column
     if [ $BUBBLE_COUNT -gt 0 ]; then
@@ -702,6 +867,11 @@ for (( i=0; i<MAX_LINES; i++ )); do
         fi
     fi
 
+    # Idle wander (design-movement §5d): nudge the art block right into the
+    # reclaimed margin. In the default mode this is the whole offset (bubble
+    # pinned); with wanderBubble on it's empty because the offset already shifted
+    # the bubble cluster above (art rode along, connector attached).
+    line_out+="$WANDER_PAD_ART"
     line_out+="$art_part"
     echo "$line_out"
 done
