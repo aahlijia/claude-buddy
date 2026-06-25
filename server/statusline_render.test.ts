@@ -271,6 +271,33 @@ describe("buddy-status.sh stats panel", () => {
     expect(out).toContain("nice commit");
     expect(out).toContain("Waffle");
   });
+
+  test("every stats-panel row is the same display width (bubble stays flush)", () => {
+    // Regression: the stat-row labels carry a single-column glyph (■ ◆ ▶ ● ◀)
+    // that is multi-byte in UTF-8. bash's `printf '%-9s'` measures the field in
+    // BYTES, so padding the glyph+abbr together left the stat rows 2 display
+    // cols short of the (pure-ASCII) "Lv" row — shifting the bubble/art right
+    // on the Lv row alone. A long reaction forces bubble text rows to sit
+    // alongside the stat rows; the bubble's left edge must land on one column.
+    // Long enough that the bubble wraps to >= 6 lines and so spans all 5 stat
+    // rows + the Lv row (a short bubble is centered and skips the top/bottom).
+    const long =
+      "the report degrades to n slash a instead of exploding on empty " +
+      "data and that is the precise detail that makes the whole G four " +
+      "acceptance gate actually hold up under real production traffic";
+    const out = stripAnsi(
+      renderStatus({ showStats: true, reaction: long, level: 5, xpPct: 20 }),
+    );
+    // The glyphs and box-drawing chars are all single UTF-16 units AND single
+    // display columns, so indexOf == display column for this assertion.
+    const edges = out
+      .split("\n")
+      .filter((l) => /[■◆▶●◀]|Lv\d/.test(l)) // stat rows + the Lv row
+      .map((l) => l.search(/[.|`]/)) // first bubble-box char on that row
+      .filter((c) => c >= 0);
+    expect(edges.length).toBeGreaterThanOrEqual(6); // 5 stats + Lv
+    expect(new Set(edges).size).toBe(1); // all flush in one column
+  });
 });
 
 describe("buddy-status.sh XP progress row", () => {

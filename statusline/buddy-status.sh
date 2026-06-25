@@ -486,20 +486,29 @@ if [ "$SHOW_STATS" = "true" ] && [ -n "$STATS_TSV" ]; then
             _MAGENTA=$'\033[35m'
             _SDIM=$'\033[2m'
             _stat_names=(DEBUGGING PATIENCE CHAOS WISDOM SNARK)
-            _stat_icons=("■ DBG" "◆ PAT" "▶ CHA" "● WIS" "◀ SNK")
+            _stat_glyphs=("■" "◆" "▶" "●" "◀")
+            _stat_abbrs=(DBG PAT CHA WIS SNK)
             _stat_colors=("$_RED" "$_BLUE" "$_MAGENTA" "$_YELLOW" "$_GREEN")
             _stat_vals=("$_S_DBG" "$_S_PAT" "$_S_CHA" "$_S_WIS" "$_S_SNK")
             _si=0
             for _sn in "${_stat_names[@]}"; do
                 _val=${_stat_vals[$_si]}
-                _icon=${_stat_icons[$_si]}
+                _glyph=${_stat_glyphs[$_si]}
+                _abbr=${_stat_abbrs[$_si]}
                 _scolor=${_stat_colors[$_si]}
                 _si=$(( _si + 1 ))
                 case "$_val" in ''|*[!0-9]*) _val=0 ;; esac
                 _filled=$(( _val / 10 ))
                 [ "$_filled" -gt 10 ] && _filled=10
                 _bar="${_FULL_PIPS:0:_filled}${_EMPTY_PIPS:0:$(( 10 - _filled ))}"
-                _label=$(printf '%-9s' "$_icon")
+                # Label = glyph(1 col) + space + abbr right-padded to 7 = 9 cols.
+                # Pad the ASCII abbr ALONE: printf measures its field width in
+                # BYTES, so feeding it the glyph (a 3-byte char that renders as
+                # 1 col) would eat 2 phantom bytes of the field and leave the
+                # label 2 display cols short — shifting every column to its
+                # right (the Lv row, bubble, and buddy would no longer align).
+                printf -v _abbr_pad '%-7s' "$_abbr"
+                _label="${_glyph} ${_abbr_pad}"
                 _valstr=$(printf '%3d' "$_val")
                 if [ "$_sn" = "$_S_PEAK" ]; then
                     _mark=" ${_GREEN}▲${NC}"
