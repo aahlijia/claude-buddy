@@ -10,6 +10,7 @@ import { describe, test, expect } from "bun:test";
 import {
   computeSessionBonus,
   counterDelta,
+  computeStatGains,
   SESSION_BASE_BONUS,
   SESSION_BONUS_CAP,
   type SessionCounters,
@@ -107,5 +108,52 @@ describe("counterDelta", () => {
       commits_made: 3,
     };
     expect(counterDelta(snap, snap)).toEqual(ZERO);
+  });
+});
+
+describe("computeStatGains", () => {
+  test("a no-work, no-time session yields no gains", () => {
+    expect(computeStatGains(ZERO, 0)).toEqual({});
+  });
+
+  test("maps each counter to its stat at the documented rate", () => {
+    expect(computeStatGains({ ...ZERO, errors_seen: 2 }, 0)).toEqual({
+      DEBUGGING: 0.3, // 0.15 × 2
+    });
+    expect(computeStatGains({ ...ZERO, large_diffs: 3 }, 0).CHAOS).toBeCloseTo(
+      0.3, // 0.10 × 3
+    );
+    expect(computeStatGains({ ...ZERO, all_green: 2 }, 0).WISDOM).toBeCloseTo(
+      0.4, // 0.20 × 2
+    );
+  });
+
+  test("PATIENCE accrues from elapsed time, not counters", () => {
+    // 100 minutes → 0.05 × (100/10) = 0.5
+    expect(computeStatGains(ZERO, 100 * 60).PATIENCE).toBeCloseTo(0.5);
+  });
+
+  test("a zero-length session grants no PATIENCE", () => {
+    expect(computeStatGains({ ...ZERO, errors_seen: 1 }, 0).PATIENCE).toBe(
+      undefined,
+    );
+  });
+
+  test("negative elapsed time is treated as zero", () => {
+    expect(computeStatGains(ZERO, -9999).PATIENCE).toBe(undefined);
+  });
+
+  test("commits_made never moves a stat", () => {
+    expect(computeStatGains({ ...ZERO, commits_made: 50 }, 0)).toEqual({});
+  });
+
+  test("SNARK has no behavioral source", () => {
+    const flooded: SessionCounters = {
+      all_green: 99,
+      large_diffs: 99,
+      errors_seen: 99,
+      commits_made: 99,
+    };
+    expect(computeStatGains(flooded, 9999 * 60).SNARK).toBe(undefined);
   });
 });

@@ -1376,6 +1376,24 @@ export function grantTitleIfUnset(title: string): XpState {
 
 // ─── Rendering helpers ────────────────────────────────────────────────────────
 
+/**
+ * One-line summary of stats with fractional progress banked toward their next
+ * whole point, so behavioral leveling is visible between the once-per-commit
+ * ticks. Returns null when nothing is accruing (keeps a fresh card clean).
+ */
+export function formatStatProgressLine(
+  progress: Partial<Record<StatName, number>>,
+): string | null {
+  const parts = STAT_NAMES.flatMap((stat) => {
+    const acc = progress[stat] ?? 0;
+    if (!(acc > 0)) return [];
+    const pct = Math.min(99, Math.floor((acc % 1) * 100));
+    return [`${stat.slice(0, 3)} ${pct}%`];
+  });
+  if (parts.length === 0) return null;
+  return `**Stats warming up:** ${parts.join(" · ")}`;
+}
+
 /** Render an XP progress bar as a string */
 export function renderXpBar(totalXp: number, width: number = 20): string {
   const lvl = computeLevel(totalXp);
@@ -1451,6 +1469,8 @@ export function renderXpCardMarkdown(): string {
   } catch {
     // Menagerie state is optional during first install / version skew.
   }
+  const warming = formatStatProgressLine(state.statProgress);
+  if (warming) parts.push(warming);
   try {
     const { recentLoot, describeLootEntry } =
       require("./loot.ts") as typeof import("./loot.ts");
