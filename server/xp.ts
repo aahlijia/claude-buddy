@@ -8,7 +8,8 @@
 import { readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { buddyStateDir } from "./path";
-import type { Species, Rarity, Companion, Hat } from "./engine";
+import type { Species, Rarity, Companion, Hat, StatName } from "./engine";
+import { STAT_NAMES } from "./engine";
 
 // ─── XP event types ───────────────────────────────────────────────────────────
 
@@ -568,6 +569,11 @@ export interface XpState {
   /** Level at which respec became permanent (null until first crossing L10). */
   respecLockedAt: number | null;
 
+  // Behavioral stat leveling: fractional accumulators per stat. Whole points
+  // roll over into the companion's bones.stats once they cross 1.0, so a single
+  // event nudges a stat fractionally rather than jumping it a full point.
+  statProgress: Partial<Record<StatName, number>>;
+
   // Prestige identity.
   title: string | null; // equipped prestige title, null if none
 
@@ -619,6 +625,25 @@ function ownedPointCost(
  *     `pointsTotal` — nobody loses an unlock during migration.
  *   - `respecLockedAt` defaults to the lock level once the player is at/over it.
  */
+/**
+ * Coerce a parsed `statProgress` blob into a clean map: only known stat names,
+ * only finite non-negative numbers. Legacy state (no field) yields {}.
+ */
+function sanitizeStatProgress(
+  raw: unknown,
+): Partial<Record<StatName, number>> {
+  const out: Partial<Record<StatName, number>> = {};
+  if (!raw || typeof raw !== "object") return out;
+  const obj = raw as Record<string, unknown>;
+  for (const stat of STAT_NAMES) {
+    const v = obj[stat];
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) {
+      out[stat] = v;
+    }
+  }
+  return out;
+}
+
 export function backfillXpState(parsed: Partial<XpState> | null): XpState {
   const p = parsed ?? {};
   const totalXp = typeof p.totalXp === "number" ? p.totalXp : 0;
@@ -677,6 +702,7 @@ export function backfillXpState(parsed: Partial<XpState> | null): XpState {
     unlockedUpgrades,
     cosmeticFlags: Array.isArray(p.cosmeticFlags) ? p.cosmeticFlags : [],
     levelUpAchieved: p.levelUpAchieved ?? false,
+    statProgress: sanitizeStatProgress(p.statProgress),
     pointsTotal,
     pointsSpent,
     bonusPoints,
@@ -710,6 +736,73 @@ function saveXpState(state: XpState): void {
     // fallback: just write directly
     writeFileSync(file, JSON.stringify(state, null, 2));
   }
+}
+
+// ─── Stat-leveling accrual ───────────────────────────────────────────────────
+
+/** Result of folding fractional gains into the accumulators. */
+export interface StatRollover {
+  /** New fractional accumulators, with whole points removed. */
+  progress: Partial<Record<StatName, number>>;
+  /** Whole-point increments to apply to the companion this session. */
+  increments: Partial<Record<StatName, number>>;
+}
+
+/**
+ * Fold fractional stat gains into the running accumulators, extracting any
+ * whole points that have accrued. Pure: no I/O, no clamping against the
+ * companion's current stat — that belongs to the caller (session.ts).
+ *
+ * Whole points are rate-limited by `perSessionCap`; overflow above the cap is
+ * left banked in the accumulator rather than dropped, so a giant session can't
+ * spike a stat but the progress still counts toward the next one.
+ *
+ * Args:
+ *     progress: Current fractional accumulators (mutated copy returned).
+ *     gains: Fractional gains to add, keyed by stat.
+ *     perSessionCap: Max whole points any single stat may roll this session.
+ *
+ * Returns:
+ *     The updated accumulators and the whole-point increments to apply.
+ */
+export function rolloverStatProgress(
+  progress: Partial<Record<StatName, number>>,
+  gains: Partial<Record<StatName, number>>,
+  perSessionCap: number,
+): StatRollover {
+  const out: Partial<Record<StatName, number>> = { ...progress };
+  const increments: Partial<Record<StatName, number>> = {};
+  for (const stat of STAT_NAMES) {
+    const gain = gains[stat] ?? 0;
+    if (!(gain > 0)) continue;
+    const acc = (out[stat] ?? 0) + gain;
+    let whole = Math.floor(acc);
+    if (perSessionCap >= 0 && whole > perSessionCap) whole = perSessionCap;
+    out[stat] = acc - whole; // bank the remainder (and any capped overflow)
+    if (whole > 0) increments[stat] = whole;
+  }
+  return { progress: out, increments };
+}
+
+/**
+ * Add fractional stat gains to the persisted accumulators and return the
+ * whole-point increments that just rolled over. The XpState side of accrual is
+ * encapsulated here (load → fold → save) so the private state I/O stays put;
+ * applying the increments to the companion is the caller's job.
+ */
+export function accrueStatProgress(
+  gains: Partial<Record<StatName, number>>,
+  perSessionCap: number,
+): Partial<Record<StatName, number>> {
+  const state = loadXpState();
+  const { progress, increments } = rolloverStatProgress(
+    state.statProgress,
+    gains,
+    perSessionCap,
+  );
+  state.statProgress = progress;
+  saveXpState(state);
+  return increments;
 }
 
 // ─── Core functions ───────────────────────────────────────────────────────────
@@ -1283,6 +1376,24 @@ export function grantTitleIfUnset(title: string): XpState {
 
 // ─── Rendering helpers ────────────────────────────────────────────────────────
 
+/**
+ * One-line summary of stats with fractional progress banked toward their next
+ * whole point, so behavioral leveling is visible between the once-per-commit
+ * ticks. Returns null when nothing is accruing (keeps a fresh card clean).
+ */
+export function formatStatProgressLine(
+  progress: Partial<Record<StatName, number>>,
+): string | null {
+  const parts = STAT_NAMES.flatMap((stat) => {
+    const acc = progress[stat] ?? 0;
+    if (!(acc > 0)) return [];
+    const pct = Math.min(99, Math.floor((acc % 1) * 100));
+    return [`${stat.slice(0, 3)} ${pct}%`];
+  });
+  if (parts.length === 0) return null;
+  return `**Stats warming up:** ${parts.join(" · ")}`;
+}
+
 /** Render an XP progress bar as a string */
 export function renderXpBar(totalXp: number, width: number = 20): string {
   const lvl = computeLevel(totalXp);
@@ -1358,6 +1469,8 @@ export function renderXpCardMarkdown(): string {
   } catch {
     // Menagerie state is optional during first install / version skew.
   }
+  const warming = formatStatProgressLine(state.statProgress);
+  if (warming) parts.push(warming);
   try {
     const { recentLoot, describeLootEntry } =
       require("./loot.ts") as typeof import("./loot.ts");

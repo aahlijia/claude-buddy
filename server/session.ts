@@ -19,18 +19,25 @@
 import { readFileSync, writeFileSync, mkdirSync, renameSync } from "fs";
 import { join } from "path";
 import { buddyStateDir } from "./path.ts";
-import { sessionId } from "./state.ts";
+import {
+  sessionId,
+  loadCompanion,
+  saveCompanion,
+  loadCompanionSlot,
+  updateCompanionSlot,
+} from "./state.ts";
 import { loadGlobalEvents, type GlobalCounters } from "./achievements.ts";
 import {
   awardXpAmount,
   rarityMultiplier,
   getXpState,
   accountMultiplier,
+  accrueStatProgress,
   type XpState,
 } from "./xp.ts";
 import { updateStreak } from "./streak.ts";
 import { rollLoot } from "./loot.ts";
-import type { Species, Rarity } from "./engine.ts";
+import { STAT_NAMES, type Species, type Rarity, type StatName } from "./engine.ts";
 
 // ─── Counters that feed the bonus ────────────────────────────────────────────
 
@@ -126,6 +133,91 @@ export function computeSessionBonus(delta: SessionCounters): number {
   return Math.min(raw, SESSION_BONUS_CAP);
 }
 
+// ─── Behavioral stat leveling ────────────────────────────────────────────────
+
+/** Stats never drop below 1 (dump floor) or rise above 100 (peak cap). */
+export const STAT_FLOOR = 1;
+export const STAT_CAP = 100;
+/** Max whole points any single stat may gain from one session's work. */
+export const STAT_GAIN_PER_SESSION_CAP = 2;
+
+/**
+ * Fractional stat gains earned by a session's work, derived from the same
+ * counter delta that feeds the XP bonus plus the session's elapsed time. Four
+ * of the five stats map to signals already captured; SNARK has no clean
+ * behavioral proxy and stays manual for now.
+ *
+ * Tuning is deliberately slow — a stat only ticks up after a stretch of the
+ * matching behavior (≈7 bugs worked through for +1 DEBUGGING, etc.).
+ *
+ * Args:
+ *     delta: Per-counter work done since the session baseline.
+ *     elapsedSec: Session duration in seconds (now − snapshot.startedAt).
+ *
+ * Returns:
+ *     Fractional gains keyed by stat; stats with no gain are omitted.
+ */
+export function computeStatGains(
+  delta: SessionCounters,
+  elapsedSec: number,
+): Partial<Record<StatName, number>> {
+  const minutes = Math.max(0, elapsedSec) / 60;
+  const gains: Partial<Record<StatName, number>> = {};
+  const add = (stat: StatName, amount: number): void => {
+    if (amount > 0) gains[stat] = (gains[stat] ?? 0) + amount;
+  };
+  add("DEBUGGING", 0.15 * delta.errors_seen); // bugs worked through
+  add("CHAOS", 0.1 * delta.large_diffs); // sweeping changes
+  add("WISDOM", 0.2 * delta.all_green); // clean test runs
+  add("PATIENCE", 0.05 * (minutes / 10)); // time in the trenches
+  return gains;
+}
+
+/**
+ * Apply whole-point stat increments to a companion, clamped to [FLOOR, CAP].
+ * Writes the companion at most once, and only if a value actually changed.
+ */
+function applyStatIncrements(
+  slot: string | undefined,
+  increments: Partial<Record<StatName, number>>,
+): void {
+  const companion = slot ? loadCompanionSlot(slot) : loadCompanion();
+  if (!companion) return;
+  let changed = false;
+  for (const stat of STAT_NAMES) {
+    const inc = increments[stat] ?? 0;
+    if (inc <= 0) continue;
+    const cur = companion.bones.stats[stat];
+    const next = Math.min(STAT_CAP, Math.max(STAT_FLOOR, cur + inc));
+    if (next !== cur) {
+      companion.bones.stats[stat] = next;
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  if (slot) updateCompanionSlot(slot, companion);
+  else saveCompanion(companion);
+}
+
+/**
+ * Accrue this session's behavioral stat gains: fold the fractional gains into
+ * the persisted accumulators, then apply any whole points that rolled over to
+ * the companion. Runs once per commit (in the session-complete path), so it
+ * adds no per-event cost. Returns the increments applied (for surfacing/tests).
+ */
+export function accrueSessionStats(
+  slot: string | undefined,
+  delta: SessionCounters,
+  elapsedSec: number,
+): Partial<Record<StatName, number>> {
+  const gains = computeStatGains(delta, elapsedSec);
+  if (Object.keys(gains).length === 0) return {};
+  const increments = accrueStatProgress(gains, STAT_GAIN_PER_SESSION_CAP);
+  if (Object.keys(increments).length === 0) return {};
+  applyStatIncrements(slot, increments);
+  return increments;
+}
+
 // ─── Lifecycle entry points (called from award-xp.ts) ────────────────────────
 
 /** Capture the baseline at the start of a session (overwrites any stale one). */
@@ -165,12 +257,18 @@ export function awardSessionComplete(
   // Cap the raw bonus first (§3.2), then apply the rarity and account
   // (prestige × collection) multipliers — all stack multiplicatively
   // (additional-rewards FR1.3 / FR3.3).
-  const raw = computeSessionBonus(counterDelta(current, baseline));
+  const delta = counterDelta(current, baseline);
+  const raw = computeSessionBonus(delta);
   const acctMult = accountMultiplier(getXpState());
   const bonus = Math.floor(
     (raw + streakReward) * rarityMultiplier(rarity) * acctMult,
   );
   const state = awardXpAmount(bonus, slot, species, rarity);
+
+  // Behavioral stat leveling: nudge the companion's stats from the same delta
+  // plus the session's elapsed time. Once-per-commit, so no per-event cost.
+  const elapsedSec = snapshot ? Math.max(0, nowSeconds() - snapshot.startedAt) : 0;
+  accrueSessionStats(slot, delta, elapsedSec);
 
   // A non-zero streak reward means a streak milestone just landed — roll loot
   // on top of the deterministic bonus (additional-rewards FR4.1).

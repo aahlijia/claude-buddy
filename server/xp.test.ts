@@ -15,6 +15,8 @@ import {
   pointsForLevel,
   renderXpCardMarkdown,
   backfillXpState,
+  rolloverStatProgress,
+  formatStatProgressLine,
   availablePoints,
   unlockCost,
   computeLevel,
@@ -46,6 +48,7 @@ function makeState(partial: Partial<XpState>): XpState {
     unlockedUpgrades: [],
     cosmeticFlags: [],
     levelUpAchieved: false,
+    statProgress: {},
     pointsTotal: 0,
     pointsSpent: 0,
     bonusPoints: 0,
@@ -113,6 +116,7 @@ describe("availablePoints", () => {
     unlockedUpgrades: [],
     cosmeticFlags: [],
     levelUpAchieved: false,
+    statProgress: {},
     pointsTotal: 0,
     pointsSpent: 0,
     bonusPoints: 0,
@@ -673,5 +677,94 @@ describe("renderXpCardMarkdown — additional rewards surfacing", () => {
     );
     const card = renderXpCardMarkdown();
     expect(card).toContain("Recent loot:");
+  });
+});
+
+describe("rolloverStatProgress", () => {
+  const CAP = 2;
+
+  test("sub-1.0 gains accumulate without rolling a point", () => {
+    const r = rolloverStatProgress({}, { DEBUGGING: 0.3 }, CAP);
+    expect(r.increments).toEqual({});
+    expect(r.progress.DEBUGGING).toBeCloseTo(0.3);
+  });
+
+  test("crossing 1.0 yields a whole point and banks the remainder", () => {
+    const r = rolloverStatProgress({ WISDOM: 0.8 }, { WISDOM: 0.4 }, CAP);
+    expect(r.increments.WISDOM).toBe(1);
+    expect(r.progress.WISDOM).toBeCloseTo(0.2);
+  });
+
+  test("the per-session cap limits whole points but banks the overflow", () => {
+    // 19.8 of gain → +2 this session, 17.8 left banked for later.
+    const r = rolloverStatProgress({}, { WISDOM: 19.8 }, CAP);
+    expect(r.increments.WISDOM).toBe(2);
+    expect(r.progress.WISDOM).toBeCloseTo(17.8);
+  });
+
+  test("ignores non-positive gains and leaves the accumulator untouched", () => {
+    const r = rolloverStatProgress({ CHAOS: 0.5 }, { CHAOS: 0, SNARK: -3 }, CAP);
+    expect(r.increments).toEqual({});
+    expect(r.progress.CHAOS).toBeCloseTo(0.5);
+    expect(r.progress.SNARK).toBeUndefined();
+  });
+
+  test("does not mutate the input accumulator", () => {
+    const progress = { PATIENCE: 0.9 };
+    rolloverStatProgress(progress, { PATIENCE: 0.5 }, CAP);
+    expect(progress.PATIENCE).toBeCloseTo(0.9);
+  });
+
+  test("rolls several stats in one pass", () => {
+    const r = rolloverStatProgress(
+      { DEBUGGING: 0.9, CHAOS: 0.9 },
+      { DEBUGGING: 0.2, CHAOS: 0.2, WISDOM: 0.1 },
+      CAP,
+    );
+    expect(r.increments).toEqual({ DEBUGGING: 1, CHAOS: 1 });
+    expect(r.progress.WISDOM).toBeCloseTo(0.1);
+  });
+});
+
+describe("backfillXpState statProgress", () => {
+  test("legacy state with no field defaults to an empty map", () => {
+    expect(backfillXpState({}).statProgress).toEqual({});
+  });
+
+  test("keeps known stats with positive finite values", () => {
+    const sp = backfillXpState({
+      statProgress: { DEBUGGING: 0.5, WISDOM: 0.2 },
+    } as never).statProgress;
+    expect(sp).toEqual({ DEBUGGING: 0.5, WISDOM: 0.2 });
+  });
+
+  test("drops unknown keys and non-positive or non-finite values", () => {
+    const sp = backfillXpState({
+      statProgress: {
+        DEBUGGING: 0.5,
+        WISDOM: 0,
+        CHAOS: -1,
+        PATIENCE: Infinity,
+        BOGUS: 9,
+      },
+    } as never).statProgress;
+    expect(sp).toEqual({ DEBUGGING: 0.5 });
+  });
+});
+
+describe("formatStatProgressLine", () => {
+  test("returns null when nothing is accruing", () => {
+    expect(formatStatProgressLine({})).toBeNull();
+    expect(formatStatProgressLine({ WISDOM: 0 })).toBeNull();
+  });
+
+  test("shows the fractional progress toward each stat's next point", () => {
+    const line = formatStatProgressLine({ DEBUGGING: 0.3, PATIENCE: 17.8 });
+    expect(line).toBe("**Stats warming up:** DEB 30% · PAT 80%");
+  });
+
+  test("omits stats with no banked progress", () => {
+    const line = formatStatProgressLine({ CHAOS: 0.5, SNARK: 0 });
+    expect(line).toBe("**Stats warming up:** CHA 50%");
   });
 });
