@@ -529,3 +529,39 @@ Integration / render (snapshot via `BUDDY_FAKE_NOW`, like existing tests):
   roam the whole line) — violates the lane invariant / NFR6 real-estate.
 - Any *write-back* coupling where movement changes XP, stats, or mood — forbidden
   by NFR1; §7.D is strictly read-only.
+
+---
+
+## 11. Addendum — Free-roam supersedes the corridor (idle-RPG Phase 5)
+
+> Added 2026-06-26 on `feature/free-roam-combat`. The
+> [Phase 5 design](idle-rpg/phase-5-combat-scene.md) §3 re-architects this
+> module. The right-margin **corridor** model below (§2.2, §7.B wide mode) is
+> **retired**; the buddy now roams the **full span** between the stats panel and
+> the window edge. This entry records what changed and why so the corridor
+> sections aren't read as current.
+
+**What changed**
+- §2.2's reclaimed right-margin corridor (≤6, or ≤10 in wide mode) becomes the
+  **whole span**: `SPAN = COLS − STATS_BLOCK − CLUSTER_W − RIGHT_SAFETY`. The
+  fixed `MARGIN=8` right reserve shrinks to a small `RIGHT_SAFETY`.
+- The **cluster travels as one block by default** — bubble + connector + sprite
+  shift together (the former opt-in `wanderBubble` mode, now the default). The
+  pinned-bubble / retracting-connector default is retired.
+- The §10 "out of scope" line **"the buddy leaving its lane to roam the whole
+  line"** is now **in scope** — the lane *is* the whole line. The NFR6
+  real-estate concern is met by the in-window clamp (the cluster never grows the
+  block past `COLS`), not by confining motion to a margin.
+- The baked walk (§4) is now **normalized** (`0..WANDER_NORM`, percent-of-span);
+  bash scales it to the live `SPAN` each tick (the server can't see `COLS`).
+  `moodWalkOpts` still maps mood→restlessness; the spatial amplitude is the span.
+
+**What carries over unchanged**
+- §7.A vertical hop (`wanderRowSequence` / `HOP_RESERVE`).
+- §7.C resize robustness — recomputing `SPAN` every tick is the same idea, now
+  guaranteeing in-window rather than just clamping a corridor offset.
+- §7.D mood/level expressiveness — strictly read-only (NFR1).
+- "Server bakes, bash cycles" and the pre-baked-sequence pattern.
+
+**Still out of scope:** per-session position file for eased resize; write-back
+coupling; free *2-D* path-following beyond the hop arc.

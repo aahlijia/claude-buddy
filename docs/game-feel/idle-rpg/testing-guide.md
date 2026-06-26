@@ -13,7 +13,7 @@ fast **deterministic harnesses** for triggering scenarios on demand.
 
 ```bash
 cd /Users/austinahlijian/Projects/claude-buddy
-bun test          # sanity: 605 pass
+bun test          # sanity: 653 pass
 bun run install-buddy
 ```
 Then **restart Claude Code** (the MCP server + hooks reload). In a session:
@@ -148,31 +148,81 @@ jq '{enemyGlyph, encounterAt}' ~/.claude/buddy-state/status.json
 
 ---
 
-## 4. Statusline fight render
+## 4. Statusline fight render — the two-sprite scene (Phase 5)
 
-The fight **renders only at `gameFeel=full`**, for ~10s after it lands (the buddy
-makes an **angry face** with the **enemy glyph** hovering in its right margin,
-plus the toast).
+The fight **renders only at `gameFeel=full`**, for ~10s after it lands. The bug
+spawns as a **second creature** (a buddy of a different kind) beside your buddy,
+and they trade a short **sword-swing** flipbook: ready → wind-up (`>`/`<` eyes) →
+**strike** (a `/\` clash in the gap) → resolve (win = `^^` vs `xx`; flee = the bug
+shrugs). A win/flee toast rides the speech bubble.
 
-**Force a fresh fight render without waiting on a commit:**
+**Force a fresh fight render without waiting on a commit** (uses a real baked
+scene, so `combatFrames`/`artWidth` are populated):
 ```bash
 bun -e '
-import {writeEncounter} from "./server/combat.ts";
+import {resolveCombat, writeEncounter} from "./server/combat.ts";
 import {loadCompanion, writeStatusState, saveConfig, loadConfig} from "./server/state.ts";
 saveConfig({...loadConfig(), gameFeel:"full"});
-writeEncounter({outcome:"win", frames:["x"], sequence:[0], enemyGlyph:"🐉", drop:{points:0}, summary:"🗡 squashed a segfault dragon! +5 pt"});
-writeStatusState(loadCompanion(), { reaction: "" });
+const c = loadCompanion();
+const bug = {id:"y", name:"segfault dragon", glyph:"🐉", tier:4, reward:5, species:"dragon"};
+const r = resolveCombat(c.bones, bug, {}, Date.now() & 0xffff);
+writeEncounter(r);
+writeStatusState(c, { celebration: { text: r.summary, kind:"loot", at: Date.now() } });
 '
-echo '{}' | bash statusline/buddy-status.sh   # → 🐉 beside the buddy's (angry) face + toast
+# Sweep a few ticks to watch the flipbook (ready / wind-up / strike / resolve):
+for n in 0 1 2 4; do echo "--- tick $n ---"; BUDDY_FAKE_NOW=$(( $(date +%s) + n )) bash statusline/buddy-status.sh < /dev/null; done
 ```
-**Expect:** the enemy glyph appears **on the eye row**, to the right of the buddy,
-and the toast shows in the bubble. After ~10s (the encounter TTL) it reverts to
-the idle buddy. In a live Claude Code session the status line repaints ~1×/sec,
-so you'll see it animate on its own.
+**Expect:** your buddy on the left, the **mirrored dragon** on the right, the `/\`
+clash on the strike tick, the toast in the bubble, and the name re-centred under
+the wider scene. After ~10s (the encounter TTL) it reverts to the idle buddy. In a
+live session the status line repaints ~1×/sec, so it animates on its own.
 
-**Layout check:** the glyph must not shift the bubble, stats panel, or name — it
-only occupies the right margin. Compare the rendered columns with/without an
-encounter.
+**Width check:** the whole scene must stay within the terminal width. Force a
+deterministic width with the `BUDDY_FAKE_COLS` seam and confirm no row exceeds it:
+```bash
+BUDDY_FAKE_COLS=100 BUDDY_FAKE_NOW=$(( $(date +%s) + 2 )) bash statusline/buddy-status.sh < /dev/null \
+  | perl -CSD -pe 's/\e\[[0-9;]*m//g' | perl -CSD -ne 'chomp; printf "%3d  %s\n", length($_), $_'
+# every printed width must be ≤ 100
+```
+
+> **Degraded fallback:** an older `status.json` (or version skew) without
+> `combatFrames` falls back to the Phase-4 render — the single enemy **glyph** in
+> the buddy's right margin. Seed it by writing an `encounter.json` whose `frames`
+> is `[]` (or just `enemyGlyph`/`encounterAt` on `status.json`).
+
+---
+
+## 4b. Free-roam layout
+
+The status line is no longer a rigid right-aligned block. The **stats panel is
+left-anchored**; the **buddy cluster** (bubble + connector + sprite) free-roams
+between the stats and the window edge, **clamped fully in-window**, with the
+**bubble travelling with the buddy**.
+
+**Watch the buddy amble (bubble travels with it):**
+```bash
+bun -e '
+import {loadCompanion, writeStatusState, saveConfig, loadConfig} from "./server/state.ts";
+saveConfig({...loadConfig(), gameFeel:"full"});
+writeStatusState(loadCompanion(), { reaction: "hi there friend" });
+'
+# Force a wander track + sweep ticks; the whole cluster slides LEFT then home:
+jq ".wanderSequence=[0,4,8,12,8,4]" ~/.claude/buddy-state/status.json > /tmp/s && mv /tmp/s ~/.claude/buddy-state/status.json
+for n in 0 1 2 3; do echo "--- tick $n ---"; BUDDY_FAKE_NOW=$n bash statusline/buddy-status.sh < /dev/null; done
+```
+**Expect:** the bubble + connector + buddy + name all shift left together as one
+block; the stats panel (if `showStats` on) never moves.
+
+**No-clip / bubble-drop check** (the clipping bug this fixes):
+```bash
+for cols in 120 80 60 50; do
+  echo "=== COLS=$cols ===";
+  BUDDY_FAKE_COLS=$cols BUDDY_FAKE_NOW=0 bash statusline/buddy-status.sh < /dev/null \
+    | perl -CSD -pe 's/\e\[[0-9;]*m//g' | perl -CSD -ne 'chomp; printf "%3d  %s\n", length($_), $_'
+done
+# Every width ≤ COLS. As COLS shrinks the speech bubble is DROPPED so the buddy
+# sprite itself is never cut off (sprite visibility always wins).
+```
 
 ---
 
@@ -200,7 +250,7 @@ AFTER=$(jq .bonusPoints ~/.claude/buddy-state/xp.json)
 echo "points $BEFORE → $AFTER (should be unchanged); encounter.json should be stale/absent"
 ```
 At `subtle`, the same steps **do** award points + show the toast, but the status
-line shows **no** enemy glyph / angry face.
+line shows **no** two-sprite fight scene (the buddy keeps idling).
 
 ---
 

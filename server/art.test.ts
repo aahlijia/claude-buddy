@@ -12,6 +12,9 @@ import {
   displayWidth,
   getStatusFrames,
   flourishFrames,
+  mirrorFrame,
+  rectFrame,
+  getArtFrame,
   STATUS_FRAME_SEQUENCE,
   ageTell,
   activeSeasonal,
@@ -224,6 +227,48 @@ describe("flourishFrames (game-feel FR-A3)", () => {
     const before = getStatusFrames(bones());
     flourishFrames(bones());
     expect(getStatusFrames(bones())).toEqual(before);
+  });
+});
+
+describe("rectFrame / mirrorFrame (idle-RPG Phase 5)", () => {
+  test("rectFrame pads every line to the frame's max display width", () => {
+    const r = rectFrame(["abc", "de", "f"]);
+    const widths = new Set(r.map((l) => displayWidth(l)));
+    expect(widths.size).toBe(1);
+    expect(displayWidth(r[0])).toBe(3);
+  });
+
+  test("mirrorFrame output lines are all equal width", () => {
+    const m = mirrorFrame(["( ·  · )", "(    )", "  --"]);
+    const widths = new Set(m.map((l) => displayWidth(l)));
+    expect(widths.size).toBe(1);
+  });
+
+  test("swaps directional glyphs", () => {
+    expect(mirrorFrame(["()"])[0]).toBe("()"); // ")(" reversed → "()"
+    expect(mirrorFrame(["<>"])[0]).toBe("<>");
+    expect(mirrorFrame(["/\\"])[0]).toBe("/\\");
+    expect(mirrorFrame(["(>"])[0]).toBe("<)"); // ">(" rev → swap → "<)"
+    expect(mirrorFrame(["[a]"])[0]).toBe("[a]");
+  });
+
+  test("preserves symmetric glyphs and is width-stable on a real sprite", () => {
+    const art = getArtFrame("dragon", "·", 0);
+    const m = mirrorFrame(art);
+    expect(m.length).toBe(art.length);
+    const rectW = displayWidth(rectFrame(art)[0]);
+    for (const line of m) expect(displayWidth(line)).toBe(rectW);
+  });
+
+  test("double-mirror restores the rectangularized frame (involution)", () => {
+    const art = rectFrame(getArtFrame("blob", "·", 0));
+    expect(mirrorFrame(mirrorFrame(art))).toEqual(art);
+  });
+
+  test("reverses by code point (surrogate-pair safe)", () => {
+    // A non-BMP glyph must survive a round-trip intact, not split.
+    const m = mirrorFrame(["a\u{1F409}b"]);
+    expect([...m[0]]).toContain("\u{1F409}");
   });
 });
 

@@ -235,6 +235,52 @@ export function getArtFrame(species: Species, eye: Eye, frame: number = 0): stri
   return f.map((line) => line.replace(/\{E\}/g, eye));
 }
 
+// ─── Frame geometry (idle-RPG Phase 5: two-sprite combat scene) ──────────────
+
+/** Directional glyphs swapped when a sprite is mirrored, so the flipped art
+ *  still reads as a creature facing the other way. Symmetric glyphs
+ *  (`| _ ^ ~ . ' = ω` …) are absent and pass through unchanged. */
+const MIRROR_SWAP: Readonly<Record<string, string>> = {
+  "(": ")",
+  ")": "(",
+  "<": ">",
+  ">": "<",
+  "[": "]",
+  "]": "[",
+  "{": "}",
+  "}": "{",
+  "/": "\\",
+  "\\": "/",
+};
+
+/** Right-pad every line of a frame to the frame's max display width, yielding a
+ *  rectangular block. Pure. */
+export function rectFrame(lines: string[]): string[] {
+  const w = lines.reduce((m, l) => Math.max(m, displayWidth(l)), 0);
+  return lines.map((l) => dpad(l, w));
+}
+
+/**
+ * Mirror a rendered frame left↔right so a creature faces the opposite way.
+ *
+ * Rectangularizes first (square bounding box), reverses each line **by code
+ * point** (surrogate-pair safe), then swaps directional glyphs. Pure.
+ *
+ * Intended for the curated 5-line, ANSI-free roster (`bugs.ts` excludes
+ * `wyvern`/`pikachu`): ANSI escapes would reverse into garbage.
+ *
+ * @param lines: A rendered (eye-substituted, ANSI-free) frame.
+ * @returns The mirrored frame, every line equal display width.
+ */
+export function mirrorFrame(lines: string[]): string[] {
+  return rectFrame(lines).map((line) =>
+    [...line]
+      .reverse()
+      .map((ch) => MIRROR_SWAP[ch] ?? ch)
+      .join(""),
+  );
+}
+
 // Original 15-tick cycle [0,0,0,0,1,0,0,0,-1,0,0,2,0,0,0]: -1 (blink) becomes
 // index 3 in the pre-baked frames array.
 export const STATUS_FRAME_SEQUENCE: readonly number[] = [

@@ -17,3 +17,8 @@
 ## Docs
 - update readme
 - organize docs/
+
+- stop chat bubble when fighting
+the baked combat flipbook (enc.frames/enc.sequence) is computed but never rendered; Phase 4
+  only uses the glyph + angry face. That's the lever for this feature. Let me check how the ART column width
+  is derived, to know whether a wider two-sprite scene can fit.

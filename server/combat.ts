@@ -17,10 +17,11 @@ import { join } from "path";
 import {
   RARITY_WEIGHTS,
   mulberry32,
-  renderFace,
   type BuddyBones,
+  type Species,
   type Eye,
 } from "./engine";
+import { getArtFrame, mirrorFrame, rectFrame, displayWidth } from "./art";
 import { buddyStateDir } from "./path";
 import { resolveAppearance } from "./equipment";
 import { ITEMS, findItem, type Equipment, type ItemId } from "./items";
@@ -92,30 +93,99 @@ export function winChance(
   return Math.max(WIN_FLOOR, Math.min(WIN_CEIL, p));
 }
 
-// ─── Frame baking ─────────────────────────────────────────────────────────────
+// ─── Scene baking (design-rpg Phase 5: two-sprite combat scene) ──────────────
+
+/** Display cols between the player and the mirrored enemy. The strike clash
+ *  lives here on the eye row; width is constant across the flipbook. */
+const SCENE_GAP = 4;
+/** Default resting eye for an enemy that didn't specify one. */
+const DEFAULT_ENEMY_EYE = "×" as Eye; // ×
+/** Default swing glyph when no weapon is equipped (player blade leans right). */
+const DEFAULT_SWORD = "/";
+
+const asEye = (e: string): Eye => e as Eye;
+
+/** Stack two rectangular frames to a common height, bottom-aligned; the shorter
+ *  is top-padded with blank lines of its own width so the "ground" rows line up. */
+function alignHeights(a: string[], b: string[]): [string[], string[]] {
+  const h = Math.max(a.length, b.length);
+  const wa = a.length ? displayWidth(a[0]) : 0;
+  const wb = b.length ? displayWidth(b[0]) : 0;
+  const pad = (f: string[], w: number): string[] => [
+    ...Array<string>(h - f.length).fill(" ".repeat(w)),
+    ...f,
+  ];
+  return [pad(a, wa), pad(b, wb)];
+}
+
+/** A single-display-width swing glyph: the weapon's art if it's a printable
+ *  ASCII char (keeps the scene width deterministic), else the default blade. */
+function swingGlyph(weaponArt: string): string {
+  const ch = [...weaponArt][0];
+  if (ch && ch.charCodeAt(0) >= 0x21 && ch.charCodeAt(0) <= 0x7e) return ch;
+  return DEFAULT_SWORD;
+}
+
+/** Build the GAP column for one scene row: blank, except the eye row on a strike
+ *  frame, where the two blades clash (player's leans right, enemy's mirrors). */
+function gapRow(strike: boolean, isEyeRow: boolean, sword: string): string {
+  if (!strike || !isEyeRow) return " ".repeat(SCENE_GAP);
+  const swordP = sword;
+  const swordE = mirrorFrame([sword])[0]; // "/" → "\", etc.
+  // Center the clash in the gap: " " + P + E + " " (SCENE_GAP === 4).
+  return ` ${swordP}${swordE} `.slice(0, SCENE_GAP).padEnd(SCENE_GAP);
+}
+
+interface Pose {
+  pEye: Eye;
+  eEye: Eye;
+  strike: boolean;
+}
+
+/** The four fight poses: ready → wind-up → strike → resolve. Body art is fixed
+ *  to frame 0 (constant per-species width across the flipbook); only eyes + the
+ *  clash change. */
+function scenePoses(
+  restingP: Eye,
+  restingE: Eye,
+  outcome: Outcome,
+): Pose[] {
+  return [
+    { pEye: restingP, eEye: restingE, strike: false }, // ready
+    { pEye: asEye(">"), eEye: asEye(">"), strike: false }, // wind-up
+    { pEye: asEye(">"), eEye: asEye(">"), strike: true }, // strike
+    outcome === "win"
+      ? { pEye: asEye("^"), eEye: asEye("x"), strike: false } // triumph
+      : { pEye: asEye("-"), eEye: asEye("^"), strike: false }, // unbothered flee
+  ];
+}
 
 /**
- * Bake a short fight flipbook from existing art (eye substitution + the weapon
- * glyph), so we draw almost no net-new ASCII. Single-line buddy poses; Phase 4
- * owns placement of the enemy glyph in the margin.
+ * Bake the two-sprite fight scene: the player buddy and the mirrored enemy
+ * creature side by side, with a short sword-swing flipbook. Every frame is the
+ * same display width (the strike's clash lives in a fixed-width gap, no body
+ * translation) so the status line never jitters horizontally. Pure — reuses
+ * `SPECIES_ART` via `getArtFrame` + the `mirrorFrame` pass, no new per-species
+ * art and no clock.
  */
-function bakeFrames(
-  bones: BuddyBones,
+function bakeScene(
+  playerSpecies: Species,
+  playerEye: Eye,
+  enemySpecies: Species,
+  enemyEye: Eye,
   weaponArt: string,
   outcome: Outcome,
 ): { frames: string[]; sequence: number[] } {
-  // Fight expressions reuse renderFace's {E} substitution with non-standard
-  // eye glyphs (">", "^", "-"); cast past the strict Eye union deliberately.
-  const eye = (e: string): Eye => e as Eye;
-  const w = weaponArt ? `${weaponArt} ` : "";
-  const ready = renderFace(bones.species, bones.eye);
-  const swing = `${w}${renderFace(bones.species, eye(">"))}`;
-  const strike = `${w}${renderFace(bones.species, eye(">"))}!`;
-  const finish =
-    outcome === "win"
-      ? renderFace(bones.species, eye("^")) // triumphant
-      : renderFace(bones.species, eye("-")); // unbothered retreat
-  const frames = [ready, swing, strike, finish];
+  const sword = swingGlyph(weaponArt);
+  const frames = scenePoses(playerEye, enemyEye, outcome).map((pose) => {
+    const player = rectFrame(getArtFrame(playerSpecies, pose.pEye, 0));
+    const enemy = mirrorFrame(getArtFrame(enemySpecies, pose.eEye, 0));
+    const [pA, eA] = alignHeights(player, enemy);
+    const eyeRow = Math.floor(pA.length / 2);
+    return pA
+      .map((line, i) => line + gapRow(pose.strike, i === eyeRow, sword) + eA[i])
+      .join("\n");
+  });
   // Gentle oscillation: ready, wind-up, strike, strike, resolve, resolve.
   const sequence = [0, 1, 2, 2, 3, 3];
   return { frames, sequence };
@@ -168,7 +238,14 @@ export function resolveCombat(
   const p = winChance(effDebug, weaponEquipped, bug.tier);
 
   const outcome: Outcome = rng() < p ? "win" : "flee";
-  const { frames, sequence } = bakeFrames(bones, appearance.weaponArt, outcome);
+  const { frames, sequence } = bakeScene(
+    bones.species,
+    bones.eye,
+    bug.species,
+    bug.eye ?? DEFAULT_ENEMY_EYE,
+    appearance.weaponArt,
+    outcome,
+  );
 
   let drop: DropSpec;
   let summary: string;

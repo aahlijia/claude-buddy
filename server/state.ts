@@ -667,11 +667,22 @@ export interface StatusState {
    *  index. Present only when wanderHop is on; absent ⇒ floor-only. */
   wanderRowSequence?: number[];
   /** Idle-RPG (Phase 4): the bug glyph to hover in the margin during a fresh
-   *  fight. Absent ⇒ no encounter. Rendered only at gameFeel=full. */
+   *  fight. Now the **degraded-skew fallback** render — Phase 5 prefers the full
+   *  two-sprite scene below. Absent ⇒ no encounter. Rendered only at full. */
   enemyGlyph?: string;
   /** Idle-RPG (Phase 4): Date.now() of the encounter, for the statusline TTL
    *  (same freshness idiom as celebration.at). */
   encounterAt?: number;
+  /** Idle-RPG (Phase 5): the baked two-sprite fight scene (player + mirrored
+   *  enemy creature). Animated by the status line only while the encounter is
+   *  fresh, then it falls back to `frames` — the flourish pattern. Absent ⇒ no
+   *  fresh fight. Present only at gameFeel=full. */
+  combatFrames?: string[];
+  combatSequence?: number[];
+  /** Idle-RPG (Phase 5): display width of the active combat scene, so the shell
+   *  widens its art column to fit the two sprites. Absent ⇒ shell keeps its
+   *  default single-sprite width. */
+  artWidth?: number;
 }
 
 // ─── Celebration channel (game-feel §2 — one transient slot, many producers) ──
@@ -818,15 +829,33 @@ export function writeStatusState(
   // The read is event-frequency, not per tick — cheap, like seasonal/xp below.
   let enemyGlyph: string | undefined;
   let encounterAt: number | undefined;
+  let combatFrames: string[] | undefined;
+  let combatSequence: number[] | undefined;
+  let artWidth: number | undefined;
   if (gate !== "off") {
     try {
       const { readEncounter } =
         require("./combat.ts") as typeof import("./combat.ts");
+      const { displayWidth } = require("./art.ts") as typeof import("./art.ts");
       const enc = readEncounter();
       if (enc) {
+        // Phase 5: surface the baked two-sprite scene + its width. The scene
+        // carries its own fight eyes, so idle `.frames` stay neutral (no angry
+        // bias). `enemyGlyph`/`encounterAt` remain for the degraded-skew render
+        // when a stale bash can't read `combatFrames`.
         enemyGlyph = enc.enemyGlyph;
         encounterAt = enc.at;
-        emotion = "angry"; // fight face — reuses the emotion-frame pipeline
+        if (Array.isArray(enc.frames) && enc.frames.length > 0) {
+          combatFrames = enc.frames;
+          combatSequence = enc.sequence;
+          artWidth = enc.frames.reduce(
+            (max, frame) =>
+              frame
+                .split("\n")
+                .reduce((m, line) => Math.max(m, displayWidth(line)), max),
+            0,
+          );
+        }
       }
     } catch {
       // Combat is optional during first install / version skew.
@@ -994,6 +1023,9 @@ export function writeStatusState(
     ...(wanderRowSequence ? { wanderRowSequence } : {}),
     ...(enemyGlyph && encounterAt
       ? { enemyGlyph, encounterAt }
+      : {}),
+    ...(combatFrames && combatSequence && artWidth
+      ? { combatFrames, combatSequence, artWidth }
       : {}),
   };
   // Atomic write (game-feel §2.6): the MCP server, the award-xp.ts process, and
