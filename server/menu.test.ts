@@ -230,6 +230,31 @@ describe("renderMenuCard", () => {
   });
 });
 
+describe("MENU security invariants", () => {
+  /**
+   * Tools that must never run in-process via runTool because they are
+   * irreversible and have no confirm prompt when auto-executed. If a tool here
+   * needs to be reachable from the menu, wire it as kind:"sequence" so the
+   * assistant orchestrates the multi-step flow instead.
+   */
+  const DENYLIST = new Set(["buddy_uninstall"]);
+
+  test("no kind:\"tool\" leaf targets a denylist tool (runTool guard)", () => {
+    for (const page of Object.values(MENU)) {
+      for (const opt of page.options) {
+        if (opt.action.kind === "tool") {
+          expect(DENYLIST.has(opt.action.tool)).toBe(false);
+        }
+      }
+    }
+  });
+
+  test("buddy_uninstall is kind:\"sequence\" (stays assistant-orchestrated)", () => {
+    const action = MENU.system2.options.find((o) => o.id === "uninstall")?.action;
+    expect(action?.kind).toBe("sequence");
+  });
+});
+
 describe("advance", () => {
   test("no select, no page → renders root with ask", () => {
     const r = advance(undefined, undefined, "Waffle") as MenuEnvelope;
