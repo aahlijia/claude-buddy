@@ -666,6 +666,12 @@ export interface StatusState {
   /** Idle-wander hop (§7.A): per-tick vertical offset (rows, 0..hopHeight), same
    *  index. Present only when wanderHop is on; absent ⇒ floor-only. */
   wanderRowSequence?: number[];
+  /** Idle-RPG (Phase 4): the bug glyph to hover in the margin during a fresh
+   *  fight. Absent ⇒ no encounter. Rendered only at gameFeel=full. */
+  enemyGlyph?: string;
+  /** Idle-RPG (Phase 4): Date.now() of the encounter, for the statusline TTL
+   *  (same freshness idiom as celebration.at). */
+  encounterAt?: number;
 }
 
 // ─── Celebration channel (game-feel §2 — one transient slot, many producers) ──
@@ -806,6 +812,26 @@ export function writeStatusState(
   } catch {
     // Reaction state optional.
   }
+  // Idle-RPG encounter (design-rpg Phase 4): a fresh fight biases the face angry
+  // and surfaces the enemy glyph. Render is gated to `full` in the status line;
+  // `off` produced no encounter.json in the first place (opt-out, session.ts).
+  // The read is event-frequency, not per tick — cheap, like seasonal/xp below.
+  let enemyGlyph: string | undefined;
+  let encounterAt: number | undefined;
+  if (gate !== "off") {
+    try {
+      const { readEncounter } =
+        require("./combat.ts") as typeof import("./combat.ts");
+      const enc = readEncounter();
+      if (enc) {
+        enemyGlyph = enc.enemyGlyph;
+        encounterAt = enc.at;
+        emotion = "angry"; // fight face — reuses the emotion-frame pipeline
+      }
+    } catch {
+      // Combat is optional during first install / version skew.
+    }
+  }
   // Seasonal cosmetic (FR-C2): an overlay hat in a date window, gate-gated.
   let seasonalHat: Hat | undefined;
   if (gate !== "off") {
@@ -816,8 +842,36 @@ export function writeStatusState(
       // Seasonal is a best-effort delighter.
     }
   }
+  // Equipment (design-rpg Phase 1): fold equipped headgear/gear into the
+  // rendered appearance so the status line reflects gear. Derive-on-read — the
+  // innate bones is never mutated. Runs on events, not per tick, so the extra
+  // read is harmless. seasonalHat still fills only a genuinely empty slot.
+  // One xp.json read for this whole write — reused by the geared appearance
+  // (below) and the level/title/prestige fields (further down). Event-frequency,
+  // but no reason to parse the file twice.
+  let xpStateForStatus: import("./xp.ts").XpState | null = null;
+  try {
+    const { getXpState } = require("./xp.ts") as typeof import("./xp.ts");
+    xpStateForStatus = getXpState();
+  } catch {
+    // XP state is optional during first install / version skew.
+  }
+  let displayBones = companion.bones;
+  if (xpStateForStatus) {
+    try {
+      const { gearedBones } =
+        require("./equipment.ts") as typeof import("./equipment.ts");
+      displayBones = gearedBones(
+        companion.bones,
+        xpStateForStatus.equipment,
+        xpStateForStatus.cosmeticFlags,
+      );
+    } catch {
+      // Equipment is optional during first install / version skew.
+    }
+  }
   const { frames, frameSequence } = getStatusFrames(
-    companion.bones,
+    displayBones,
     emotion,
     seasonalHat,
   );
@@ -827,15 +881,11 @@ export function writeStatusState(
   let prestigeLevel = 0;
   let streak = 0;
   let moodStr = "focused";
-  try {
-    const { getXpState } = require("./xp.ts") as typeof import("./xp.ts");
-    const xpState = getXpState();
-    xpLevel = xpState.level;
-    xpTotal = xpState.totalXp;
-    xpTitle = xpState.title;
-    prestigeLevel = xpState.prestigeLevel;
-  } catch {
-    // XP state is optional during first install / version skew.
+  if (xpStateForStatus) {
+    xpLevel = xpStateForStatus.level;
+    xpTotal = xpStateForStatus.totalXp;
+    xpTitle = xpStateForStatus.title;
+    prestigeLevel = xpStateForStatus.prestigeLevel;
   }
   try {
     const { loadStreak } = require("./streak.ts") as typeof import("./streak.ts");
@@ -919,7 +969,7 @@ export function writeStatusState(
     face: renderFace(companion.bones.species, companion.bones.eye),
     eye: companion.bones.eye,
     shiny: companion.bones.shiny,
-    hat: companion.bones.hat,
+    hat: displayBones.hat,
     reaction: reaction ?? "",
     muted: muted ?? false,
     achievement: achievement ?? "",
@@ -942,6 +992,9 @@ export function writeStatusState(
       : {}),
     ...(wanderSequence ? { wanderSequence } : {}),
     ...(wanderRowSequence ? { wanderRowSequence } : {}),
+    ...(enemyGlyph && encounterAt
+      ? { enemyGlyph, encounterAt }
+      : {}),
   };
   // Atomic write (game-feel §2.6): the MCP server, the award-xp.ts process, and
   // react.sh's jq patch all touch status.json — tmp+rename avoids torn reads.

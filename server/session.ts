@@ -25,6 +25,9 @@ import {
   saveCompanion,
   loadCompanionSlot,
   updateCompanionSlot,
+  resolveUserId,
+  writeStatusState,
+  effectiveGameFeel,
 } from "./state.ts";
 import { loadGlobalEvents, type GlobalCounters } from "./achievements.ts";
 import {
@@ -37,7 +40,16 @@ import {
 } from "./xp.ts";
 import { updateStreak } from "./streak.ts";
 import { rollLoot } from "./loot.ts";
-import { STAT_NAMES, type Species, type Rarity, type StatName } from "./engine.ts";
+import { spawnBug } from "./bugs.ts";
+import { resolveCombat, applyCombatDrops, writeEncounter } from "./combat.ts";
+import { ownedItems } from "./shop.ts";
+import {
+  STAT_NAMES,
+  hashString,
+  type Species,
+  type Rarity,
+  type StatName,
+} from "./engine.ts";
 
 // ─── Counters that feed the bonus ────────────────────────────────────────────
 
@@ -210,12 +222,47 @@ export function accrueSessionStats(
   delta: SessionCounters,
   elapsedSec: number,
 ): Partial<Record<StatName, number>> {
+  // Opt-out (design-rpg Phase 4): gameFeel=off disables the game mechanics —
+  // this is the behavioral-stat gate owed since stat-leveling.
+  if (effectiveGameFeel() === "off") return {};
   const gains = computeStatGains(delta, elapsedSec);
   if (Object.keys(gains).length === 0) return {};
   const increments = accrueStatProgress(gains, STAT_GAIN_PER_SESSION_CAP);
   if (Object.keys(increments).length === 0) return {};
   applyStatIncrements(slot, increments);
   return increments;
+}
+
+/**
+ * Idle-RPG combat (design-rpg Phase 3): a session's errors spawn a bug the buddy
+ * auto-fights. Runs once per commit (reusing the error delta already computed),
+ * so it adds no per-event cost. Wins drop skill points / items; the baked fight
+ * lands in the transient encounter side-channel (rendered by Phase 4) and a toast
+ * makes the defeat observable now. Seeded deterministically for reproducibility.
+ */
+export function maybeFightBug(
+  slot: string | undefined,
+  errorsSeen: number,
+  startedAt: number,
+): void {
+  // Opt-out (design-rpg Phase 4): gameFeel=off disables the idle-RPG loop —
+  // no spawns, no drops, no encounter file.
+  if (effectiveGameFeel() === "off") return;
+  const seed = hashString(`${resolveUserId()}:${startedAt}:${errorsSeen}`);
+  const bug = spawnBug(errorsSeen, seed);
+  if (!bug) return;
+  const companion = slot ? loadCompanionSlot(slot) : loadCompanion();
+  if (!companion) return;
+
+  const { equipment, inventory } = getXpState();
+  const owned = ownedItems(inventory, equipment);
+  const result = resolveCombat(companion.bones, bug, equipment, seed, owned);
+  applyCombatDrops(result.drop);
+  writeEncounter(result);
+  writeStatusState(companion, {
+    celebration: { text: result.summary, kind: "loot", at: Date.now() },
+    cause: "loot",
+  });
 }
 
 // ─── Lifecycle entry points (called from award-xp.ts) ────────────────────────
@@ -269,6 +316,9 @@ export function awardSessionComplete(
   // plus the session's elapsed time. Once-per-commit, so no per-event cost.
   const elapsedSec = snapshot ? Math.max(0, nowSeconds() - snapshot.startedAt) : 0;
   accrueSessionStats(slot, delta, elapsedSec);
+
+  // Idle-RPG combat (Phase 3): this session's errors spawn a bug to fight.
+  maybeFightBug(slot, delta.errors_seen, snapshot?.startedAt ?? 0);
 
   // A non-zero streak reward means a streak milestone just landed — roll loot
   // on top of the deterministic bonus (additional-rewards FR4.1).

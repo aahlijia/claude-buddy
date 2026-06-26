@@ -10,6 +10,16 @@ import { join } from "path";
 import { buddyStateDir } from "./path";
 import type { Species, Rarity, Companion, Hat, StatName } from "./engine";
 import { STAT_NAMES } from "./engine";
+import {
+  SLOTS,
+  STARTER_INVENTORY,
+  findItem,
+  type Equipment,
+  type ItemId,
+  type Slot,
+} from "./items";
+import { equipItem, unequipSlot } from "./equipment";
+import { buyError } from "./shop";
 
 // ─── XP event types ───────────────────────────────────────────────────────────
 
@@ -580,6 +590,11 @@ export interface XpState {
   // Ascension (additional-rewards FR1).
   prestigeLevel: number; // 0 = never ascended; caps at PRESTIGE_MAX
   prestigeMultiplier: number; // derived from prestigeLevel, cached for display
+
+  // Idle-RPG equipment (design-rpg Phase 1). Equipment is the source of truth;
+  // appearance is derived on read by equipment.ts — bones is never mutated.
+  equipment: Equipment; // equipped item per slot
+  inventory: ItemId[]; // owned-but-unequipped item ids
 }
 
 /** Level at and beyond which respec is permanently locked. */
@@ -642,6 +657,52 @@ function sanitizeStatProgress(
     }
   }
   return out;
+}
+
+/**
+ * Coerce a parsed equipment/inventory blob into a clean, self-consistent pair
+ * (design-rpg-phase1 §3.3). Pure — migration is unit-testable.
+ *
+ * Rules:
+ *   - Only known slots holding a known item id are kept; stale ids are dropped.
+ *   - Inventory keeps only known item ids, deduped.
+ *   - Invariant: an item in a slot is removed from inventory (a slot owns it).
+ *   - Starter seed: a blob predating equipment (`rawEquipment === undefined`)
+ *     gets the starter kit, so fresh buddies have gear to equip. Once the
+ *     `equipment` field exists — even empty — gear is never re-seeded (so
+ *     deliberately discarded starters stay gone).
+ */
+function coerceEquipment(
+  rawEquipment: unknown,
+  rawInventory: unknown,
+): { equipment: Equipment; inventory: ItemId[] } {
+  const equipment: Equipment = {};
+  if (rawEquipment && typeof rawEquipment === "object") {
+    const obj = rawEquipment as Record<string, unknown>;
+    for (const slot of SLOTS) {
+      const id = obj[slot];
+      if (typeof id === "string" && findItem(id)) equipment[slot] = id;
+    }
+  }
+
+  const seedFresh = rawEquipment === undefined;
+  const rawInv = Array.isArray(rawInventory)
+    ? rawInventory
+    : seedFresh
+      ? [...STARTER_INVENTORY]
+      : [];
+
+  const equipped = new Set(SLOTS.map((s) => equipment[s]).filter(Boolean));
+  const seen = new Set<string>();
+  const inventory: ItemId[] = [];
+  for (const id of rawInv) {
+    if (typeof id !== "string" || !findItem(id)) continue;
+    if (equipped.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    inventory.push(id);
+  }
+
+  return { equipment, inventory };
 }
 
 export function backfillXpState(parsed: Partial<XpState> | null): XpState {
@@ -711,6 +772,7 @@ export function backfillXpState(parsed: Partial<XpState> | null): XpState {
     title: p.title ?? null,
     prestigeLevel,
     prestigeMultiplier: prestigeMultiplierFor(prestigeLevel),
+    ...coerceEquipment(p.equipment, p.inventory),
   };
 }
 
@@ -1222,6 +1284,87 @@ export function refundUnlock(
     message: `Refunded ${labelOf(found)} (+${found.item.cost} pt).`,
     state,
     companionChanged,
+  };
+}
+
+// ─── Equipment I/O (idle-RPG Phase 1) ─────────────────────────────────────────
+
+export interface EquipResult {
+  ok: boolean;
+  message: string;
+  state: XpState;
+}
+
+/** Equip an inventory item into its slot, persisting on change. Pure logic
+ *  lives in equipment.ts; this is the thin xp.json I/O wrapper (cf. spendUnlock). */
+export function equipFromInventory(id: ItemId): EquipResult {
+  const state = loadXpState();
+  const res = equipItem(state.equipment, state.inventory, id);
+  if (!res.ok) return { ok: false, message: res.message, state };
+  state.equipment = res.equipment;
+  state.inventory = res.inventory;
+  saveXpState(state);
+  return { ok: true, message: res.message, state };
+}
+
+/** Unequip a slot back to inventory, persisting on change. */
+export function unequipToInventory(slot: Slot): EquipResult {
+  const state = loadXpState();
+  const before = state.equipment[slot];
+  const res = unequipSlot(state.equipment, state.inventory, slot);
+  state.equipment = res.equipment;
+  state.inventory = res.inventory;
+  if (before) saveXpState(state); // only persist when something actually moved
+  return { ok: res.ok, message: res.message, state };
+}
+
+/** Grant an item to inventory (used by the merchant/drops in later phases). */
+export function grantItem(id: ItemId): XpState {
+  const state = loadXpState();
+  if (findItem(id) && !state.inventory.includes(id)) {
+    const equipped = SLOTS.some((s) => state.equipment[s] === id);
+    if (!equipped) {
+      state.inventory.push(id);
+      saveXpState(state);
+    }
+  }
+  return state;
+}
+
+// ─── Shop I/O (idle-RPG Phase 2) ──────────────────────────────────────────────
+
+export interface BuyResult {
+  ok: boolean;
+  message: string;
+  state: XpState;
+}
+
+/**
+ * Buy a catalog item with skill points: validate via shop.buyError, debit
+ * pointsSpent, grant to inventory, persist on success. The shop analog of
+ * spendUnlock — pure validation lives in shop.ts, this is the I/O wrapper.
+ */
+export function buyShopItem(id: ItemId): BuyResult {
+  const state = loadXpState();
+  const err = buyError(
+    {
+      level: state.level,
+      inventory: state.inventory,
+      equipment: state.equipment,
+      available: availablePoints(state),
+    },
+    id,
+  );
+  if (err) return { ok: false, message: err, state };
+  const item = findItem(id)!;
+  state.pointsSpent += item.cost;
+  state.inventory.push(id);
+  saveXpState(state);
+  const left = availablePoints(state);
+  return {
+    ok: true,
+    message: `Bought ${item.name} (−${item.cost} pt). ${left} skill point(s) left.`,
+    state,
   };
 }
 

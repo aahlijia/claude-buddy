@@ -81,10 +81,22 @@ import {
   availablePoints,
   pickOwnedReaction,
   grantCosmeticFlag,
+  equipFromInventory,
+  unequipToInventory,
+  buyShopItem,
   MAX_LEVEL,
   PRESTIGE_MAX,
   computeLevel,
 } from "./xp";
+import { gearedBones, renderLoadoutCard } from "./equipment";
+import { SLOTS, findItem, type Slot } from "./items";
+import {
+  shopListing,
+  shopStateOf,
+  renderShopCard,
+  buyableChoices,
+  choicesMarker,
+} from "./shop";
 import {
   getMood,
   shiftMood,
@@ -115,6 +127,11 @@ function getInstructions(): string {
     `NAME REACTIONS: When the user's message contains "${companion.name}", call buddy_react immediately`,
     `with a short in-character response (surprise, recognition, dry wit — fits the personality).`,
     `Display the tool result verbatim. This is the only time to call buddy_react proactively.`,
+    ``,
+    `SHOP MENUS: When a buddy_shop result contains a "buddy:choices" HTML comment,`,
+    `present those options to the user with AskUserQuestion (a single-select`,
+    `"What would you like to buy?"). On their pick, call buddy_shop buy=<id>; if they`,
+    `decline, do nothing. Never offer items that aren't in the choices block.`,
     ``,
     `PAIR-PROGRAMMING: When you notice a teachable moment in the code, call buddy_suggest.`,
     `Patterns to watch for:`,
@@ -217,8 +234,11 @@ server.tool(
     // Use markdown rendering for the MCP tool response — Claude Code's UI
     // doesn't render raw ANSI escape codes, so we return pure markdown with
     // unicode rarity dots instead of RGB-colored borders.
+    // Render with equipment folded in (derive-on-read): equipped headgear and
+    // stat-bearing gear show on the card without mutating the innate bones.
+    const xp = getXpState();
     const card = renderCompanionCardMarkdown(
-      companion.bones,
+      gearedBones(companion.bones, xp.equipment, xp.cosmeticFlags),
       companion.name,
       companion.personality,
       reactionText,
@@ -233,7 +253,13 @@ server.tool(
     const days = Math.floor((Date.now() - companion.hatchedAt) / 86_400_000);
     const ageLine = `${ageTell(companion.hatchedAt)} ${days} day${days === 1 ? "" : "s"} together`;
 
-    return { content: [{ type: "text", text: `${card}\n\n${ageLine}` }] };
+    // Loadout hint when anything is equipped — discovers buddy_equip.
+    const geared = SLOTS.some((s) => xp.equipment[s]);
+    const gearLine = geared ? "\n\n🎒 `buddy_equip` to manage gear" : "";
+
+    return {
+      content: [{ type: "text", text: `${card}\n\n${ageLine}${gearLine}` }],
+    };
   },
 );
 
@@ -1165,6 +1191,104 @@ server.tool(
     }
 
     return text(lines.join("\n"));
+  },
+);
+
+// ─── Tool: buddy_equip ────────────────────────────────────────────────────────
+
+server.tool(
+  "buddy_equip",
+  "Manage your buddy's equipment loadout (weapon / headgear / trinket). With no argument, shows the current loadout and inventory. Use `equip` with an item id to equip an owned item (swapping out any current occupant of that slot), or `unequip` with a slot name to return its item to your inventory. Equipped headgear overlays the buddy's innate hat and stat-bearing gear nudges the peak stat — gear never alters the buddy permanently and is freely swappable.",
+  {
+    equip: z
+      .string()
+      .optional()
+      .describe("Item id to equip from your inventory (e.g. 'debug_wand')"),
+    unequip: z
+      .enum(SLOTS)
+      .optional()
+      .describe("Slot to clear back to inventory: weapon, headgear, or trinket"),
+  },
+  async ({ equip, unequip }) => {
+    const companion = ensureCompanion();
+    const text = (
+      t: string,
+    ): { content: [{ type: "text"; text: string }] } => ({
+      content: [{ type: "text", text: t }],
+    });
+
+    // Actions are mutually exclusive; equip wins if both are passed.
+    if (equip) {
+      const res = equipFromInventory(equip);
+      // Equipped headgear should reach the live status line — re-render status
+      // with the geared hat (the one Phase-1 status touch-point, no bash change).
+      if (res.ok) writeStatusState(companion, { reaction: loadReaction()?.reaction });
+      const card = renderLoadoutCard(
+        companion.name,
+        res.state.equipment,
+        res.state.inventory,
+      );
+      return text(`${res.message}\n\n${card}`);
+    }
+    if (unequip) {
+      const res = unequipToInventory(unequip as Slot);
+      if (res.ok) writeStatusState(companion, { reaction: loadReaction()?.reaction });
+      const card = renderLoadoutCard(
+        companion.name,
+        res.state.equipment,
+        res.state.inventory,
+      );
+      return text(`${res.message}\n\n${card}`);
+    }
+
+    // No action — render the current loadout.
+    const state = getXpState();
+    return text(
+      renderLoadoutCard(companion.name, state.equipment, state.inventory),
+    );
+  },
+);
+
+// ─── Tool: buddy_shop ─────────────────────────────────────────────────────────
+
+server.tool(
+  "buddy_shop",
+  "Visit the merchant to buy equipment with skill points (the same points spent at buddy_upgrades). With no argument, lists the catalog with owned / affordable / locked status and your point balance. Use `buy` with an item id to purchase it into your inventory; equip it afterward with buddy_equip. When browsing, the result includes a hidden choices block — present it to the user with an interactive menu per your instructions.",
+  {
+    buy: z
+      .string()
+      .optional()
+      .describe("Item id to purchase (e.g. 'foam_sword')"),
+  },
+  async ({ buy }) => {
+    const companion = ensureCompanion();
+    const text = (
+      t: string,
+    ): { content: [{ type: "text"; text: string }] } => ({
+      content: [{ type: "text", text: t }],
+    });
+
+    if (buy) {
+      const res = buyShopItem(buy);
+      if (res.ok) {
+        incrementEvent("commands_run", 1, activeSlot());
+        const item = findItem(buy);
+        const hint = item
+          ? `\n\nEquip it with \`buddy_equip equip=${buy}\`.`
+          : "";
+        return text(`${res.message}${hint}`);
+      }
+      return text(res.message);
+    }
+
+    // No action — render the shop with the interactive choices marker.
+    const state = getXpState();
+    const avail = availablePoints(state);
+    const rows = shopListing(shopStateOf(state, avail));
+    const card = renderShopCard(companion.name, rows, avail);
+    const marker = choicesMarker(buyableChoices(rows));
+    incrementEvent("commands_run", 1, activeSlot());
+    return text(marker ? `${card}\n\n${marker}` : card);
   },
 );
 

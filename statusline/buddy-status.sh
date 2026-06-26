@@ -127,6 +127,17 @@ _STATUS=$(jq -r --argjson now "$NOW" --arg gf "$GAME_FEEL" '
     | (if $gf == "full" and $celeb_fresh != 1
        then (((.wanderRowSequence // []) | max) // 0)
        else 0 end) as $wrmax
+    # Encounter freshness (idle-RPG Phase 4) — same TTL/age idiom as $celeb_fresh,
+    # gated to full (the fight animation is full-only). Off never wrote the file.
+    | (if $gf == "full"
+       then ((.encounterAt // 0) as $ea
+             | (.enemyGlyph // "") as $eg
+             | if ($eg | type) == "string" and $eg != "" and $eg != "null"
+                   and ($ea | type) == "number" and $ea > 0
+                   and ($now - ($ea / 1000 | floor)) >= 0
+                   and ($now - ($ea / 1000 | floor)) <= 10
+               then 1 else 0 end)
+       else 0 end) as $enc_fresh
     | [
         ((.muted // false) | tostring),
         ((.name // "") | gsub("[\t\n\r]"; " ")),
@@ -148,6 +159,8 @@ _STATUS=$(jq -r --argjson now "$NOW" --arg gf "$GAME_FEEL" '
         ($woff | tostring),
         ($wrow | tostring),
         ($wrmax | tostring),
+        ($enc_fresh | tostring),
+        ((.enemyGlyph // "") | gsub("[\t\n\r]"; " ")),
         ($frame | @base64)
       ] | join("")
 ' "$STATE" 2>/dev/null)
@@ -157,6 +170,7 @@ IFS=$'\x1f' read -r \
     LEVEL MOOD TITLE PRESTIGE STREAK \
     STATS_TSV XP_PCT XP_GAIN_TSV CELEB_TSV \
     _HAS_FLOURISH _CELEB_FRESH WANDER_OFF WANDER_ROW WANDER_ROW_MAX \
+    _ENC_FRESH ENEMY_GLYPH \
     _FRAME_B64 <<< "$_STATUS"
 
 [ "$MUTED" = "true" ] && exit 0
@@ -189,6 +203,19 @@ ART_LINES=()
 while IFS= read -r line; do
     ART_LINES+=("$line")
 done <<< "$FRAME_BODY"
+
+# Idle-RPG encounter (Phase 4): hover the enemy glyph in the buddy's right margin
+# during a fresh fight. Appended RIGHTMOST on the eye row so its (often double-
+# width) glyph can't shift any aligned column to its left — it only consumes the
+# margin the wander corridor isn't using this tick (wander is suppressed while the
+# fight's celebration is fresh). $_ENC_FRESH is already gated to gameFeel=full.
+if [ "$_ENC_FRESH" = 1 ] && [ -n "$ENEMY_GLYPH" ] && [ "$ENEMY_GLYPH" != "null" ]; then
+    # The eye row is the vertical middle of the frame (row 0 is the hat slot,
+    # the eyes sit on the centre line across all species art). For the standard
+    # 5-row frame this is row 2; integer-halving degrades sanely for shorter art.
+    _FACE_ROW=$(( ${#ART_LINES[@]} / 2 ))
+    ART_LINES[$_FACE_ROW]="${ART_LINES[$_FACE_ROW]}    ${ENEMY_GLYPH}"
+fi
 
 # ─── Rarity color (theme-aware) ─────────────────────────────────────────────
 # _CFG_THEME comes from the single config read above.

@@ -57,6 +57,8 @@ function makeState(partial: Partial<XpState>): XpState {
     title: null,
     prestigeLevel: 0,
     prestigeMultiplier: 1.0,
+    equipment: {},
+    inventory: [],
     ...partial,
   };
 }
@@ -125,6 +127,8 @@ describe("availablePoints", () => {
     title: null,
     prestigeLevel: 0,
     prestigeMultiplier: 1.0,
+    equipment: {},
+    inventory: [],
   };
 
   test("is total minus spent", () => {
@@ -766,5 +770,49 @@ describe("formatStatProgressLine", () => {
   test("omits stats with no banked progress", () => {
     const line = formatStatProgressLine({ CHAOS: 0.5, SNARK: 0 });
     expect(line).toBe("**Stats warming up:** CHA 50%");
+  });
+});
+
+describe("backfillXpState — equipment migration (design-rpg Phase 1)", () => {
+  test("a legacy blob with no equipment field seeds the starter kit", () => {
+    const s = backfillXpState({ totalXp: 0 });
+    expect(s.equipment).toEqual({});
+    expect(s.inventory).toEqual(["rubber_duck", "debug_wand"]);
+  });
+
+  test("null blob (fresh buddy) also seeds the starter kit", () => {
+    const s = backfillXpState(null);
+    expect(s.inventory).toEqual(["rubber_duck", "debug_wand"]);
+  });
+
+  test("an existing (even empty) equipment field is never re-seeded", () => {
+    const s = backfillXpState({ totalXp: 0, equipment: {}, inventory: [] });
+    expect(s.inventory).toEqual([]);
+  });
+
+  test("keeps only known slots holding known item ids", () => {
+    const s = backfillXpState({
+      equipment: { weapon: "debug_wand", headgear: "bogus" } as never,
+      inventory: [],
+    });
+    expect(s.equipment.weapon).toBe("debug_wand");
+    expect(s.equipment.headgear).toBeUndefined();
+  });
+
+  test("drops unknown inventory ids and dedupes", () => {
+    const s = backfillXpState({
+      equipment: {},
+      inventory: ["foam_sword", "nope", "foam_sword"],
+    });
+    expect(s.inventory).toEqual(["foam_sword"]);
+  });
+
+  test("an equipped item is removed from inventory (a slot owns it)", () => {
+    const s = backfillXpState({
+      equipment: { weapon: "debug_wand" },
+      inventory: ["debug_wand", "foam_sword"],
+    });
+    expect(s.equipment.weapon).toBe("debug_wand");
+    expect(s.inventory).toEqual(["foam_sword"]);
   });
 });

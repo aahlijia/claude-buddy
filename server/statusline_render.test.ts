@@ -73,6 +73,9 @@ interface StatusOverrides {
   bubbleMargin?: number;
   /** Terminal width (default 125) — shrink it to exercise §7.C resize. */
   columns?: number;
+  /** Idle-RPG (Phase 4): enemy glyph + its age for the encounter render. */
+  enemyGlyph?: string;
+  encounterSecondsAgo?: number;
 }
 
 /** Write a minimal status.json into a temp config dir and run buddy-status.sh
@@ -126,6 +129,11 @@ function renderStatus(overrides: StatusOverrides): string {
   if (overrides.flourishFrames) {
     status.flourishFrames = overrides.flourishFrames;
     status.flourishSequence = overrides.flourishSequence ?? [0];
+  }
+  if (overrides.enemyGlyph) {
+    status.enemyGlyph = overrides.enemyGlyph;
+    status.encounterAt =
+      (fakeNow - (overrides.encounterSecondsAgo ?? 0)) * 1000;
   }
   if (overrides.wanderSequence) status.wanderSequence = overrides.wanderSequence;
   if (overrides.wanderRowSequence) {
@@ -967,5 +975,75 @@ describe("buddy-status.sh idle wander (resize robustness)", () => {
     const a = nameCol(2, [0, 6], 0);
     const b = nameCol(2, [0, 6], 1);
     expect(a).toBe(b);
+  });
+});
+
+// ─── Idle-RPG encounter render (design-rpg Phase 4) ──────────────────────────
+describe("idle-RPG encounter glyph", () => {
+  const GLYPH = "\u{1F409}"; // 🐉
+
+  test("renders the enemy glyph at gameFeel=full while fresh", () => {
+    const out = stripAnsi(
+      renderStatus({ gameFeel: "full", enemyGlyph: GLYPH, encounterSecondsAgo: 0 }),
+    );
+    expect(out).toContain(GLYPH);
+  });
+
+  test("does NOT render the glyph at subtle (animation is full-only)", () => {
+    const out = stripAnsi(
+      renderStatus({ gameFeel: "subtle", enemyGlyph: GLYPH, encounterSecondsAgo: 0 }),
+    );
+    expect(out).not.toContain(GLYPH);
+  });
+
+  test("a stale encounter (past TTL) does not render", () => {
+    const out = stripAnsi(
+      renderStatus({ gameFeel: "full", enemyGlyph: GLYPH, encounterSecondsAgo: 99 }),
+    );
+    expect(out).not.toContain(GLYPH);
+  });
+
+  test("places the glyph on the eye row (frame middle), not the ears", () => {
+    // A realistic 5-row frame: hat slot, ears, EYES, body, feet — matching
+    // SPECIES_ART layout (eyes on row 2, unlike this file's default fixture).
+    const frame =
+      "   HAT      \n   ears     \n   (EYES)   \n   body     \n   feet     ";
+    const out = stripAnsi(
+      renderStatus({
+        gameFeel: "full",
+        enemyGlyph: GLYPH,
+        encounterSecondsAgo: 0,
+        frames: [frame],
+      }),
+    );
+    const glyphLine = out.split("\n").find((l) => l.includes(GLYPH))!;
+    expect(glyphLine).toContain("EYES"); // on the eye row, not "ears"/"body"
+    expect(glyphLine).not.toContain("ears");
+  });
+
+  test("layout invariant: the glyph only adds to the right margin", () => {
+    // Same status.json otherwise; the only difference is the fresh encounter.
+    const base = {
+      gameFeel: "full" as const,
+      showStats: true,
+      name: "Waffle",
+      level: 11,
+    };
+    const without = stripAnsi(renderStatus(base)).split("\n");
+    const withGlyph = stripAnsi(
+      renderStatus({ ...base, enemyGlyph: GLYPH, encounterSecondsAgo: 0 }),
+    ).split("\n");
+
+    expect(withGlyph.length).toBe(without.length);
+    for (let i = 0; i < without.length; i++) {
+      // Every line is byte-identical EXCEPT the eye row, which must keep the
+      // no-glyph content as a prefix (the glyph is appended rightmost).
+      if (withGlyph[i] === without[i]) continue;
+      expect(withGlyph[i].startsWith(without[i])).toBe(true);
+      expect(withGlyph[i]).toContain(GLYPH);
+    }
+    // Exactly one line changed.
+    const changed = without.filter((l, i) => l !== withGlyph[i]).length;
+    expect(changed).toBe(1);
   });
 });
