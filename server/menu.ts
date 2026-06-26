@@ -1,12 +1,13 @@
 /**
  * Interactive command browser for claude-buddy (`/buddy menu`).
  *
- * Pure: holds the static menu tree and renders one page at a time — a card for
- * the visible header plus a machine-readable `buddy:menu` marker. The assistant
- * turns that marker into an AskUserQuestion and dispatches the pick (see the
- * MENU NAVIGATION directive in index.ts). Mirrors shop.ts's marker pattern one
- * level up: categories instead of items, and a pick can target any buddy tool,
- * a free-text prompt, a shell hint, an orchestration, or another page.
+ * Pure: holds the static menu tree and assembles one envelope at a time — a
+ * visible `display` card plus a machine-readable `buddy:nav` marker carrying a
+ * pre-shaped AskUserQuestion (`ask`) or a single hand-off (`do`). The assistant
+ * prints the card, copies `ask` verbatim, or performs `do` (see the MENU
+ * NAVIGATION directive in index.ts). `resolveSelect` collapses page-drills and
+ * tool-leaves server-side so the assistant copies and echoes rather than
+ * reshaping and branching. See docs/game-feel/menu/design-mechanize.md.
  *
  * AskUserQuestion caps options at 4, so every page holds 2..4 options; deeper
  * surfaces are reached via `kind:"page"` drill-downs. See
@@ -36,6 +37,12 @@ export interface MenuPage {
   id: string;
   /** Becomes the AskUserQuestion question text. */
   title: string;
+  /**
+   * Short chip (≤12 chars) for the AskUserQuestion `header`. Optional: when
+   * absent, `askFor` derives one from `title`. Set explicitly where the derived
+   * chip would read poorly.
+   */
+  header?: string;
   /** INVARIANT: length 2..4 (AskUserQuestion bounds). */
   options: MenuOption[];
 }
@@ -45,6 +52,7 @@ export const MENU: Record<string, MenuPage> = {
   root: {
     id: "root",
     title: "What would you like to do?",
+    header: "Menu",
     options: [
       {
         id: "gear",
@@ -76,6 +84,7 @@ export const MENU: Record<string, MenuPage> = {
   gear: {
     id: "gear",
     title: "Shop & gear — what next?",
+    header: "Shop & Gear",
     options: [
       {
         id: "shop",
@@ -101,6 +110,7 @@ export const MENU: Record<string, MenuPage> = {
   progress: {
     id: "progress",
     title: "Stats & progress",
+    header: "Progress",
     options: [
       {
         id: "stats",
@@ -132,6 +142,7 @@ export const MENU: Record<string, MenuPage> = {
   progress2: {
     id: "progress2",
     title: "More progress",
+    header: "Progress",
     options: [
       {
         id: "mood",
@@ -157,6 +168,7 @@ export const MENU: Record<string, MenuPage> = {
   appearance: {
     id: "appearance",
     title: "Appearance & behavior",
+    header: "Appearance",
     options: [
       {
         id: "theme",
@@ -188,6 +200,7 @@ export const MENU: Record<string, MenuPage> = {
   style: {
     id: "style",
     title: "Style & position",
+    header: "Style",
     options: [
       {
         id: "frame",
@@ -219,6 +232,7 @@ export const MENU: Record<string, MenuPage> = {
   motion: {
     id: "motion",
     title: "Motion & game-feel",
+    header: "Motion",
     options: [
       {
         id: "gamefeel",
@@ -244,6 +258,7 @@ export const MENU: Record<string, MenuPage> = {
   statusbits: {
     id: "statusbits",
     title: "Status-line bits",
+    header: "Status line",
     options: [
       {
         id: "statusline",
@@ -280,6 +295,7 @@ export const MENU: Record<string, MenuPage> = {
   system: {
     id: "system",
     title: "Manage & system",
+    header: "System",
     options: [
       {
         id: "identity",
@@ -311,6 +327,7 @@ export const MENU: Record<string, MenuPage> = {
   identity: {
     id: "identity",
     title: "Identity",
+    header: "Identity",
     options: [
       {
         id: "rename",
@@ -340,6 +357,7 @@ export const MENU: Record<string, MenuPage> = {
   roster: {
     id: "roster",
     title: "Saves & roster",
+    header: "Roster",
     options: [
       {
         id: "save",
@@ -371,6 +389,7 @@ export const MENU: Record<string, MenuPage> = {
   mute: {
     id: "mute",
     title: "Mute / unmute",
+    header: "Mute",
     options: [
       {
         id: "mute",
@@ -390,6 +409,7 @@ export const MENU: Record<string, MenuPage> = {
   system2: {
     id: "system2",
     title: "More system",
+    header: "System",
     options: [
       {
         id: "help",
@@ -419,16 +439,128 @@ export function getMenuPage(id?: string): MenuPage {
 }
 
 /**
- * The hidden, machine-readable marker the assistant turns into an
- * AskUserQuestion (design menu §6). Mirrors shop.ts's `choicesMarker`.
+ * One item of AskUserQuestion's `questions[]`, emitted 1:1 so the assistant
+ * copies it verbatim instead of reshaping the menu's internal shape.
  */
-export function menuMarker(page: MenuPage): string {
-  const payload = {
-    page: page.id,
-    title: page.title,
-    options: page.options,
+export interface AskQuestion {
+  /** = page.title */
+  question: string;
+  /** Short chip, ≤12 chars (AskUserQuestion bound). */
+  header: string;
+  /** Menus are always single-select. */
+  multiSelect: false;
+  options: { label: string; description: string }[];
+}
+
+/**
+ * The one instruction the assistant still performs when a pick can't resolve
+ * server-side. Tool-leaves run in-process (Phase B); only these remain
+ * irreducibly assistant-side: `prompt` (free text), `shell` (user-run),
+ * `sequence` (a SKILL.md orchestration).
+ */
+export type MenuDirective =
+  | { kind: "prompt"; tool: string; arg: string; ask: string }
+  | { kind: "shell"; command: string }
+  | { kind: "sequence"; sequence: "uninstall" };
+
+/** A buddy_menu response, split into a visible half and a machine half. */
+export interface MenuEnvelope {
+  /** Printed verbatim: the page card, or a routed action's short notice. */
+  display: string;
+  /** Present when the next step is a picker. Copy straight into AskUserQuestion. */
+  ask?: AskQuestion;
+  /** Present when the next step needs the assistant. Mutually exclusive with `ask`. */
+  do?: MenuDirective;
+  /** The page these options belong to — echoed back as `page` on the next select. */
+  page: string;
+}
+
+/** What selecting an option resolves to (before envelope assembly). */
+export type SelectResolution =
+  | { kind: "page"; page: MenuPage }
+  | { kind: "tool"; tool: string; args?: Record<string, unknown> }
+  | { kind: "directive"; do: MenuDirective }
+  | { kind: "miss" };
+
+/** Short header chip for a page; derive from the title when not set explicitly. */
+function headerFor(page: MenuPage): string {
+  if (page.header) return page.header;
+  const base = (page.title.split(/[—:]/)[0] || page.title).trim();
+  return base.length <= 12 ? base : base.slice(0, 12).trim();
+}
+
+/** Build the harness-ready question for a page (improvement #2). */
+export function askFor(page: MenuPage): AskQuestion {
+  return {
+    question: page.title,
+    header: headerFor(page),
+    multiSelect: false,
+    options: page.options.map((o) => ({
+      label: o.label,
+      description: o.description,
+    })),
   };
-  return `<!-- buddy:menu ${JSON.stringify(payload)} -->`;
+}
+
+/**
+ * Hidden marker carrying only the machine half of an envelope (improvement #3).
+ * Replaces the old `buddy:menu` marker; the payload is pre-shaped so the
+ * assistant copies `ask`/`do` without reshaping.
+ */
+export function navMarker(env: MenuEnvelope): string {
+  const payload: {
+    page: string;
+    ask?: AskQuestion;
+    do?: MenuDirective;
+  } = { page: env.page };
+  if (env.ask) payload.ask = env.ask;
+  if (env.do) payload.do = env.do;
+  return `<!-- buddy:nav ${JSON.stringify(payload)} -->`;
+}
+
+/**
+ * Resolve a selection on a page to its next step (improvement #1). `select`
+ * matches an option by `id` first, then by `label` (AskUserQuestion hands back
+ * the label). An unmatched select is a `miss` — the caller re-renders the page.
+ */
+export function resolveSelect(
+  page: MenuPage,
+  select: string,
+): SelectResolution {
+  const key = select.trim();
+  const opt =
+    page.options.find((o) => o.id === key) ??
+    page.options.find((o) => o.label === key);
+  if (!opt) return { kind: "miss" };
+  const action = opt.action;
+  switch (action.kind) {
+    case "page": {
+      const next = MENU[action.page];
+      return next ? { kind: "page", page: next } : { kind: "miss" };
+    }
+    case "tool":
+      return { kind: "tool", tool: action.tool, args: action.args };
+    case "prompt":
+      return {
+        kind: "directive",
+        do: {
+          kind: "prompt",
+          tool: action.tool,
+          arg: action.arg,
+          ask: action.ask,
+        },
+      };
+    case "shell":
+      return {
+        kind: "directive",
+        do: { kind: "shell", command: action.command },
+      };
+    case "sequence":
+      return {
+        kind: "directive",
+        do: { kind: "sequence", sequence: action.sequence },
+      };
+  }
 }
 
 /** Markdown card — the visible header shown above the interactive picker. */
