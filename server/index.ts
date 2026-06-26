@@ -97,6 +97,7 @@ import {
   buyableChoices,
   choicesMarker,
 } from "./shop";
+import { getMenuPage, menuMarker, renderMenuCard } from "./menu";
 import {
   getMood,
   shiftMood,
@@ -132,6 +133,22 @@ function getInstructions(): string {
     `present those options to the user with AskUserQuestion (a single-select`,
     `"What would you like to buy?"). On their pick, call buddy_shop buy=<id>; if they`,
     `decline, do nothing. Never offer items that aren't in the choices block.`,
+    ``,
+    `MENU NAVIGATION: When a tool result contains a "buddy:menu" HTML comment, do`,
+    `NOT print it. Parse its options and present them with AskUserQuestion`,
+    `(single-select; use the page "title" as the question, each option's`,
+    `label/description as a choice). Dispatch the user's pick by its action.kind:`,
+    `- page → call buddy_menu page=<action.page> and present the result.`,
+    `- tool → call <action.tool> with action.args. If that result carries its own`,
+    `  buddy:choices or buddy:menu comment, continue the flow (this is how Shop`,
+    `  chains into the buy menu).`,
+    `- prompt → ask the user action.ask, then call <action.tool> with the answer as`,
+    `  <action.arg>.`,
+    `- shell → tell the user to run \`! <action.command>\` themselves.`,
+    `- sequence → run the named orchestration (e.g. "uninstall", per the skill).`,
+    `If the user picks Other and types a buddy command, route it as if typed after`,
+    `/buddy; if they type "back" or "menu", call buddy_menu (root). Never re-present`,
+    `a menu without the user advancing it.`,
     ``,
     `PAIR-PROGRAMMING: When you notice a teachable moment in the code, call buddy_suggest.`,
     `Patterns to watch for:`,
@@ -1248,6 +1265,28 @@ server.tool(
     return text(
       renderLoadoutCard(companion.name, state.equipment, state.inventory),
     );
+  },
+);
+
+// ─── Tool: buddy_menu ─────────────────────────────────────────────────────────
+
+server.tool(
+  "buddy_menu",
+  "Open the interactive buddy command browser. With no argument, returns the top-level menu; pass `page` to fetch a submenu. The result carries a hidden buddy:menu marker — present it as an interactive menu per your instructions, never printing the marker.",
+  {
+    page: z
+      .string()
+      .optional()
+      .describe("Submenu id to open (default: root)"),
+  },
+  async ({ page }) => {
+    const companion = ensureCompanion();
+    const node = getMenuPage(page);
+    const card = renderMenuCard(node, companion.name);
+    incrementEvent("commands_run", 1, activeSlot());
+    return {
+      content: [{ type: "text", text: `${card}\n\n${menuMarker(node)}` }],
+    };
   },
 );
 
