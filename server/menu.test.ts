@@ -7,7 +7,10 @@ import {
   navMarker,
   resolveSelect,
   renderMenuCard,
+  advance,
   type MenuPage,
+  type MenuEnvelope,
+  type RouteResult,
 } from "./menu";
 
 /**
@@ -224,5 +227,74 @@ describe("renderMenuCard", () => {
       expect(card).toContain(opt.label);
     }
     expect(card).toMatchSnapshot();
+  });
+});
+
+describe("advance", () => {
+  test("no select, no page → renders root with ask", () => {
+    const r = advance(undefined, undefined, "Waffle") as MenuEnvelope;
+    expect("route" in r).toBe(false);
+    expect(r.page).toBe("root");
+    expect(r.ask).toBeDefined();
+    expect(r.do).toBeUndefined();
+    expect(r.display).toContain("Waffle");
+  });
+
+  test("no select with page → renders that page with ask", () => {
+    const r = advance("gear", undefined, "Waffle") as MenuEnvelope;
+    expect(r.page).toBe("gear");
+    expect(r.ask).toBeDefined();
+    expect(r.do).toBeUndefined();
+  });
+
+  test("tool-leaf selection → RouteResult, not an envelope", () => {
+    const r = advance("gear", "🛒 Visit the shop", "Waffle") as RouteResult;
+    expect("route" in r).toBe(true);
+    expect(r.route.tool).toBe("buddy_shop");
+  });
+
+  test("tool-leaf selection by id → same RouteResult as by label", () => {
+    const byId = advance("gear", "shop", "W") as RouteResult;
+    const byLabel = advance("gear", "🛒 Visit the shop", "W") as RouteResult;
+    expect(byId).toEqual(byLabel);
+  });
+
+  test("page drill-down → renders next page with ask", () => {
+    const r = advance("root", "🛒 Shop & Gear", "Waffle") as MenuEnvelope;
+    expect("route" in r).toBe(false);
+    expect(r.page).toBe("gear");
+    expect(r.ask).toBeDefined();
+    expect(r.do).toBeUndefined();
+  });
+
+  test("prompt directive → envelope with do (no ask)", () => {
+    const r = advance("statusbits", "⏱️ Frequency", "Waffle") as MenuEnvelope;
+    expect("route" in r).toBe(false);
+    expect(r.do?.kind).toBe("prompt");
+    expect((r.do as { tool: string }).tool).toBe("buddy_frequency");
+    expect(r.ask).toBeUndefined();
+    expect(r.page).toBe("statusbits");
+  });
+
+  test("shell directive → envelope with do kind shell", () => {
+    const r = advance("system2", "🕹️ Pick (terminal TUI)", "Waffle") as MenuEnvelope;
+    expect("route" in r).toBe(false);
+    expect(r.do?.kind).toBe("shell");
+    expect(r.ask).toBeUndefined();
+  });
+
+  test("sequence directive → envelope with do kind sequence", () => {
+    const r = advance("system2", "🧨 Uninstall", "Waffle") as MenuEnvelope;
+    expect("route" in r).toBe(false);
+    expect(r.do?.kind).toBe("sequence");
+    expect(r.ask).toBeUndefined();
+  });
+
+  test("miss (unknown select) → re-renders same page with ask", () => {
+    const r = advance("gear", "not-a-real-option", "Waffle") as MenuEnvelope;
+    expect("route" in r).toBe(false);
+    expect(r.page).toBe("gear");
+    expect(r.ask).toBeDefined();
+    expect(r.do).toBeUndefined();
   });
 });

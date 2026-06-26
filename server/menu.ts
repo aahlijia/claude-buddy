@@ -575,3 +575,55 @@ export function renderMenuCard(page: MenuPage, name: string): string {
   lines.push("_Pick an option, or type any command (or `back`) under Other._");
   return lines.join("\n");
 }
+
+/** Short visible notice for a `do` hand-off (the `display` half). */
+function directiveCard(d: MenuDirective): string {
+  switch (d.kind) {
+    case "prompt":
+      return `_${d.ask}_`;
+    case "shell":
+      return `Run this in your terminal: \`! ${d.command}\``;
+    case "sequence":
+      return `Running the **${d.sequence}** sequence…`;
+  }
+}
+
+/** Returned by `advance` when the resolved action is a tool-leaf. */
+export type RouteResult = { route: { tool: string; args?: Record<string, unknown> } };
+
+/**
+ * Pure decision function for the buddy_menu handler. Given a page id, an
+ * optional selection, and the companion's name, returns either a
+ * `MenuEnvelope` (print and follow) or a `RouteResult` (caller runs the tool
+ * in-process via `runTool`).
+ *
+ * Branch map:
+ *   no select           → render `page` with `ask`
+ *   select → tool       → `RouteResult`
+ *   select → directive  → `MenuEnvelope` with `do`
+ *   select → page       → render next page with `ask`
+ *   select → miss       → re-render same page with `ask`
+ */
+export function advance(
+  page: string | undefined,
+  select: string | undefined,
+  name: string,
+): MenuEnvelope | RouteResult {
+  let node = getMenuPage(page);
+
+  if (select) {
+    const r = resolveSelect(node, select);
+    if (r.kind === "tool") {
+      return { route: { tool: r.tool, args: r.args } };
+    }
+    if (r.kind === "directive") {
+      return { display: directiveCard(r.do), do: r.do, page: node.id };
+    }
+    if (r.kind === "page") {
+      node = r.page;
+    }
+    // miss → fall through, re-render same page
+  }
+
+  return { display: renderMenuCard(node, name), ask: askFor(node), page: node.id };
+}

@@ -100,13 +100,10 @@ import {
   choicesMarker,
 } from "./shop";
 import {
-  getMenuPage,
-  renderMenuCard,
-  askFor,
   navMarker,
-  resolveSelect,
+  advance,
   type MenuEnvelope,
-  type MenuDirective,
+  type RouteResult,
 } from "./menu";
 import {
   getMood,
@@ -1319,18 +1316,6 @@ registerTool(
 
 // ─── Tool: buddy_menu ─────────────────────────────────────────────────────────
 
-/** A short visible notice for a `do` hand-off (the `display` half). */
-function directiveCard(d: MenuDirective): string {
-  switch (d.kind) {
-    case "prompt":
-      return `_${d.ask}_`;
-    case "shell":
-      return `Run this in your terminal: \`! ${d.command}\``;
-    case "sequence":
-      return `Running the **${d.sequence}** sequence…`;
-  }
-}
-
 registerTool(
   "buddy_menu",
   "Open or advance the interactive buddy command browser. No argument → the top-level menu. Pass `page` + `select` to advance: the server resolves the pick and returns the next page or a `do` hand-off. The result carries a hidden buddy:nav marker — follow the MENU NAVIGATION directive; never print the marker.",
@@ -1346,38 +1331,14 @@ registerTool(
   },
   async ({ page, select }) => {
     const companion = ensureCompanion();
-    let node = getMenuPage(page);
     incrementEvent("commands_run", 1, activeSlot());
-
-    const envelope = (
-      env: MenuEnvelope,
-    ): { content: [{ type: "text"; text: string }] } => ({
-      content: [{ type: "text", text: `${env.display}\n\n${navMarker(env)}` }],
-    });
-
-    if (select) {
-      const r = resolveSelect(node, select);
-      // Phase B: tool-leaves run in-process; the target tool's own output
-      // (including any buddy:choices marker) flows straight back to the user.
-      if (r.kind === "tool") {
-        return runTool(r.tool, r.args);
-      }
-      if (r.kind === "directive") {
-        return envelope({
-          display: directiveCard(r.do),
-          do: r.do,
-          page: node.id,
-        });
-      }
-      if (r.kind === "page") node = r.page;
-      // r.kind === "miss" → fall through and re-render the current page.
+    const result: MenuEnvelope | RouteResult = advance(page, select, companion.name);
+    if ("route" in result) {
+      return runTool(result.route.tool, result.route.args);
     }
-
-    return envelope({
-      display: renderMenuCard(node, companion.name),
-      ask: askFor(node),
-      page: node.id,
-    });
+    return {
+      content: [{ type: "text", text: `${result.display}\n\n${navMarker(result)}` }],
+    };
   },
 );
 
