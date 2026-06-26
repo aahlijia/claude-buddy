@@ -97,12 +97,13 @@ import {
   shopStateOf,
   renderShopCard,
   buyableChoices,
-  choicesMarker,
+  shopAsk,
 } from "./shop";
 import {
   navMarker,
   advance,
   type MenuEnvelope,
+  type NavAsk,
   type RouteResult,
 } from "./menu";
 import {
@@ -142,21 +143,14 @@ function getInstructions(): string {
     `with a short in-character response (surprise, recognition, dry wit — fits the personality).`,
     `Display the tool result verbatim. This is the only time to call buddy_react proactively.`,
     ``,
-    `SHOP MENUS: When a buddy_shop result contains a "buddy:choices" HTML comment,`,
-    `present those options to the user with AskUserQuestion (a single-select`,
-    `"What would you like to buy?"). On their pick, call buddy_shop buy=<id>; if they`,
-    `decline, do nothing. Never offer items that aren't in the choices block.`,
-    ``,
-    `MENU NAVIGATION: buddy_menu returns either a routed tool's normal output, or`,
-    `a visible card followed by a hidden "buddy:nav" marker. If there is NO`,
-    `buddy:nav marker, the result is a tool's output — print it verbatim (a`,
-    `buddy:choices marker, if present, follows the SHOP MENUS rule). Otherwise`,
-    `print everything before the marker verbatim, NEVER print the marker, and act`,
-    `on its JSON — do not reshape it:`,
+    `MENU NAVIGATION: buddy_menu (and tools routed from it) may return a visible`,
+    `card followed by a hidden "buddy:nav" marker. If there is NO buddy:nav marker,`,
+    `print the result verbatim. Otherwise print everything before the marker`,
+    `verbatim, NEVER print the marker, and act on its JSON — do not reshape it:`,
     `- If it has "ask": call AskUserQuestion with that one object as its single`,
     `  question (questions: [ask]) — it is already complete; do not add, drop, or`,
-    `  rename fields. On the pick, call buddy_menu with page=<marker.page> and`,
-    `  select=<the chosen option's label>. Nothing else.`,
+    `  rename fields. On pick, call ask.then.tool with ask.then.args merged with`,
+    `  { [ask.then.pick_arg]: option.value ?? option.label }. Nothing else.`,
     `- If it has "do": perform exactly that one instruction. prompt → ask the user`,
     `  do.ask, then call do.tool with the answer as do.arg. shell → tell the user`,
     `  to run \`! <do.command>\` themselves. sequence → run the named orchestration`,
@@ -1107,6 +1101,24 @@ registerTool(
 
 // ─── Tool: buddy_upgrades ─────────────────────────────────────────────────────
 
+/** Build a NavAsk for affordable upgrades (capped at 4, AskUserQuestion bound). */
+function upgradesAsk(
+  choices: Array<{ id: string; label: string; description: string }>,
+): NavAsk | undefined {
+  if (choices.length === 0) return undefined;
+  return {
+    question: "Which upgrade would you like to buy?",
+    header: "Buy unlock",
+    multiSelect: false,
+    options: choices.slice(0, 4).map((c) => ({
+      label: c.label,
+      description: c.description,
+      value: c.id,
+    })),
+    then: { tool: "buddy_upgrades", args: {}, pick_arg: "buy" },
+  };
+}
+
 registerTool(
   "buddy_upgrades",
   "Spend skill points earned by leveling up. With no argument, lists every unlock (owned / affordable / locked) and your point balance. Use `buy` to purchase an unlock, `refund` to reclaim one (only while respec is open, below level 10), `equipTitle` to wear a prestige title, or `ascend` (only at max level) to reset to level 1 for a permanent XP multiplier and access to the prestige-exclusive catalog \u2014 all owned unlocks and titles are kept.",
@@ -1240,7 +1252,27 @@ registerTool(
       );
     }
 
-    return text(lines.join("\n"));
+    const affordableChoices = catalog
+      .filter(
+        (i) =>
+          !owned.has(i.id) &&
+          state.level >= i.level &&
+          (!i.prestigeLevel || state.prestigeLevel >= i.prestigeLevel) &&
+          avail >= i.cost,
+      )
+      .map((i) => ({
+        id: i.id,
+        label: `${i.cost} pt \u00b7 ${i.label}`,
+        description: `Costs ${i.cost} skill point${i.cost !== 1 ? "s" : ""}`,
+      }));
+
+    const card = lines.join("\n");
+    const ask = upgradesAsk(affordableChoices);
+    if (ask) {
+      const env: MenuEnvelope = { display: card, ask };
+      return text(`${env.display}\n\n${navMarker(env)}`);
+    }
+    return text(card);
   },
 );
 
@@ -1359,14 +1391,16 @@ registerTool(
       return text(res.message);
     }
 
-    // No action — render the shop with the interactive choices marker.
+    // No action — render the shop with an interactive nav ask when items are buyable.
     const state = getXpState();
     const avail = availablePoints(state);
     const rows = shopListing(shopStateOf(state, avail));
     const card = renderShopCard(companion.name, rows, avail);
-    const marker = choicesMarker(buyableChoices(rows));
+    const ask = shopAsk(buyableChoices(rows));
     incrementEvent("commands_run", 1, activeSlot());
-    return text(marker ? `${card}\n\n${marker}` : card);
+    if (!ask) return text(card);
+    const env: MenuEnvelope = { display: card, ask };
+    return text(`${env.display}\n\n${navMarker(env)}`);
   },
 );
 

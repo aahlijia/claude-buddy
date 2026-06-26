@@ -10,6 +10,7 @@ import {
   advance,
   type MenuPage,
   type MenuEnvelope,
+  type NavAsk,
   type RouteResult,
 } from "./menu";
 import { MENU_TOOLS } from "./registry";
@@ -101,23 +102,29 @@ describe("getMenuPage", () => {
 });
 
 describe("askFor", () => {
-  test("emits an AskUserQuestion-ready shape with no action/id leakage", () => {
+  test("emits a NavAsk with no action/id leakage in options", () => {
     for (const page of PAGES) {
       const ask = askFor(page);
       expect(ask.question).toBe(page.title);
       expect(ask.multiSelect).toBe(false);
       expect(ask.header.length).toBeGreaterThan(0);
       expect(ask.header.length).toBeLessThanOrEqual(12);
+      // Options carry only label + description — no value, id, or action leakage.
       expect(ask.options).toEqual(
-        page.options.map((o) => ({
-          label: o.label,
-          description: o.description,
-        })),
+        page.options.map((o) => ({ label: o.label, description: o.description })),
       );
-      // No internal fields leak into the harness payload.
       for (const o of ask.options) {
         expect(Object.keys(o).sort()).toEqual(["description", "label"]);
       }
+    }
+  });
+
+  test("then routes back to buddy_menu with the page id", () => {
+    for (const page of PAGES) {
+      const ask = askFor(page);
+      expect(ask.then.tool).toBe("buddy_menu");
+      expect(ask.then.pick_arg).toBe("select");
+      expect(ask.then.args?.page).toBe(page.id);
     }
   });
 
@@ -133,31 +140,28 @@ describe("askFor", () => {
 });
 
 describe("navMarker", () => {
-  test("round-trips an ask envelope and omits do", () => {
-    const marker = navMarker({
-      display: "x",
-      ask: askFor(MENU.root),
-      page: "root",
-    });
+  test("round-trips an ask envelope — no top-level page, continuation in ask.then", () => {
+    const ask = askFor(MENU.root);
+    const marker = navMarker({ display: "x", ask });
     const match = marker.match(/^<!-- buddy:nav (.*) -->$/);
     expect(match).not.toBeNull();
     const payload = JSON.parse(match![1]);
-    expect(payload).toEqual({ page: "root", ask: askFor(MENU.root) });
+    expect(payload).toEqual({ ask });
     expect("do" in payload).toBe(false);
+    expect("page" in payload).toBe(false);
+    // Page lives in ask.then.args, not at the top level.
+    expect((payload.ask as NavAsk).then.args?.page).toBe("root");
   });
 
-  test("round-trips a do envelope and omits ask", () => {
+  test("round-trips a do envelope and omits ask and page", () => {
     const marker = navMarker({
       display: "x",
       do: { kind: "shell", command: "bun run pick" },
-      page: "system2",
     });
     const payload = JSON.parse(marker.match(/^<!-- buddy:nav (.*) -->$/)![1]);
-    expect(payload).toEqual({
-      page: "system2",
-      do: { kind: "shell", command: "bun run pick" },
-    });
+    expect(payload).toEqual({ do: { kind: "shell", command: "bun run pick" } });
     expect("ask" in payload).toBe(false);
+    expect("page" in payload).toBe(false);
   });
 });
 
@@ -242,18 +246,18 @@ describe("MENU security invariants", () => {
 });
 
 describe("advance", () => {
-  test("no select, no page → renders root with ask", () => {
+  test("no select, no page → renders root (ask.then.args.page=root)", () => {
     const r = advance(undefined, undefined, "Waffle") as MenuEnvelope;
     expect("route" in r).toBe(false);
-    expect(r.page).toBe("root");
+    expect(r.ask?.then.args?.page).toBe("root");
     expect(r.ask).toBeDefined();
     expect(r.do).toBeUndefined();
     expect(r.display).toContain("Waffle");
   });
 
-  test("no select with page → renders that page with ask", () => {
+  test("no select with page → renders that page (ask.then.args.page)", () => {
     const r = advance("gear", undefined, "Waffle") as MenuEnvelope;
-    expect(r.page).toBe("gear");
+    expect(r.ask?.then.args?.page).toBe("gear");
     expect(r.ask).toBeDefined();
     expect(r.do).toBeUndefined();
   });
@@ -270,10 +274,10 @@ describe("advance", () => {
     expect(byId).toEqual(byLabel);
   });
 
-  test("page drill-down → renders next page with ask", () => {
+  test("page drill-down → renders next page (ask.then.args.page)", () => {
     const r = advance("root", "🛒 Shop & Gear", "Waffle") as MenuEnvelope;
     expect("route" in r).toBe(false);
-    expect(r.page).toBe("gear");
+    expect(r.ask?.then.args?.page).toBe("gear");
     expect(r.ask).toBeDefined();
     expect(r.do).toBeUndefined();
   });
@@ -284,7 +288,6 @@ describe("advance", () => {
     expect(r.do?.kind).toBe("prompt");
     expect((r.do as { tool: string }).tool).toBe("buddy_frequency");
     expect(r.ask).toBeUndefined();
-    expect(r.page).toBe("statusbits");
   });
 
   test("shell directive → envelope with do kind shell", () => {
@@ -301,10 +304,10 @@ describe("advance", () => {
     expect(r.ask).toBeUndefined();
   });
 
-  test("miss (unknown select) → re-renders same page with ask", () => {
+  test("miss (unknown select) → re-renders same page (ask.then.args.page)", () => {
     const r = advance("gear", "not-a-real-option", "Waffle") as MenuEnvelope;
     expect("route" in r).toBe(false);
-    expect(r.page).toBe("gear");
+    expect(r.ask?.then.args?.page).toBe("gear");
     expect(r.ask).toBeDefined();
     expect(r.do).toBeUndefined();
   });

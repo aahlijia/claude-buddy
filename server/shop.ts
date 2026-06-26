@@ -11,6 +11,7 @@
  */
 
 import type { XpState } from "./xp";
+import type { NavAsk } from "./menu";
 import {
   ITEMS,
   SLOTS,
@@ -157,11 +158,22 @@ export function buyableChoices(rows: readonly ShopRow[]): ShopChoice[] {
 }
 
 /**
- * The hidden, machine-readable marker the assistant turns into an
- * AskUserQuestion (design-rpg-phase2 §7). Mirrors the project's existing
- * `<!-- buddy: ... -->` side-channel. Empty string when nothing is buyable.
+ * Build the NavAsk for a shop browse: affordable items as interactive options.
+ * `value` carries the ItemId (buy arg); `label` is the display string.
+ * Returns undefined when nothing is affordable. Capped at 4 (AskUserQuestion
+ * bound); the rendered shop card above the marker lists the full catalog.
  */
-export function choicesMarker(choices: readonly ShopChoice[]): string {
-  if (choices.length === 0) return "";
-  return `<!-- buddy:choices ${JSON.stringify(choices)} -->`;
+export function shopAsk(choices: readonly ShopChoice[]): NavAsk | undefined {
+  if (choices.length === 0) return undefined;
+  return {
+    question: "What would you like to buy?",
+    header: "Buy",
+    multiSelect: false,
+    options: choices.slice(0, 4).map((c) => ({
+      label: c.label,
+      description: c.description,
+      value: c.id,
+    })),
+    then: { tool: "buddy_shop", args: {}, pick_arg: "buy" },
+  };
 }

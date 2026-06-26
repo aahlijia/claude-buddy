@@ -342,11 +342,12 @@ stay. New ones for the mechanization:
 
 ## 11. Settled decisions (all resolved)
 
-- **OQ-1 — fold the shop into `buddy:nav`? → FUTURE implementation, not this
-  design.** The shop's `buddy:choices` flow already works and is independently
-  routed; routing *into* it (§10) is enough for now. Unifying the two markers
-  under one envelope is a deferred cleanup — noted for a later phase, explicitly
-  out of scope here.
+- **OQ-1 — fold the shop into `buddy:nav`? → IMPLEMENTED.** See
+  [`design-oq1.md`](./design-oq1.md) for the design and
+  [`testing-oq1.md`](./testing-oq1.md) for the testing guide. `AskQuestion`
+  renamed to `NavAsk` with a `then: NavContinuation` field; `choicesMarker`
+  retired; SHOP MENUS removed; MENU NAVIGATION unified. `buddy_upgrades` browse
+  gained an interactive picker in the same pass.
 - **OQ-2 — should `select` accept id, label, or both? → BOTH, label preferred.**
   Label-addressing removes the assistant's label→id lookup (§4); id-matching
   keeps "Other → typed command" robust. Cost is the §9.4 label-uniqueness

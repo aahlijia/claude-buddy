@@ -438,18 +438,37 @@ export function getMenuPage(id?: string): MenuPage {
   return (id && MENU[id]) || MENU.root;
 }
 
+/** Option in a nav-ask picker; `value` is the pick arg, defaults to `label` when absent. */
+export interface NavOption {
+  label: string;
+  description: string;
+  /** The pick_arg value to pass on selection. Defaults to `label` when absent. */
+  value?: string;
+}
+
+/** What to call when the user makes a pick — always present on a NavAsk. */
+export interface NavContinuation {
+  tool: string;
+  args?: Record<string, unknown>;
+  pick_arg: string;
+}
+
 /**
- * One item of AskUserQuestion's `questions[]`, emitted 1:1 so the assistant
- * copies it verbatim instead of reshaping the menu's internal shape.
+ * A pre-shaped AskUserQuestion item + its continuation. The assistant copies
+ * question/header/multiSelect/options into AskUserQuestion verbatim, then
+ * executes `then` on pick: call `then.tool({ ...then.args, [then.pick_arg]:
+ * option.value ?? option.label })`.
  */
-export interface AskQuestion {
-  /** = page.title */
+export interface NavAsk {
+  /** = page.title or a custom question string. */
   question: string;
   /** Short chip, ≤12 chars (AskUserQuestion bound). */
   header: string;
-  /** Menus are always single-select. */
+  /** Pickers are always single-select. */
   multiSelect: false;
-  options: { label: string; description: string }[];
+  options: NavOption[];
+  /** Always present — the model executes this, not a separate directive. */
+  then: NavContinuation;
 }
 
 /**
@@ -463,16 +482,17 @@ export type MenuDirective =
   | { kind: "shell"; command: string }
   | { kind: "sequence"; sequence: "uninstall" };
 
-/** A buddy_menu response, split into a visible half and a machine half. */
+/** A buddy_menu (or routed tool) response, split into a visible half and a machine half. */
 export interface MenuEnvelope {
   /** Printed verbatim: the page card, or a routed action's short notice. */
   display: string;
-  /** Present when the next step is a picker. Copy straight into AskUserQuestion. */
-  ask?: AskQuestion;
+  /**
+   * Present when the next step is a picker. Copy question/header/multiSelect/options
+   * verbatim into AskUserQuestion; on pick, execute `then`. Mutually exclusive with `do`.
+   */
+  ask?: NavAsk;
   /** Present when the next step needs the assistant. Mutually exclusive with `ask`. */
   do?: MenuDirective;
-  /** The page these options belong to — echoed back as `page` on the next select. */
-  page: string;
 }
 
 /** What selecting an option resolves to (before envelope assembly). */
@@ -489,8 +509,8 @@ function headerFor(page: MenuPage): string {
   return base.length <= 12 ? base : base.slice(0, 12).trim();
 }
 
-/** Build the harness-ready question for a page (improvement #2). */
-export function askFor(page: MenuPage): AskQuestion {
+/** Build the harness-ready NavAsk for a menu page. */
+export function askFor(page: MenuPage): NavAsk {
   return {
     question: page.title,
     header: headerFor(page),
@@ -499,20 +519,17 @@ export function askFor(page: MenuPage): AskQuestion {
       label: o.label,
       description: o.description,
     })),
+    then: { tool: "buddy_menu", args: { page: page.id }, pick_arg: "select" },
   };
 }
 
 /**
- * Hidden marker carrying only the machine half of an envelope (improvement #3).
- * Replaces the old `buddy:menu` marker; the payload is pre-shaped so the
- * assistant copies `ask`/`do` without reshaping.
+ * Hidden marker carrying the machine half of an envelope. The payload is
+ * pre-shaped so the assistant copies `ask`/`do` without reshaping. The
+ * continuation tool and args live inside `ask.then` — no top-level `page`.
  */
 export function navMarker(env: MenuEnvelope): string {
-  const payload: {
-    page: string;
-    ask?: AskQuestion;
-    do?: MenuDirective;
-  } = { page: env.page };
+  const payload: { ask?: NavAsk; do?: MenuDirective } = {};
   if (env.ask) payload.ask = env.ask;
   if (env.do) payload.do = env.do;
   return `<!-- buddy:nav ${JSON.stringify(payload)} -->`;
@@ -617,7 +634,7 @@ export function advance(
       return { route: { tool: r.tool, args: r.args } };
     }
     if (r.kind === "directive") {
-      return { display: directiveCard(r.do), do: r.do, page: node.id };
+      return { display: directiveCard(r.do), do: r.do };
     }
     if (r.kind === "page") {
       node = r.page;
@@ -625,5 +642,5 @@ export function advance(
     // miss → fall through, re-render same page
   }
 
-  return { display: renderMenuCard(node, name), ask: askFor(node), page: node.id };
+  return { display: renderMenuCard(node, name), ask: askFor(node) };
 }

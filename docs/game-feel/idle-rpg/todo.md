@@ -17,8 +17,3 @@
 ## Docs
 - update readme
 - organize docs/
-
-
-
-/sc:design Phase B
-/sc: implement Phase B

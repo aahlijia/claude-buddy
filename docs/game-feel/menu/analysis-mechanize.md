@@ -103,6 +103,16 @@ importable in tests).
 
 ---
 
+## Next phase — implemented
+
+OQ-1 — fold `buddy:choices` into `buddy:nav` — is designed in
+[`design-oq1.md`](./design-oq1.md) and **fully implemented** (2026-06-26).
+Single `buddy:nav` channel, unified MENU NAVIGATION directive, SHOP MENUS
+removed. `buddy_upgrades` gained an interactive browse flow in the same pass.
+See [`testing-oq1.md`](./testing-oq1.md) for the user testing guide.
+
+---
+
 ## Roadmap — all items closed
 
 1. ✅ **Extract `advance()` into `menu.ts`** — 9 new branch tests, handler
