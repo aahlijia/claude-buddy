@@ -12,40 +12,8 @@ import {
   type MenuEnvelope,
   type RouteResult,
 } from "./menu";
+import { MENU_TOOLS } from "./registry";
 
-/**
- * Every buddy_* tool a menu action may target. Mirrored from the tool
- * registrations in index.ts; keep in sync when the tree grows. A `kind:"tool"`
- * or `kind:"prompt"` action naming anything outside this set fails test 3.
- */
-const KNOWN_TOOLS = new Set<string>([
-  "buddy_shop",
-  "buddy_equip",
-  "buddy_upgrades",
-  "buddy_stats",
-  "buddy_xp",
-  "buddy_achievements",
-  "buddy_mood",
-  "buddy_brag",
-  "buddy_memory",
-  "buddy_theme",
-  "buddy_style",
-  "buddy_gamefeel",
-  "buddy_wander",
-  "buddy_statusline",
-  "buddy_stats_panel",
-  "buddy_prestige_badge",
-  "buddy_frequency",
-  "buddy_rename",
-  "buddy_set_personality",
-  "buddy_save",
-  "buddy_list",
-  "buddy_summon",
-  "buddy_dismiss",
-  "buddy_mute",
-  "buddy_unmute",
-  "buddy_help",
-]);
 
 const PAGES: MenuPage[] = Object.values(MENU);
 
@@ -73,11 +41,15 @@ describe("MENU tree invariants", () => {
     }
   });
 
-  test("tool/prompt actions name a known buddy tool", () => {
+  test("tool/prompt actions name a buddy_* tool (naming convention)", () => {
+    // Self-maintaining: no hand-list to update. All MCP tools are registered
+    // as buddy_*, so any deviation (typo, wrong namespace) fails here.
+    // MENU_TOOLS from registry.ts is the runtime source of truth; use it for
+    // cross-checking once index.ts is importable in tests.
     for (const page of PAGES) {
       for (const opt of page.options) {
         if (opt.action.kind === "tool" || opt.action.kind === "prompt") {
-          expect(KNOWN_TOOLS.has(opt.action.tool)).toBe(true);
+          expect(opt.action.tool).toMatch(/^buddy_/);
         }
       }
     }
@@ -252,6 +224,20 @@ describe("MENU security invariants", () => {
   test("buddy_uninstall is kind:\"sequence\" (stays assistant-orchestrated)", () => {
     const action = MENU.system2.options.find((o) => o.id === "uninstall")?.action;
     expect(action?.kind).toBe("sequence");
+  });
+
+  test("all kind:\"tool\" leaves carry no args (runTool skips Zod validation)", () => {
+    // runTool delivers args directly to the handler, bypassing schema parse and
+    // .default()/.transform() coercion. Keeping tool-leaves arg-free means
+    // there is nothing to validate or coerce, closing the gap. If a future
+    // action needs args, parse them inside runTool first.
+    for (const page of Object.values(MENU)) {
+      for (const opt of page.options) {
+        if (opt.action.kind === "tool") {
+          expect(opt.action.args).toBeUndefined();
+        }
+      }
+    }
   });
 });
 

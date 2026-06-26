@@ -106,6 +106,12 @@ import {
   type RouteResult,
 } from "./menu";
 import {
+  MENU_TOOLS,
+  runTool,
+  type ToolResult,
+  type CapturedHandler,
+} from "./registry";
+import {
   getMood,
   shiftMood,
   MOOD_NAMES,
@@ -188,18 +194,9 @@ const server = new McpServer(
 );
 
 // ─── Tool registry: in-process dispatch for buddy_menu (Phase B) ─────────────
-//
-// buddy_menu resolves a tool-leaf by running the target tool's handler directly
-// (no second assistant turn). registerTool wraps server.tool, registering the
-// tool normally AND capturing its handler here so runTool can invoke it. The
-// captured handler is the *same reference* passed to server.tool, so output is
-// byte-identical to calling the tool by name. See
-// docs/game-feel/menu/design-mechanize.md §6.
-
-type ToolResult = { content: Array<{ type: "text"; text: string }> };
-type CapturedHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
-
-const MENU_TOOLS: Record<string, CapturedHandler> = {};
+// Types, MENU_TOOLS dict, and runTool live in registry.ts (importable without
+// starting the server). registerTool stays here: it closes over `server` and
+// populates the shared MENU_TOOLS by reference.
 
 /** Like `server.tool`, but also captures the handler for in-process routing. */
 function registerTool<Args extends ZodRawShapeCompat>(
@@ -210,18 +207,6 @@ function registerTool<Args extends ZodRawShapeCompat>(
 ): void {
   server.tool(name, description, schema, handler);
   MENU_TOOLS[name] = handler as unknown as CapturedHandler;
-}
-
-/** Invoke a registered tool in-process. Unknown names degrade gracefully. */
-async function runTool(
-  tool: string,
-  args?: Record<string, unknown>,
-): Promise<ToolResult> {
-  const handler = MENU_TOOLS[tool];
-  if (!handler) {
-    return { content: [{ type: "text", text: `Unknown tool: ${tool}` }] };
-  }
-  return handler(args ?? {});
 }
 
 // ─── Helper: ensure companion exists ────────────────────────────────────────
