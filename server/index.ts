@@ -467,6 +467,8 @@ server.tool(
       "  /buddy achievements  Show achievement badges",
       "  /buddy xp         Show XP, level, and unlocked reactions/upgrades",
       "  /buddy upgrades    List and apply level-up upgrades",
+      "  /buddy shop       Visit the merchant — buy gear with skill points",
+      "  /buddy equip      Manage weapon / headgear / trinket loadout",
       "  /buddy summon     Summon a saved buddy (omit slot for random)",
       "  /buddy save       Save current buddy to a named slot",
       "  /buddy list       List all saved buddies",
@@ -1183,7 +1185,7 @@ server.tool(
       lines.push(`${status} \u00b7 ${i.label}  \`${i.id}\``);
     }
     lines.push("");
-    lines.push("Buy with `buddy_upgrades buy=<id>`.");
+    lines.push("Buy with `buddy_upgrades buy=<id>`. Gear? Visit the merchant with `buddy_shop`.");
     if (state.level >= MAX_LEVEL && state.prestigeLevel < PRESTIGE_MAX) {
       lines.push(
         "\u2728 Max level reached \u2014 `buddy_upgrades ascend=true` to ascend (keeps everything, resets to Lvl 1 for a permanent multiplier).",
