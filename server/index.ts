@@ -97,17 +97,21 @@ import {
   shopStateOf,
   renderShopCard,
   buyableChoices,
-  choicesMarker,
+  shopAsk,
 } from "./shop";
 import {
-  getMenuPage,
-  renderMenuCard,
-  askFor,
   navMarker,
-  resolveSelect,
+  advance,
   type MenuEnvelope,
-  type MenuDirective,
+  type NavAsk,
+  type RouteResult,
 } from "./menu";
+import {
+  MENU_TOOLS,
+  runTool,
+  type ToolResult,
+  type CapturedHandler,
+} from "./registry";
 import {
   getMood,
   shiftMood,
@@ -139,21 +143,14 @@ function getInstructions(): string {
     `with a short in-character response (surprise, recognition, dry wit — fits the personality).`,
     `Display the tool result verbatim. This is the only time to call buddy_react proactively.`,
     ``,
-    `SHOP MENUS: When a buddy_shop result contains a "buddy:choices" HTML comment,`,
-    `present those options to the user with AskUserQuestion (a single-select`,
-    `"What would you like to buy?"). On their pick, call buddy_shop buy=<id>; if they`,
-    `decline, do nothing. Never offer items that aren't in the choices block.`,
-    ``,
-    `MENU NAVIGATION: buddy_menu returns either a routed tool's normal output, or`,
-    `a visible card followed by a hidden "buddy:nav" marker. If there is NO`,
-    `buddy:nav marker, the result is a tool's output — print it verbatim (a`,
-    `buddy:choices marker, if present, follows the SHOP MENUS rule). Otherwise`,
-    `print everything before the marker verbatim, NEVER print the marker, and act`,
-    `on its JSON — do not reshape it:`,
+    `MENU NAVIGATION: buddy_menu (and tools routed from it) may return a visible`,
+    `card followed by a hidden "buddy:nav" marker. If there is NO buddy:nav marker,`,
+    `print the result verbatim. Otherwise print everything before the marker`,
+    `verbatim, NEVER print the marker, and act on its JSON — do not reshape it:`,
     `- If it has "ask": call AskUserQuestion with that one object as its single`,
     `  question (questions: [ask]) — it is already complete; do not add, drop, or`,
-    `  rename fields. On the pick, call buddy_menu with page=<marker.page> and`,
-    `  select=<the chosen option's label>. Nothing else.`,
+    `  rename fields. On pick, call ask.then.tool with ask.then.args merged with`,
+    `  { [ask.then.pick_arg]: option.value ?? option.label }. Nothing else.`,
     `- If it has "do": perform exactly that one instruction. prompt → ask the user`,
     `  do.ask, then call do.tool with the answer as do.arg. shell → tell the user`,
     `  to run \`! <do.command>\` themselves. sequence → run the named orchestration`,
@@ -191,18 +188,9 @@ const server = new McpServer(
 );
 
 // ─── Tool registry: in-process dispatch for buddy_menu (Phase B) ─────────────
-//
-// buddy_menu resolves a tool-leaf by running the target tool's handler directly
-// (no second assistant turn). registerTool wraps server.tool, registering the
-// tool normally AND capturing its handler here so runTool can invoke it. The
-// captured handler is the *same reference* passed to server.tool, so output is
-// byte-identical to calling the tool by name. See
-// docs/game-feel/menu/design-mechanize.md §6.
-
-type ToolResult = { content: Array<{ type: "text"; text: string }> };
-type CapturedHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
-
-const MENU_TOOLS: Record<string, CapturedHandler> = {};
+// Types, MENU_TOOLS dict, and runTool live in registry.ts (importable without
+// starting the server). registerTool stays here: it closes over `server` and
+// populates the shared MENU_TOOLS by reference.
 
 /** Like `server.tool`, but also captures the handler for in-process routing. */
 function registerTool<Args extends ZodRawShapeCompat>(
@@ -213,18 +201,6 @@ function registerTool<Args extends ZodRawShapeCompat>(
 ): void {
   server.tool(name, description, schema, handler);
   MENU_TOOLS[name] = handler as unknown as CapturedHandler;
-}
-
-/** Invoke a registered tool in-process. Unknown names degrade gracefully. */
-async function runTool(
-  tool: string,
-  args?: Record<string, unknown>,
-): Promise<ToolResult> {
-  const handler = MENU_TOOLS[tool];
-  if (!handler) {
-    return { content: [{ type: "text", text: `Unknown tool: ${tool}` }] };
-  }
-  return handler(args ?? {});
 }
 
 // ─── Helper: ensure companion exists ────────────────────────────────────────
@@ -550,7 +526,7 @@ registerTool(
       "  /buddy statusline Enable or disable buddy in the status line",
       "  /buddy theme     Set color theme: dark (bright) or light (dark colors)",
       "  /buddy gamefeel  Animation intensity: off, subtle, or full (default subtle)",
-      "  /buddy wander    Toggle the idle status-line amble (on/off/hop/wide/bubble)",
+      "  /buddy wander    Toggle the idle status-line amble (on/off/hop)",
       "",
       "  Motion feels distracting? Turn off the amble with /buddy wander off, or",
       "  quiet the animations with /buddy gamefeel subtle (or off for silence).",
@@ -919,8 +895,6 @@ function wanderStateLine(cfg: BuddyConfig): string {
   const flags = [
     `wander ${cfg.wanderEnabled ? "on" : "off"}`,
     `hop ${cfg.wanderHop ? "on" : "off"}`,
-    `wide ${cfg.wanderWide ? "on" : "off"}`,
-    `bubble ${cfg.wanderBubble ? "on" : "off"}`,
   ].join(", ");
   let note = "";
   if (cfg.wanderEnabled && effectiveGameFeel() !== "full") {
@@ -931,7 +905,7 @@ function wanderStateLine(cfg: BuddyConfig): string {
 
 registerTool(
   "buddy_wander",
-  "Control the buddy's idle wander — the gentle amble back and forth on the status line while it's idle. `enabled` toggles the whole walk (default on); `hop` adds a small vertical bob (costs one status-line row, default off); `wide` opens a longer two-sided corridor (default off); `bubble` makes the speech bubble travel with the buddy so the connector stays attached, instead of the bubble staying pinned (default off). Omit all args to report the current settings. Backs /buddy wander. Read live — no restart needed. The walk only animates when game-feel intensity is 'full'.",
+  "Control the buddy's idle wander — the gentle amble back and forth on the status line while it's idle. `enabled` toggles the whole walk (default on); `hop` adds a small vertical bob (costs one status-line row, default off). The buddy free-roams the full line and the speech bubble travels with it. Omit all args to report the current settings. Backs /buddy wander. Read live — no restart needed. The walk only animates when game-feel intensity is 'full'.",
   {
     enabled: z
       .boolean()
@@ -941,25 +915,10 @@ registerTool(
       .boolean()
       .optional()
       .describe("Add a vertical hop arc (costs one row). Omit to leave unchanged."),
-    wide: z
-      .boolean()
-      .optional()
-      .describe("Use the wide corridor. Omit to leave unchanged."),
-    bubble: z
-      .boolean()
-      .optional()
-      .describe(
-        "Make the speech bubble travel with the buddy (connector stays attached). Omit to leave unchanged.",
-      ),
   },
-  async ({ enabled, hop, wide, bubble }) => {
+  async ({ enabled, hop }) => {
     ensureCompanion();
-    if (
-      enabled === undefined &&
-      hop === undefined &&
-      wide === undefined &&
-      bubble === undefined
-    ) {
+    if (enabled === undefined && hop === undefined) {
       return {
         content: [{ type: "text", text: wanderStateLine(loadConfig()) }],
       };
@@ -967,8 +926,6 @@ registerTool(
     const patch: Partial<BuddyConfig> = {};
     if (enabled !== undefined) patch.wanderEnabled = enabled;
     if (hop !== undefined) patch.wanderHop = hop;
-    if (wide !== undefined) patch.wanderWide = wide;
-    if (bubble !== undefined) patch.wanderBubble = bubble;
     saveConfig(patch);
     return {
       content: [{ type: "text", text: wanderStateLine(loadConfig()) }],
@@ -1125,6 +1082,24 @@ registerTool(
 
 // ─── Tool: buddy_upgrades ─────────────────────────────────────────────────────
 
+/** Build a NavAsk for affordable upgrades (capped at 4, AskUserQuestion bound). */
+function upgradesAsk(
+  choices: Array<{ id: string; label: string; description: string }>,
+): NavAsk | undefined {
+  if (choices.length === 0) return undefined;
+  return {
+    question: "Which upgrade would you like to buy?",
+    header: "Buy unlock",
+    multiSelect: false,
+    options: choices.slice(0, 4).map((c) => ({
+      label: c.label,
+      description: c.description,
+      value: c.id,
+    })),
+    then: { tool: "buddy_upgrades", args: {}, pick_arg: "buy" },
+  };
+}
+
 registerTool(
   "buddy_upgrades",
   "Spend skill points earned by leveling up. With no argument, lists every unlock (owned / affordable / locked) and your point balance. Use `buy` to purchase an unlock, `refund` to reclaim one (only while respec is open, below level 10), `equipTitle` to wear a prestige title, or `ascend` (only at max level) to reset to level 1 for a permanent XP multiplier and access to the prestige-exclusive catalog \u2014 all owned unlocks and titles are kept.",
@@ -1258,7 +1233,27 @@ registerTool(
       );
     }
 
-    return text(lines.join("\n"));
+    const affordableChoices = catalog
+      .filter(
+        (i) =>
+          !owned.has(i.id) &&
+          state.level >= i.level &&
+          (!i.prestigeLevel || state.prestigeLevel >= i.prestigeLevel) &&
+          avail >= i.cost,
+      )
+      .map((i) => ({
+        id: i.id,
+        label: `${i.cost} pt \u00b7 ${i.label}`,
+        description: `Costs ${i.cost} skill point${i.cost !== 1 ? "s" : ""}`,
+      }));
+
+    const card = lines.join("\n");
+    const ask = upgradesAsk(affordableChoices);
+    if (ask) {
+      const env: MenuEnvelope = { display: card, ask };
+      return text(`${env.display}\n\n${navMarker(env)}`);
+    }
+    return text(card);
   },
 );
 
@@ -1319,18 +1314,6 @@ registerTool(
 
 // ─── Tool: buddy_menu ─────────────────────────────────────────────────────────
 
-/** A short visible notice for a `do` hand-off (the `display` half). */
-function directiveCard(d: MenuDirective): string {
-  switch (d.kind) {
-    case "prompt":
-      return `_${d.ask}_`;
-    case "shell":
-      return `Run this in your terminal: \`! ${d.command}\``;
-    case "sequence":
-      return `Running the **${d.sequence}** sequence…`;
-  }
-}
-
 registerTool(
   "buddy_menu",
   "Open or advance the interactive buddy command browser. No argument → the top-level menu. Pass `page` + `select` to advance: the server resolves the pick and returns the next page or a `do` hand-off. The result carries a hidden buddy:nav marker — follow the MENU NAVIGATION directive; never print the marker.",
@@ -1346,38 +1329,14 @@ registerTool(
   },
   async ({ page, select }) => {
     const companion = ensureCompanion();
-    let node = getMenuPage(page);
     incrementEvent("commands_run", 1, activeSlot());
-
-    const envelope = (
-      env: MenuEnvelope,
-    ): { content: [{ type: "text"; text: string }] } => ({
-      content: [{ type: "text", text: `${env.display}\n\n${navMarker(env)}` }],
-    });
-
-    if (select) {
-      const r = resolveSelect(node, select);
-      // Phase B: tool-leaves run in-process; the target tool's own output
-      // (including any buddy:choices marker) flows straight back to the user.
-      if (r.kind === "tool") {
-        return runTool(r.tool, r.args);
-      }
-      if (r.kind === "directive") {
-        return envelope({
-          display: directiveCard(r.do),
-          do: r.do,
-          page: node.id,
-        });
-      }
-      if (r.kind === "page") node = r.page;
-      // r.kind === "miss" → fall through and re-render the current page.
+    const result: MenuEnvelope | RouteResult = advance(page, select, companion.name);
+    if ("route" in result) {
+      return runTool(result.route.tool, result.route.args);
     }
-
-    return envelope({
-      display: renderMenuCard(node, companion.name),
-      ask: askFor(node),
-      page: node.id,
-    });
+    return {
+      content: [{ type: "text", text: `${result.display}\n\n${navMarker(result)}` }],
+    };
   },
 );
 
@@ -1413,14 +1372,16 @@ registerTool(
       return text(res.message);
     }
 
-    // No action — render the shop with the interactive choices marker.
+    // No action — render the shop with an interactive nav ask when items are buyable.
     const state = getXpState();
     const avail = availablePoints(state);
     const rows = shopListing(shopStateOf(state, avail));
     const card = renderShopCard(companion.name, rows, avail);
-    const marker = choicesMarker(buyableChoices(rows));
+    const ask = shopAsk(buyableChoices(rows));
     incrementEvent("commands_run", 1, activeSlot());
-    return text(marker ? `${card}\n\n${marker}` : card);
+    if (!ask) return text(card);
+    const env: MenuEnvelope = { display: card, ask };
+    return text(`${env.display}\n\n${navMarker(env)}`);
   },
 );
 

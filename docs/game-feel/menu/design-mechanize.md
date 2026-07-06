@@ -1,10 +1,10 @@
 # Design — `/buddy menu`: Mechanize the Navigation Loop
 
-> Status: Component design (output of `/sc:design`). Interface sketches only —
-> no production code here; build with `/sc:implement`. Builds on
-> [`menu/design.md`](./design.md) (the menu as shipped) and makes its
-> assistant-side navigation **mechanical**: a verbatim copy + echo instead of
-> per-turn interpretation.
+> Status: **Fully implemented** (Phase A + Phase B + post-ship roadmap, 2026-06-26).
+> Original component design from `/sc:design`; all five roadmap items from
+> [`analysis-mechanize.md`](./analysis-mechanize.md) are closed. See that doc for
+> the implementation record. Below is the design as written — still accurate as a
+> spec, with §9 updated to reflect the actual shipped tests.
 
 Grounded against actual source as of `feature/interactive-menu`:
 `server/menu.ts` (`MenuAction:17`, `MenuPage:34`, `MENU:44`, `getMenuPage:417`,
@@ -299,10 +299,22 @@ stay. New ones for the mechanization:
    `await server.connect`). Parity is instead **guaranteed by construction**:
    `registerTool` stores the *same handler reference* it passes to `server.tool`,
    so `runTool(name)` and calling the tool by name are the identical function.
-   Every tool-leaf resolving in the registry is covered statically by the
-   existing "tool/prompt actions name a known buddy tool" test + `tsc`.
+   Tool-leaf validity is covered statically by the `buddy_*` naming-convention
+   test in `menu.test.ts` (replaced the hand-maintained `KNOWN_TOOLS` set) + `tsc`.
+   The registry itself now lives in `server/registry.ts` (importable without the
+   server), imported by both `index.ts` and `menu.test.ts`.
 7. **Card snapshot:** `renderMenuCard(MENU.root, name)` stays byte-stable
    (existing snapshot unaffected — `display` is the same card).
+
+**Additional tests shipped post-analysis (closed roadmap):**
+
+- `describe("advance", …)` — 9 tests covering all 5 handler branches: no-select,
+  tool-leaf (by label + by id), page drill-down, prompt/shell/sequence directives,
+  and miss re-render. Pure `menu.ts` import, zero server dependency.
+- `describe("MENU security invariants", …)` — denylist scan (no `kind:"tool"` leaf
+  targets `{ buddy_uninstall, … }`), positive assertion that `uninstall` is
+  `kind:"sequence"`, and arg-free invariant (all `kind:"tool"` leaves have
+  `args === undefined`).
 
 ---
 
@@ -330,11 +342,12 @@ stay. New ones for the mechanization:
 
 ## 11. Settled decisions (all resolved)
 
-- **OQ-1 — fold the shop into `buddy:nav`? → FUTURE implementation, not this
-  design.** The shop's `buddy:choices` flow already works and is independently
-  routed; routing *into* it (§10) is enough for now. Unifying the two markers
-  under one envelope is a deferred cleanup — noted for a later phase, explicitly
-  out of scope here.
+- **OQ-1 — fold the shop into `buddy:nav`? → IMPLEMENTED.** See
+  [`design-oq1.md`](./design-oq1.md) for the design and
+  [`testing-oq1.md`](./testing-oq1.md) for the testing guide. `AskQuestion`
+  renamed to `NavAsk` with a `then: NavContinuation` field; `choicesMarker`
+  retired; SHOP MENUS removed; MENU NAVIGATION unified. `buddy_upgrades` browse
+  gained an interactive picker in the same pass.
 - **OQ-2 — should `select` accept id, label, or both? → BOTH, label preferred.**
   Label-addressing removes the assistant's label→id lookup (§4); id-matching
   keeps "Other → typed command" robust. Cost is the §9.4 label-uniqueness

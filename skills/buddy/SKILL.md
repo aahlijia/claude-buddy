@@ -61,8 +61,6 @@ Based on `$ARGUMENTS`:
 | `wander` or `wander status` | Call `buddy_wander` with no args (report idle-wander settings)                            |
 | `wander on\|off`         | Call `buddy_wander` with `enabled=<true\|false>`                                             |
 | `wander hop [on\|off]`   | Call `buddy_wander` with `hop=<true\|false>` (bare `hop` ⇒ `hop=true`)                       |
-| `wander wide [on\|off]`  | Call `buddy_wander` with `wide=<true\|false>` (bare `wide` ⇒ `wide=true`)                    |
-| `wander bubble [on\|off]`| Call `buddy_wander` with `bubble=<true\|false>` (bare `bubble` ⇒ `bubble=true`; bubble travels with the buddy) |
 | `brag`                   | Call `buddy_brag` (paste-able markdown brag card; add `plain=true` for emoji-light)          |
 | `mood`                   | Call `buddy_mood`                                                                            |
 | `memory`                 | Call `buddy_memory` with no args                                                             |

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { BuddyBones } from "./engine";
+import { displayWidth, getArtFrame, mirrorFrame } from "./art";
 import type { Equipment } from "./items";
 import type { Bug } from "./bugs";
 import {
@@ -24,8 +25,8 @@ function bones(debug: number, overrides: Partial<BuddyBones> = {}): BuddyBones {
   };
 }
 
-const t1: Bug = { id: "x", name: "typo gremlin", glyph: "🐛", tier: 1, reward: 1 };
-const t4: Bug = { id: "y", name: "segfault dragon", glyph: "🐉", tier: 4, reward: 5 };
+const t1: Bug = { id: "x", name: "typo gremlin", glyph: "🐛", tier: 1, reward: 1, species: "blob" };
+const t4: Bug = { id: "y", name: "segfault dragon", glyph: "🐉", tier: 4, reward: 5, species: "dragon" };
 
 /** Win frequency over many seeds — Monte-Carlo the deterministic resolver. */
 function winRate(b: BuddyBones, bug: Bug, eq: Equipment, n = 400): number {
@@ -125,5 +126,63 @@ describe("resolveCombat", () => {
     expect(flee.drop.points).toBe(0);
     expect(flee.drop.itemId).toBeUndefined();
     expect(flee.summary).toContain("scuttled off");
+  });
+});
+
+describe("two-sprite combat scene (Phase 5)", () => {
+  test("every line of every frame is the same display width (no jitter)", () => {
+    const r = resolveCombat(bones(50), t4, {}, 3);
+    const widths = new Set<number>();
+    for (const frame of r.frames) {
+      for (const line of frame.split("\n")) widths.add(displayWidth(line));
+    }
+    // A constant-width scene ⇒ exactly one width across all rows of all frames.
+    expect(widths.size).toBe(1);
+  });
+
+  test("the scene is wider than a single sprite (two creatures present)", () => {
+    const r = resolveCombat(bones(50), t4, {}, 3);
+    const sceneW = displayWidth(r.frames[0].split("\n")[0]);
+    const playerW = Math.max(
+      ...getArtFrame("cactus", "·", 0).map((l) => displayWidth(l)),
+    );
+    expect(sceneW).toBeGreaterThan(playerW * 2);
+  });
+
+  test("the enemy half is the mirror of its species art", () => {
+    // Explicit resting eye so the comparison is codepoint-stable.
+    const sceneBug: Bug = { ...t4, eye: "·" };
+    const r = resolveCombat(bones(50), sceneBug, {}, 3);
+    const enemyMirror = mirrorFrame(getArtFrame("dragon", "·", 0));
+    const ready = r.frames[0].split("\n");
+    // Each scene line ends with the mirrored enemy block (rightmost element).
+    for (let i = 0; i < enemyMirror.length; i++) {
+      const sceneLine = ready[ready.length - enemyMirror.length + i];
+      expect(sceneLine.endsWith(enemyMirror[i])).toBe(true);
+    }
+  });
+
+  test("the strike frame clashes blades on the eye row", () => {
+    const r = resolveCombat(bones(50), t4, {}, 3);
+    // sequence is [0,1,2,2,3,3]; frame index 2 is the strike.
+    const strike = r.frames[2].split("\n");
+    const eyeRow = strike[Math.floor(strike.length / 2)];
+    // Default blade "/" leans right; its mirror "\\" leans left — they meet.
+    expect(eyeRow).toContain("/\\");
+  });
+
+  test("clash lands on the eye row for a 6-line player (wyvern), not center", () => {
+    // wyvern art is 6 lines with eyes on row index 2 — Math.floor(6/2)=3 would
+    // drop the clash a row below the eyes. The fix derives the row from the art.
+    const r = resolveCombat(bones(50, { species: "wyvern" }), t4, {}, 3);
+    const strike = r.frames[2].split("\n");
+    expect(strike[2]).toContain("/\\"); // blades clash on the actual eye row
+    expect(strike[Math.floor(strike.length / 2)]).not.toContain("/\\"); // center is row 3
+  });
+
+  test("determinism extends to the multi-line scene frames", () => {
+    const a = resolveCombat(bones(50), t4, {}, 11);
+    const b = resolveCombat(bones(50), t4, {}, 11);
+    expect(a.frames).toEqual(b.frames);
   });
 });

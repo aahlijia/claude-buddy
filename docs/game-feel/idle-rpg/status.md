@@ -4,7 +4,7 @@ Single source of truth for where the [idle-RPG arc](design.md) stands. Update
 this file as phases land. For hands-on verification, see the
 [testing guide](testing-guide.md).
 
-_Last updated: 2026-06-25 · branch `develop` · **all work uncommitted** · **arc complete (P1–P4)**_
+_Last updated: 2026-06-30 · branch `feature/free-roam-combat` · **P1–P5 done** (P5 committed in `d55360c`) · 2026-06-30 game-feel fixes uncommitted — see [CURRENT-STATE.md](../CURRENT-STATE.md)_
 
 ## Phase tracker
 
@@ -14,10 +14,28 @@ _Last updated: 2026-06-25 · branch `develop` · **all work uncommitted** · **a
 | 2 | [Merchant + interactive menus](phase-2-merchant.md) | ✅ | ✅ | ✅ | **Done** |
 | 3 | [Bugs as enemies + baked combat](phase-3-combat.md) | ✅ | ✅ | ✅ | **Done** (render = Phase 4) |
 | 4 | [Statusline render + opt-out gate](phase-4-statusline.md) | ✅ | ✅ | ✅ | **Done** |
-
-**🎉 The idle-RPG arc is complete — all four phases shipped.**
+| 5 | [Two-sprite scene + free-roam layout](phase-5-combat-scene.md) | ✅ | ✅ | ✅ | **Done** (resolves OQ-P4.1) |
 
 Legend: ✅ done · 🟡 in progress · ⬜ not started
+
+### Phase 5 — Two-sprite combat scene + free-roam layout
+- `server/bugs.ts` — `Bug.species` (+ optional `eye`); 7 bugs mapped to a curated
+  5-line ANSI-free roster (excludes wyvern/pikachu).
+- `server/art.ts` — pure `mirrorFrame`/`rectFrame` (code-point reverse + directional
+  glyph swap), reusing `displayWidth`/`dpad`/`getArtFrame`.
+- `server/combat.ts` — `bakeScene` replaces `bakeFrames`: player + mirrored enemy
+  side by side, constant-width ready→wind-up→strike(clash)→resolve flipbook.
+- `server/state.ts` — `StatusState.combatFrames`/`combatSequence`/`artWidth`;
+  `writeStatusState` uses the fresh `encounter.json` scene (the baked frames Phase 4
+  threw away) and stops forcing `emotion="angry"` (idle frames stay neutral).
+- `statusline/buddy-status.sh` — **free-roam layout**: left-anchored stats + a
+  roaming buddy cluster (bubble travels with buddy), full-span in-window clamp,
+  bubble-drop degradation at narrow widths (fixes clipping); **combat branch**:
+  jq 3-way frame source (combat > flourish > idle), dynamic `ART_W`/`ART_CENTER`,
+  glyph fallback only on version skew; `BUDDY_FAKE_COLS` test seam.
+- Tests: `bugs.test.ts`, `art.test.ts`, `combat.test.ts`, `statusline_render.test.ts`
+  (free-roam invariants rewritten; wide-corridor block retired; combat-scene block
+  added). Retired: `wanderWide`/`wanderBubble` flags (the whole line is the lane).
 
 ## Locked decisions (apply to all phases)
 

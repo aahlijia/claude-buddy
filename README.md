@@ -243,11 +243,23 @@ Own one companion of **every rarity tier** (common → legendary) at once and ea
 
 An **opt-in** status-line badge (`P2 🔥7`) under your buddy's name shows prestige tier and current streak. Default off — toggle with `/buddy badge [on|off]`.
 
-### Idle wander
+### Idle wander (free-roam)
 
-When game-feel intensity is `full`, your buddy quietly **ambles back and forth** along the status line while it's idle — the speech bubble, stats panel, and name stay pinned, only the art drifts. Cosmetic-only motion, no power creep. Default on; toggle with `/buddy wander [on|off]`. Three extra modes are opt-in: `/buddy wander hop` adds a small vertical bob (costs one status-line row), `/buddy wander wide` opens a longer two-sided corridor, and `/buddy wander bubble` makes the speech bubble travel **with** the buddy (the connector stays attached) instead of staying pinned. `/buddy wander status` reports the current settings. The walk only animates at game-feel `full` (`/buddy gamefeel full`), so it stays out of the way for everyone else.
+When game-feel intensity is `full`, your buddy quietly **ambles back and forth** along the status line while it's idle. It free-roams the **whole line** — gliding left toward the stats panel and back to its home at the right edge — and its **speech bubble travels with it** (the connector stays attached), so the two move as one. The left-anchored stats panel never moves.
+
+The buddy is always kept **fully on-screen**: as long as the window can fit the stats panel and the buddy, it never clips. On a window too narrow to also fit the speech bubble, the bubble is dropped so the **buddy itself is never cut off**. Cosmetic-only motion, no power creep.
+
+Default on; toggle with `/buddy wander [on|off]`. `/buddy wander hop` adds a small vertical bob (costs one status-line row); `/buddy wander status` reports the current settings. The walk only animates at game-feel `full` (`/buddy gamefeel full`), so it stays out of the way for everyone else.
+
+> The old `wide` / `bubble` sub-modes are now folded into free-roam (the whole line is the lane, and the bubble always travels with the buddy), so they're no longer separate toggles.
 
 **Motion feels distracting?** Stop the amble with `/buddy wander off`, or dial all the celebratory animation down with `/buddy gamefeel subtle` (brief toasts only) or `/buddy gamefeel off` (silent — the classic status line). Both are read live, no restart needed.
+
+### Bug fights
+
+After a commit where Claude wrestled with errors, your buddy squares off against the bug as a **second creature** right in the status line — a quick sword-swing duel (ready → wind-up → ⚔ strike → resolve) playing out next to your buddy. Tougher sessions summon tougher foes, each rendered as a full creature of a different kind: a *typo gremlin* shows up as a blob, a *null wraith* as a ghost, a *segfault dragon* as an actual dragon. Win and your buddy pockets skill points (and, now and then, an item); lose and the bug scuttles off. A win/flee toast rides the speech bubble, the fight plays for ~10 seconds, then your buddy goes back to idling.
+
+Like all the ambient animation it only shows at game-feel `full`, and it respects the opt-out: `/buddy gamefeel off` disables fights entirely (no spawns, no rewards, no render).
 
 > All multipliers stack multiplicatively but stay modest: rarity (≤×1.20) × prestige (≤×1.15) × collection (×1.05) caps around ×1.45. Every new reward back-fills cleanly onto existing buddies — nothing is lost on upgrade.
 
@@ -321,6 +333,7 @@ claude-buddy/
 | Command | Description |
 |---|---|
 | `/buddy` | Show companion card with ASCII art and stats |
+| `/buddy menu` | Interactive command browser — navigate every buddy command as a guided tree; common settings (theme, style, game-feel, toggles) are set right from the menu |
 | `/buddy pet` | Pet your companion |
 | `/buddy stats` | Stats-only card |
 | `/buddy xp` | Show XP, level, and unlocked reactions/upgrades |
@@ -330,7 +343,7 @@ claude-buddy/
 | `/buddy upgrades title <id\|none>` | Equip a prestige title, or clear it |
 | `/buddy upgrades ascend` | At max level: reset to L1 for a permanent prestige multiplier (keeps all unlocks) |
 | `/buddy badge [on\|off]` | Toggle the prestige/streak badge (`P2 🔥7`) in the status line |
-| `/buddy wander [on\|off\|hop\|wide\|bubble\|status]` | Toggle the idle status-line amble (and the `hop`/`wide`/`bubble` modes); animates at game-feel `full` |
+| `/buddy wander [on\|off\|hop\|status]` | Toggle the idle status-line free-roam amble (and the `hop` vertical bob); bubble travels with the buddy by default; animates at game-feel `full` |
 | `/buddy mood` | Show current mood and what's influencing it |
 | `/buddy theme [dark\|light\|auto]` | Show or set color theme |
 | `/buddy stats bar [on\|off]` | Toggle the stat-bar panel in the status line |

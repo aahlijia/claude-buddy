@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
 import { BUGS, bugsOfTier, spawnBug, tierForErrors } from "./bugs";
+import { SPECIES } from "./engine";
+
+// Species curated for the two-sprite scene (Phase 5): clean 5-line, ANSI-free
+// sprites. wyvern (6 lines + ANSI) and pikachu (irregular) are excluded so the
+// mirror pass in combat.ts stays well-defined.
+const COMBAT_ROSTER = new Set(SPECIES);
+COMBAT_ROSTER.delete("wyvern");
+COMBAT_ROSTER.delete("pikachu");
 
 describe("bug catalog integrity", () => {
   test("ids are unique", () => {
@@ -22,6 +30,23 @@ describe("bug catalog integrity", () => {
     for (const tier of [1, 2, 3, 4] as const) {
       expect(bugsOfTier(tier).length).toBeGreaterThan(0);
     }
+  });
+
+  test("every bug has a renderable, curated species (Phase 5)", () => {
+    for (const bug of BUGS) {
+      expect(SPECIES).toContain(bug.species);
+      expect(COMBAT_ROSTER.has(bug.species)).toBe(true);
+    }
+  });
+
+  test("species is stable per id (deterministic mapping)", () => {
+    const byId = new Map(BUGS.map((b) => [b.id, b.species]));
+    expect(byId.get("segfault_dragon")).toBe("dragon");
+    expect(byId.get("null_wraith")).toBe("ghost");
+    // The catalog object is frozen-shaped: re-reading yields the same mapping.
+    expect(BUGS.map((b) => b.species)).toEqual(
+      BUGS.map((b) => byId.get(b.id)!),
+    );
   });
 });
 

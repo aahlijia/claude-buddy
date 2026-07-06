@@ -31,8 +31,13 @@ The 1 s cadence exists because the wander/frame **animation** advances per tick 
 ### 🟠 U1 — Constant corner motion vs. focus
 The buddy animates every second in peripheral vision. You have good mitigations already (`gameFeel` gate, `wanderEnabled` opt-out, FR-E1 auto-quiet for error-spike/deep-focus), but deep-focus auto-quiet is **opt-in and off by default** (`autoQuietFocus: false`). Consider surfacing it more prominently in `/buddy help`, or a one-line "motion feels distracting? `/buddy wander off` or `/buddy gamefeel subtle`" hint somewhere discoverable. Low effort, real comfort win.
 
-### 🟡 U2 — Mode composition is untested for the new `wanderBubble`
-`wanderBubble` is implemented generically, so it *should* compose with `wide` (bubble travels up to 10 cols) and `hop` (connector retracts on the vertical). But there's **no test for the combinations**, and `wide + bubble` could move the bubble a long way. Recommend 1–2 combo render tests (`wanderBubble + wanderWide`, `+ wanderHop`) to lock the behavior. Low effort, prevents a regression class.
+### 🟡 U2 — Mode composition is untested for the new `wanderBubble`  ⛔ MOOT (2026-06-30)
+> **No longer applicable.** `wanderWide` and `wanderBubble` were **removed** in the
+> free-roam rewrite — the bubble always travels and the whole line is the lane, so
+> there are no `wide × bubble × hop` combinations left to test. Original note kept
+> for history:
+>
+> ~~`wanderBubble` is implemented generically, so it *should* compose with `wide` (bubble travels up to 10 cols) and `hop` (connector retracts on the vertical). But there's no test for the combinations, and `wide + bubble` could move the bubble a long way. Recommend 1–2 combo render tests.~~
 
 ### 🟡 U3 — No graceful path when `jq` is absent
 Every render assumes `jq`; without it the `2>/dev/null` fallbacks silently yield an **empty/blank statusline** (the same failure class as the missing-`status.json` issue from earlier this session). `jq` is a documented dependency and `doctor` checks it, but a one-line "jq not found → buddy can't render" stderr breadcrumb would save future debugging. Low priority.
@@ -44,7 +49,7 @@ Every render assumes `jq`; without it the `2>/dev/null` fallbacks silently yield
 | 🔴 P1 | Merge 28 `jq` reads → 2 (`@tsv` + `IFS read`) | ~1hr   | ~4–6× faster render, big battery win |
 | 🟠 P2 | Trim/short-circuit the `ps` COLS walk         | ~30m   | Fewer forks/tick                     |
 | 🟠 U1 | Surface motion opt-outs / deep-focus          | ~20m   | Comfort/accessibility                |
-| 🟡 U2 | `wanderBubble × wide/hop` combo tests         | ~30m   | Regression safety                    |
+| ⛔ U2 | ~~`wanderBubble × wide/hop` combo tests~~ — MOOT (modes removed) | — | — |
 | 🟡 U3 | `jq`-missing breadcrumb                       | ~10m   | Debuggability                        |
 
 **My recommendation:** do **P1 alone first** — it's the dominant cost, it's a mechanical refactor the codebase already has the idiom for, and it's covered by your existing 508-test render suite (byte-identical output is the pass condition, so a fork-count refactor is verifiable without new tests). Everything else is polish.

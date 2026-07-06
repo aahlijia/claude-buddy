@@ -91,8 +91,17 @@ export type MenuAction =
   | { kind: "page"; page: string }                 // drill into a submenu
   | { kind: "tool"; tool: string; args?: Record<string, unknown> } // call a buddy_* tool
   | { kind: "prompt"; tool: string; arg: string; ask: string }     // ask for a value, then call
+  | { kind: "choice"; tool: string; arg: string; question: string; // pick from a fixed set, then call
+      header?: string; options: { label: string; value: string | boolean; description: string }[] }
   | { kind: "shell"; command: string }             // tell user to run `! <command>`
   | { kind: "sequence"; sequence: "uninstall" };   // run an orchestration in SKILL.md
+
+// kind:"choice" (added 2026-06-30) makes a pick *act*: resolveSelect turns it into
+// a second-picker NavAsk whose `then` calls `tool` with { [arg]: chosen.value }.
+// The value rides the VALIDATED assistant tool-call path (not runTool), so it may
+// be a real boolean/string the tool's Zod schema already accepts — no coercion.
+// Used for theme / style / position / rarity / gamefeel / wander / statusline /
+// stat-panel / badge. (rainbow stays kind:"tool" — multi-hex, not a fixed set.)
 
 export interface MenuOption {
   id: string;          // stable, kebab-case
@@ -196,7 +205,8 @@ That's the entire skill-side surface. The router stays thin.
 
 Every node ≤4 options; **Other** (auto) is the universal escape / `back`.
 Leaves name the existing tool. `→page` = drill-down; `→tool` = terminal call;
-`→prompt` = ask-then-call; `→shell` / `→seq` as noted.
+`→choice` = pick a value then call (`→choice <tool> <arg>`); `→prompt` =
+ask-then-call; `→shell` / `→seq` as noted.
 
 ```
 root  "What would you like to do?"
@@ -222,26 +232,25 @@ progress2  "More progress"
 └─ 🧠 Memory                 →tool buddy_memory
 
 appearance  "Appearance & behavior"
-├─ 🎨 Theme (dark/light/auto)→tool buddy_theme
+├─ 🎨 Theme (dark/light/auto)→choice buddy_theme theme
 ├─ 🧩 Style & position       →page style
 ├─ ✨ Motion & game-feel     →page motion
 └─ 📊 Status-line bits       →page statusbits
 
 style  "Style & position"
-├─ 🔲 Style (classic/round)  →tool buddy_style
-├─ 📍 Position (top/left)    →tool buddy_style
-├─ 🌈 Rainbow colors         →tool buddy_style
-└─ 💎 Rarity badge on/off    →tool buddy_style
+├─ 🔲 Style (classic/round)  →choice buddy_style style
+├─ 📍 Position (top/left)    →choice buddy_style position
+├─ 🌈 Rainbow colors         →tool buddy_style   (multi-hex, not a fixed set)
+└─ 💎 Rarity badge on/off    →choice buddy_style showRarity (bool)
 
 motion  "Motion & game-feel"
-├─ 🎚️  Game-feel intensity    →tool buddy_gamefeel
-├─ 🚶 Wander on/off          →tool buddy_wander
-└─ 🤸 Wander modes           →tool buddy_wander
+├─ 🎚️  Game-feel intensity    →choice buddy_gamefeel level
+└─ 🚶 Wander on/off          →choice buddy_wander enabled (bool)
 
 statusbits  "Status-line bits"
-├─ 📺 Status-line on/off     →tool buddy_statusline
-├─ 📊 Stat-bar panel         →tool buddy_stats_panel
-├─ 🏅 Prestige badge         →tool buddy_prestige_badge
+├─ 📺 Status-line on/off     →choice buddy_statusline enabled (bool)
+├─ 📊 Stat-bar panel         →choice buddy_stats_panel enabled (bool)
+├─ 🏅 Prestige badge         →choice buddy_prestige_badge enabled (bool)
 └─ ⏱️  Frequency (cooldown)   →prompt buddy_frequency (ask "Cooldown seconds?")
 
 system  "Manage & system"
