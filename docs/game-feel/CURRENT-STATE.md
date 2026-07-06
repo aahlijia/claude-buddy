@@ -4,9 +4,11 @@ A single top-level snapshot of the **whole** game-feel system as it stands today
 tying together the arcs that each have their own design/status docs. For the
 per-arc detail, follow the links in [Doc map](#doc-map).
 
-_Last updated: 2026-06-30 · branch `feature/free-roam-combat`_
-_Baseline: **666 tests pass** · `tsc --noEmit` clean · `bash -n` clean_
-_Status: all arcs **done**; latest changes **uncommitted** (see [Recent changes](#recent-changes-2026-06-30))._
+_Last updated: 2026-07-06 · branch `feature/interactive-menu`_
+_Baseline: **679 tests pass** · `tsc --noEmit` clean · `bash -n` clean_
+_Status: all arcs **done and committed** — `feature/free-roam-combat` was merged into
+`feature/interactive-menu` via `fa8cc6f` on 2026-07-06, absorbing everything in
+[Recent changes](#recent-changes-2026-06-30) below. No PR opened yet._
 
 > **What "game-feel" is.** A layer of optional juice on top of the buddy
 > companion: celebratory feedback, an expressive idle status line, light RPG
@@ -234,7 +236,17 @@ string through the real renderer from a glob-bait directory):
 6. **`gameFeel` is enum-coerced on load** (`coerceGameFeel`, mirrors the bash
    validation) so a hand-edited value can't half-pass the TS gates.
 
-Tests: **679 pass**, `tsc` + `bash -n` clean, snapshot byte-identical. Uncommitted.
+Tests: **679 pass**, `tsc` + `bash -n` clean, snapshot byte-identical.
+
+### Merge into `feature/interactive-menu` (2026-07-06)
+
+Everything above — the full idle-RPG P5 combat-scene/free-roam arc plus the
+combat-toast fix and hardening pass — was merged from `feature/free-roam-combat`
+into `feature/interactive-menu` (merge commit `fa8cc6f`), landing alongside the
+`/buddy menu` interactive browser and its three menu-fixes phases (see
+[menu/analysis-current.md](menu/analysis-current.md)). Both arcs now share one
+branch and one test baseline (679 pass). No pull request has been opened for
+this branch yet.
 
 ---
 
@@ -254,7 +266,9 @@ bun run install-buddy   # copies the repo script into place
 
 ## Open follow-ups
 
-- **Commit** the 2026-06-30 fixes (uncommitted).
+- ~~Commit the 2026-06-30 fixes~~ **done** — merged into `feature/interactive-menu`
+  via `fa8cc6f` on 2026-07-06 (see above). Opening a PR for that branch is the
+  next step.
 - Leftward-roam magnitude tune (`moodWalkOpts` ranges) — intentionally conservative.
 - Idle-RPG niceties: sell/refund gear (buy-only today), inventory cap, gear-bonus
   delta in `buddy_xp`, post-TTL encounter inspection command.
