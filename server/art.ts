@@ -235,6 +235,23 @@ export function getArtFrame(species: Species, eye: Eye, frame: number = 0): stri
   return f.map((line) => line.replace(/\{E\}/g, eye));
 }
 
+/**
+ * The row index of a species' eyes within its raw art frame — the first line
+ * carrying the `{E}` placeholder.
+ *
+ * Drives the two-sprite combat-scene clash alignment (idle-RPG Phase 5) so the
+ * sword lands on the eye row regardless of where a species wears its face: most
+ * are centered (row 2 of 5), but goose/snail sit on row 1, mushroom on row 3,
+ * and wyvern's body spans 6 lines — `length/2` is wrong for all of these. Falls
+ * back to the vertical center if a species somehow has no placeholder. Pure.
+ */
+export function eyeRowIndex(species: Species, frame: number = 0): number {
+  const frames = SPECIES_ART[species];
+  const f = frames[frame % frames.length];
+  const idx = f.findIndex((line) => line.includes("{E}"));
+  return idx >= 0 ? idx : Math.floor(f.length / 2);
+}
+
 // ─── Frame geometry (idle-RPG Phase 5: two-sprite combat scene) ──────────────
 
 /** Directional glyphs swapped when a sprite is mirrored, so the flipped art
@@ -330,13 +347,11 @@ function renderSpeciesFrame(
 ): string {
   const raw = SPECIES_ART[bones.species][frameIdx];
   const art = raw.map((line) => line.replace(/\{E\}/g, eye));
-  const hatLine = HAT_ART[bones.hat];
-  if (hatLine && !art[0].trim()) {
-    art[0] = hatLine;
-  } else if (seasonalHat && bones.hat === "none" && !art[0].trim()) {
-    // Seasonal cosmetic (FR-C2): only when the hat slot is empty.
-    art[0] = HAT_ART[seasonalHat];
-  }
+  // Seasonal cosmetic (FR-C2): only when the hat slot is empty. applyHat is
+  // the single hat renderer (shared with the card path) — it knows the wyvern's
+  // between-the-horns placement, so wyvern hats show on the status line too.
+  const hat = bones.hat !== "none" ? bones.hat : seasonalHat ?? "none";
+  applyHat(bones.species, hat, art);
   return art.join("\n");
 }
 

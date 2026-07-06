@@ -171,6 +171,15 @@ describe("two-sprite combat scene (Phase 5)", () => {
     expect(eyeRow).toContain("/\\");
   });
 
+  test("clash lands on the eye row for a 6-line player (wyvern), not center", () => {
+    // wyvern art is 6 lines with eyes on row index 2 — Math.floor(6/2)=3 would
+    // drop the clash a row below the eyes. The fix derives the row from the art.
+    const r = resolveCombat(bones(50, { species: "wyvern" }), t4, {}, 3);
+    const strike = r.frames[2].split("\n");
+    expect(strike[2]).toContain("/\\"); // blades clash on the actual eye row
+    expect(strike[Math.floor(strike.length / 2)]).not.toContain("/\\"); // center is row 3
+  });
+
   test("determinism extends to the multi-line scene frames", () => {
     const a = resolveCombat(bones(50), t4, {}, 11);
     const b = resolveCombat(bones(50), t4, {}, 11);

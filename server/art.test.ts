@@ -185,6 +185,26 @@ describe("getStatusFrames", () => {
     );
     expect(withWornHat.frames[0].split("\n")[0]).toContain("\\^^^/"); // crown, not beanie
   });
+
+  // ── Wyvern hat (renderSpeciesFrame ↔ applyHat unification) ────────────────
+
+  test("a wyvern's worn hat renders between the horns on status frames", () => {
+    // Regression: renderSpeciesFrame used to apply hats only to a blank line 0,
+    // which a wyvern never has — cards showed the hat, the status line didn't.
+    const { frames } = getStatusFrames(bones({ species: "wyvern", hat: "crown" }));
+    expect(frames[0].split("\n")[0]).toBe("} \\^^^/ {");
+  });
+
+  test("a hatless wyvern keeps its horn row (seasonal fills it too)", () => {
+    const bare = getStatusFrames(bones({ species: "wyvern", hat: "none" }));
+    expect(bare.frames[0].split("\n")[0]).toBe("}       {");
+    const seasonal = getStatusFrames(
+      bones({ species: "wyvern", hat: "none" }),
+      "neutral",
+      "beanie",
+    );
+    expect(seasonal.frames[0].split("\n")[0]).toBe("} (___) {");
+  });
 });
 
 describe("flourishFrames (game-feel FR-A3)", () => {

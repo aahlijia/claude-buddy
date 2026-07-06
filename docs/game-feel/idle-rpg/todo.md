@@ -1,5 +1,8 @@
 # Features:
 
+##
+- stats can level up
+
 ## UX
 - Remove the 3 column statusline structure
   - Buddy can move to the left, stopping at the stats

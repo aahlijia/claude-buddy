@@ -26,7 +26,6 @@ import {
   loadCompanionSlot,
   updateCompanionSlot,
   resolveUserId,
-  writeStatusState,
   effectiveGameFeel,
 } from "./state.ts";
 import { loadGlobalEvents, type GlobalCounters } from "./achievements.ts";
@@ -237,32 +236,36 @@ export function accrueSessionStats(
  * Idle-RPG combat (design-rpg Phase 3): a session's errors spawn a bug the buddy
  * auto-fights. Runs once per commit (reusing the error delta already computed),
  * so it adds no per-event cost. Wins drop skill points / items; the baked fight
- * lands in the transient encounter side-channel (rendered by Phase 4) and a toast
- * makes the defeat observable now. Seeded deterministically for reproducibility.
+ * lands in the transient encounter side-channel (rendered by Phase 4).
+ * Seeded deterministically for reproducibility.
+ *
+ * Returns the fight's one-line summary so the CALLER's final status write can
+ * surface it as a toast (via pickCelebration). This function deliberately does
+ * not write status itself: award-xp.ts writes status immediately after
+ * awardSessionComplete returns, and a toast written here was overwritten by
+ * that write before it ever rendered — leaving `subtle` users (whose only
+ * combat surface is the toast) with an invisible fight.
  */
 export function maybeFightBug(
   slot: string | undefined,
   errorsSeen: number,
   startedAt: number,
-): void {
+): string | null {
   // Opt-out (design-rpg Phase 4): gameFeel=off disables the idle-RPG loop —
   // no spawns, no drops, no encounter file.
-  if (effectiveGameFeel() === "off") return;
+  if (effectiveGameFeel() === "off") return null;
   const seed = hashString(`${resolveUserId()}:${startedAt}:${errorsSeen}`);
   const bug = spawnBug(errorsSeen, seed);
-  if (!bug) return;
+  if (!bug) return null;
   const companion = slot ? loadCompanionSlot(slot) : loadCompanion();
-  if (!companion) return;
+  if (!companion) return null;
 
   const { equipment, inventory } = getXpState();
   const owned = ownedItems(inventory, equipment);
   const result = resolveCombat(companion.bones, bug, equipment, seed, owned);
   applyCombatDrops(result.drop);
   writeEncounter(result);
-  writeStatusState(companion, {
-    celebration: { text: result.summary, kind: "loot", at: Date.now() },
-    cause: "loot",
-  });
+  return result.summary;
 }
 
 // ─── Lifecycle entry points (called from award-xp.ts) ────────────────────────
@@ -280,6 +283,10 @@ export function startSession(): SessionSnapshot {
 export interface SessionCompletion {
   bonus: number;
   state: XpState;
+  /** One-line summary of this commit's idle-RPG fight, or null when none
+   *  spawned. The caller folds it into its final status write's celebration
+   *  (pickCelebration) — see maybeFightBug for why it isn't written here. */
+  fightSummary: string | null;
 }
 
 /**
@@ -318,7 +325,11 @@ export function awardSessionComplete(
   accrueSessionStats(slot, delta, elapsedSec);
 
   // Idle-RPG combat (Phase 3): this session's errors spawn a bug to fight.
-  maybeFightBug(slot, delta.errors_seen, snapshot?.startedAt ?? 0);
+  const fightSummary = maybeFightBug(
+    slot,
+    delta.errors_seen,
+    snapshot?.startedAt ?? 0,
+  );
 
   // A non-zero streak reward means a streak milestone just landed — roll loot
   // on top of the deterministic bonus (additional-rewards FR4.1).
@@ -327,5 +338,5 @@ export function awardSessionComplete(
   // Re-baseline: the next session starts counting from here.
   saveSnapshot({ startedAt: nowSeconds(), baseline: current });
 
-  return { bonus, state };
+  return { bonus, state, fightSummary };
 }

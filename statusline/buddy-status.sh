@@ -40,8 +40,6 @@ _RAINBOW_CSV=""
 REACTION_TTL=0
 INNER_W=44
 MARGIN=8
-WANDER_WIDE="false"
-WANDER_BUBBLE="false"
 SHOW_STATS="false"
 SHOW_PRESTIGE_BADGE="false"
 USE_COMBINED="false"
@@ -52,7 +50,6 @@ if [ -f "$CONFIG_FILE" ]; then
     IFS=$'\x1f' read -r \
         GAME_FEEL _CFG_THEME _RAINBOW_CSV \
         REACTION_TTL INNER_W MARGIN \
-        WANDER_WIDE WANDER_BUBBLE \
         SHOW_STATS SHOW_PRESTIGE_BADGE USE_COMBINED \
     <<< "$(jq -r '[
         (.gameFeel // "subtle"),
@@ -61,8 +58,6 @@ if [ -f "$CONFIG_FILE" ]; then
         ((.reactionTTL // 0) | tostring),
         ((.bubbleWidth // 44) | tostring),
         ((.bubbleMargin // 8) | tostring),
-        ((.wanderWide // false) | tostring),
-        ((.wanderBubble // false) | tostring),
         ((.showStats // false) | tostring),
         ((.showPrestigeBadge // false) | tostring),
         ((.useCombinedStatus // false) | tostring)
@@ -75,8 +70,6 @@ case "$GAME_FEEL" in off|subtle|full) ;; *) GAME_FEEL="subtle" ;; esac
 case "$REACTION_TTL" in ''|*[!0-9]*) REACTION_TTL=0 ;; esac
 case "$INNER_W" in ''|*[!0-9]*) INNER_W=44 ;; esac
 case "$MARGIN" in ''|*[!0-9]*) MARGIN=8 ;; esac
-[ "$WANDER_WIDE" = "true" ] || WANDER_WIDE="false"
-[ "$WANDER_BUBBLE" = "true" ] || WANDER_BUBBLE="false"
 [ "$SHOW_STATS" = "true" ] || SHOW_STATS="false"
 [ "$SHOW_PRESTIGE_BADGE" = "true" ] || SHOW_PRESTIGE_BADGE="false"
 [ "$USE_COMBINED" = "true" ] || USE_COMBINED="false"
@@ -88,8 +81,10 @@ case "$MARGIN" in ''|*[!0-9]*) MARGIN=8 ;; esac
 # same idiom as the combined-metrics read below) so the inner @tsv blobs
 # (stats / xp / celebration) keep their own tabs and split downstream exactly as
 # before. The multi-line frame art is base64'd to survive the single-line read,
-# then decoded after the early-exit checks. Free-text fields are tab/newline-
-# sanitized so a stray control char can't shift the columns.
+# then decoded after the early-exit checks. Free-text fields are control-char-
+# sanitized (\x01-\x1f + DEL → space) so a stray tab/newline can't shift the
+# columns and a stray ESC can't inject terminal escapes into the render. The
+# frame art is exempt (base64'd raw) — wyvern's flame legitimately carries ANSI.
 _STATUS=$(jq -r --argjson now "$NOW" --arg gf "$GAME_FEEL" '
     # Celebration freshness — mirrors the old bash TTL/age math, gameFeel-gated.
     (if $gf == "off" then 0
@@ -150,20 +145,20 @@ _STATUS=$(jq -r --argjson now "$NOW" --arg gf "$GAME_FEEL" '
        else 0 end) as $wrmax
     | [
         ((.muted // false) | tostring),
-        ((.name // "") | gsub("[\t\n\r]"; " ")),
-        ((.rarity // "common") | gsub("[\t\n\r]"; " ")),
+        ((.name // "") | gsub("[\\x01-\\x1f\\x7f]"; " ")),
+        ((.rarity // "common") | gsub("[\\x01-\\x1f\\x7f]"; " ")),
         ((.shiny // false) | tostring),
-        ((.reaction // "") | gsub("[\t\n\r]"; " ")),
-        ((.achievement // "") | gsub("[\t\n\r]"; " ")),
+        ((.reaction // "") | gsub("[\\x01-\\x1f\\x7f]"; " ")),
+        ((.achievement // "") | gsub("[\\x01-\\x1f\\x7f]"; " ")),
         ((.level // 1) | tostring),
-        ((.mood // "focused") | gsub("[\t\n\r]"; " ")),
-        ((.title // "") | gsub("[\t\n\r]"; " ")),
+        ((.mood // "focused") | gsub("[\\x01-\\x1f\\x7f]"; " ")),
+        ((.title // "") | gsub("[\\x01-\\x1f\\x7f]"; " ")),
         ((.prestigeLevel // 0) | tostring),
         ((.streak // 0) | tostring),
         ([.stats.DEBUGGING, .stats.PATIENCE, .stats.CHAOS, .stats.WISDOM, .stats.SNARK, .peak, .dump] | @tsv),
         ((.xpPct // 0) | tostring),
         ([(.lastXpGain.amount // 0), (.lastXpGain.at // 0)] | @tsv),
-        ([(.celebration.text // ""), (.celebration.at // 0)] | @tsv),
+        ([((.celebration.text // "") | gsub("[\\x01-\\x1f\\x7f]"; " ")), (.celebration.at // 0)] | @tsv),
         ($has_fl | tostring),
         ($celeb_fresh | tostring),
         ($woff | tostring),
@@ -172,7 +167,7 @@ _STATUS=$(jq -r --argjson now "$NOW" --arg gf "$GAME_FEEL" '
         ($enc_fresh | tostring),
         ($combat_on | tostring),
         ($awidth | tostring),
-        ((.enemyGlyph // "") | gsub("[\t\n\r]"; " ")),
+        ((.enemyGlyph // "") | gsub("[\\x01-\\x1f\\x7f]"; " ")),
         ($frame | @base64)
       ] | join("")
 ' "$STATE" 2>/dev/null)
@@ -343,19 +338,11 @@ fi
 REACTION_FILE="$BUDDY_STATE_DIR/reaction.$SID.json"
 # REACTION_TTL / INNER_W / MARGIN come (validated) from the single config read.
 
-# ─── Idle wander clamp (movement design-movement §5b / §7.B / §7.C) ─────────
-# The corridor is reclaimed from the right MARGIN; bash owns the clamp because
-# only it knows MARGIN/COLS (the baked sequence carries raw offsets). §7.C
-# resize robustness is automatic — MARGIN/COLS are recomputed every tick, so a
-# shrink caps WANDER_OFF on the next tick and the buddy never clips. §7.B wide
-# mode (flag wanderWide, full-gated) opens a left lane: it shifts the whole
-# bubble+art block left by a CONSTANT WANDER_LEFT (folded into PAD below, once)
-# so the corridor can span WANDER_RANGE_WIDE without the per-tick offset moving
-# anything. WANDER_PAD is plain spaces (never trimmed). WANDER_MAX=0 ⇒ park.
-# WANDER_WIDE / WANDER_BUBBLE come from the single config read above. wanderBubble
-# (design-movement §5e): when true the bubble+connector travel WITH the buddy as
-# one rigid block (connector stays attached) instead of the bubble staying pinned
-# + connector retracting. Pure render flags.
+# ─── Idle wander clamp (movement design-movement §7.C / §11 free-roam) ───────
+# bash owns the clamp because only it knows MARGIN/COLS (the baked sequence
+# carries raw offsets). §7.C resize robustness is automatic — MARGIN/COLS are
+# recomputed every tick, so a shrink caps WANDER_OFF on the next tick and the
+# buddy never clips.
 # Free-roam (design-movement §11): the buddy is no longer confined to a tiny
 # right-margin corridor. WANDER_OFF (the raw baked offset) is the number of cells
 # the buddy ambles LEFT of its right-edge home; the actual roam range is the full
@@ -363,7 +350,6 @@ REACTION_FILE="$BUDDY_STATE_DIR/reaction.$SID.json"
 # layout section below (which is the first place ART_W/BOX_W — the cluster width —
 # are known). The bubble travels WITH the buddy as one block (the offset lands in
 # the cluster's leading pad), so the per-segment WANDER_PADs are now no-ops.
-# wanderWide is retired (the whole line is the lane); the flag is ignored.
 WANDER_PAD_BUBBLE=""
 WANDER_PAD_ART=""
 
@@ -392,7 +378,8 @@ fi
 # bubble then stays until a new message replaces it. The TTL check below still
 # uses this file's timestamp, so an opt-in reactionTTL>0 keeps expiring as before.
 if { [ -z "$REACTION" ] || [ "$REACTION" = "null" ]; } && [ -f "$REACTION_FILE" ]; then
-    REACTION=$(jq -r '.reaction // ""' "$REACTION_FILE" 2>/dev/null || echo "")
+    # Same control-char sanitization as the status.json free-text fields.
+    REACTION=$(jq -r '(.reaction // "") | gsub("[\\x01-\\x1f\\x7f]"; " ")' "$REACTION_FILE" 2>/dev/null || echo "")
 fi
 
 if [ "$CELEB_SHOWN" -eq 0 ] && [ -n "$REACTION" ] && [ "$REACTION" != "null" ] && [ "$REACTION" != "" ]; then
@@ -690,8 +677,14 @@ fi
 # (U+FE0F) upgrades the previous narrow symbol to 2 cols (e.g. ❤ + VS16).
 # The ambiguous codepoint list comes from emoji-widths.data, generated by
 # scripts/gen-emoji-widths.ts from the Unicode Emoji_Presentation property.
-EMOJI_WIDTHS_DATA="$(dirname "${BASH_SOURCE[0]}")/emoji-widths.data"
-EMOJI_PRES_2600="$(grep -v '^#' "$EMOJI_WIDTHS_DATA" 2>/dev/null | tr -d '\n')"
+# Loaded only when there's bubble text to measure — dwidth() is called solely
+# from the word-wrap/padding below, so on the bubble-less hot path (the common
+# idle tick) this avoids a grep+tr+dirname fork every second.
+EMOJI_PRES_2600=""
+if [ -n "$BUBBLE_TEXT" ]; then
+    EMOJI_WIDTHS_DATA="$(dirname "${BASH_SOURCE[0]}")/emoji-widths.data"
+    EMOJI_PRES_2600="$(grep -v '^#' "$EMOJI_WIDTHS_DATA" 2>/dev/null | tr -d '\n')"
+fi
 
 dwidth() {
     printf '%s' "$1" | iconv -f UTF-8 -t UTF-32LE 2>/dev/null | od -An -tu4 | awk -v pres="$EMOJI_PRES_2600" '
@@ -726,7 +719,10 @@ dwidth() {
 # ─── Word-wrap bubble text ────────────────────────────────────────────────────
 TEXT_LINES=()
 if [ -n "$BUBBLE_TEXT" ]; then
-    WORDS=($BUBBLE_TEXT)
+    # read -ra: IFS word-split WITHOUT pathname expansion — reactions canonically
+    # contain asterisks (*narrows eyes*), and a bare unquoted expansion would
+    # glob them against the CWD.
+    read -ra WORDS <<< "$BUBBLE_TEXT"
     CUR_LINE=""
     CUR_W=0
     for word in "${WORDS[@]}"; do
@@ -964,10 +960,9 @@ for (( i=0; i<MAX_LINES; i++ )); do
         fi
     fi
 
-    # Idle wander (design-movement §5d): nudge the art block right into the
-    # reclaimed margin. In the default mode this is the whole offset (bubble
-    # pinned); with wanderBubble on it's empty because the offset already shifted
-    # the bubble cluster above (art rode along, connector attached).
+    # Idle wander (design-movement §11 free-roam): WANDER_PAD_ART is empty — the
+    # roam offset already shifted the whole cluster's leading pad above (bubble +
+    # connector + art ride together as one block, connector stays attached).
     line_out+="$WANDER_PAD_ART"
     line_out+="$art_part"
     echo "$line_out"

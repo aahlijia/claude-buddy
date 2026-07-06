@@ -4,7 +4,7 @@ Single source of truth for where the [idle-RPG arc](design.md) stands. Update
 this file as phases land. For hands-on verification, see the
 [testing guide](testing-guide.md).
 
-_Last updated: 2026-06-26 · branch `feature/free-roam-combat` · **P1–P4 done** · **P5 in progress**_
+_Last updated: 2026-06-30 · branch `feature/free-roam-combat` · **P1–P5 done** (P5 committed in `d55360c`) · 2026-06-30 game-feel fixes uncommitted — see [CURRENT-STATE.md](../CURRENT-STATE.md)_
 
 ## Phase tracker
 

@@ -1,5 +1,13 @@
 # Design — Buddy Movement (idle wander on the status line)
 
+> **⚠️ Partly superseded (2026-06-30).** The right-margin **corridor** model and
+> its **`wanderWide` / `wanderBubble`** modes described below are **retired** —
+> the buddy free-roams the whole line and the bubble always travels with it. The
+> two flags + `WANDER_RANGE_WIDE` were deleted from the code. See the §11
+> free-roam addendum near the end of this doc, and
+> [`CURRENT-STATE.md`](CURRENT-STATE.md) for the live picture. The §2–§6 base
+> wander, §7.A hop, §7.C resize, and §7.D mood expressiveness still hold.
+
 Status: Design (output of `/sc:design`). A new game-feel item: the buddy ambles
 **back and forth on the status line at random intervals** while the speech
 bubble, stats panel, name/title/badge, and every other element stay exactly
@@ -357,7 +365,10 @@ already exceeds the status line's height budget (degrade).
 
 **Tunables.** `hopHeight` default 1 (a polite bunny-hop); 2 for a springier feel.
 
-### 7.B — Wide two-sided corridor  (`wanderWide`, default off)
+### 7.B — Wide two-sided corridor  (`wanderWide`, default off) — RETIRED (§11)
+
+> Historical. The `wanderWide` flag and `WANDER_RANGE_WIDE` were removed
+> 2026-06-30; free-roam (§11) makes the whole line the lane.
 
 **What.** A longer amble than the right margin alone affords, so the buddy ranges
 both well right *and* back past its resting point — a fuller "back and forth."
@@ -562,6 +573,15 @@ Integration / render (snapshot via `BUDDY_FAKE_NOW`, like existing tests):
   guaranteeing in-window rather than just clamping a corridor offset.
 - §7.D mood/level expressiveness — strictly read-only (NFR1).
 - "Server bakes, bash cycles" and the pre-baked-sequence pattern.
+
+**Config flags removed (2026-06-30).** Because the corridor is retired, the
+`wanderWide` and `wanderBubble` config flags — and the `WANDER_RANGE_WIDE`
+constant and the `wide`/`bubble` args on the `buddy_wander` MCP tool — have been
+**deleted** from the code. They no longer matched behavior: `wanderBubble` was a
+no-op (the bubble always travels now) and `wanderWide` only widened the baked
+range while reporting a "corridor" that no longer exists. Roam distance is now
+governed solely by `moodWalkOpts` (§7.D) clamped to `SPAN`. The §7.B / §5e
+sections below are historical.
 
 **Still out of scope:** per-session position file for eased resize; write-back
 coupling; free *2-D* path-following beyond the hop arc.

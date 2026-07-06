@@ -60,10 +60,6 @@ interface StatusOverrides {
   /** Override the server-rendered art frames (e.g. a tall frame to exercise the
    *  hop height-budget degrade). */
   frames?: string[];
-  /** §7.B wide corridor flag, written into config.json. */
-  wanderWide?: boolean;
-  /** §5e bubble-follows-buddy flag, written into config.json. */
-  wanderBubble?: boolean;
   /** Writes reaction.<SID>.json (the persistent per-session reaction file) so the
    *  sticky-bubble fallback can be exercised. SID is "default" outside tmux. */
   persistedReaction?: { reaction: string; secondsAgo?: number };
@@ -185,8 +181,6 @@ function renderStatus(overrides: StatusOverrides): string {
     overrides.showStats !== undefined ||
     overrides.showPrestigeBadge !== undefined ||
     overrides.gameFeel !== undefined ||
-    overrides.wanderWide !== undefined ||
-    overrides.wanderBubble !== undefined ||
     overrides.reactionTTL !== undefined ||
     overrides.bubbleMargin !== undefined ||
     overrides.useCombinedStatus !== undefined
@@ -200,10 +194,6 @@ function renderStatus(overrides: StatusOverrides): string {
       cfg.showPrestigeBadge = overrides.showPrestigeBadge;
     }
     if (overrides.gameFeel !== undefined) cfg.gameFeel = overrides.gameFeel;
-    if (overrides.wanderWide !== undefined) cfg.wanderWide = overrides.wanderWide;
-    if (overrides.wanderBubble !== undefined) {
-      cfg.wanderBubble = overrides.wanderBubble;
-    }
     if (overrides.bubbleMargin !== undefined) {
       cfg.bubbleMargin = overrides.bubbleMargin;
     }

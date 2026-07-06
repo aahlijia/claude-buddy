@@ -19,8 +19,32 @@ export type MenuAction =
   | { kind: "page"; page: string }
   | { kind: "tool"; tool: string; args?: Record<string, unknown> }
   | { kind: "prompt"; tool: string; arg: string; ask: string }
+  | {
+      /**
+       * A fixed-set setter: picking the option opens a second picker of
+       * `options`, then calls `tool` with `{ [arg]: chosen.value }`. The chosen
+       * value rides the nav channel's *validated* assistant tool-call path (not
+       * `runTool`), so `value` may be a real boolean/string the tool's Zod schema
+       * already accepts — no coercion needed.
+       */
+      kind: "choice";
+      tool: string;
+      arg: string;
+      question: string;
+      /** Short chip (≤12 chars) for the second picker; derived from `question` when absent. */
+      header?: string;
+      options: ChoiceValue[];
+    }
   | { kind: "shell"; command: string }
   | { kind: "sequence"; sequence: "uninstall" };
+
+/** One value in a `kind:"choice"` setter. `value` is passed to the tool as-is. */
+export interface ChoiceValue {
+  label: string;
+  description: string;
+  /** The exact arg value (string or boolean) the target tool's schema expects. */
+  value: string | boolean;
+}
 
 export interface MenuOption {
   /** Stable, kebab-case; unique within its page. */
@@ -174,7 +198,18 @@ export const MENU: Record<string, MenuPage> = {
         id: "theme",
         label: "🎨 Theme",
         description: "Dark, light, or auto",
-        action: { kind: "tool", tool: "buddy_theme" },
+        action: {
+          kind: "choice",
+          tool: "buddy_theme",
+          arg: "theme",
+          question: "Set the color theme",
+          header: "Theme",
+          options: [
+            { label: "Dark", value: "dark", description: "Bright colors for dark terminals" },
+            { label: "Light", value: "light", description: "Dark colors for light terminals" },
+            { label: "Auto", value: "auto", description: "Follow the system" },
+          ],
+        },
       },
       {
         id: "style",
@@ -206,13 +241,33 @@ export const MENU: Record<string, MenuPage> = {
         id: "frame",
         label: "🔲 Style (classic/round)",
         description: "Switch the frame style",
-        action: { kind: "tool", tool: "buddy_style" },
+        action: {
+          kind: "choice",
+          tool: "buddy_style",
+          arg: "style",
+          question: "Bubble frame style",
+          header: "Style",
+          options: [
+            { label: "Classic", value: "classic", description: "Pipes and dashes" },
+            { label: "Round", value: "round", description: "Parens and tildes" },
+          ],
+        },
       },
       {
         id: "position",
         label: "📍 Position (top/left)",
         description: "Where the buddy sits in the status line",
-        action: { kind: "tool", tool: "buddy_style" },
+        action: {
+          kind: "choice",
+          tool: "buddy_style",
+          arg: "position",
+          question: "Bubble position",
+          header: "Position",
+          options: [
+            { label: "Top", value: "top", description: "Above the buddy" },
+            { label: "Left", value: "left", description: "Beside the buddy" },
+          ],
+        },
       },
       {
         id: "rainbow",
@@ -224,7 +279,17 @@ export const MENU: Record<string, MenuPage> = {
         id: "rarity",
         label: "💎 Rarity badge",
         description: "Toggle the rarity badge",
-        action: { kind: "tool", tool: "buddy_style" },
+        action: {
+          kind: "choice",
+          tool: "buddy_style",
+          arg: "showRarity",
+          question: "Show the rarity badge?",
+          header: "Rarity",
+          options: [
+            { label: "Show", value: true, description: "Show stars + rarity line" },
+            { label: "Hide", value: false, description: "Hide the rarity line" },
+          ],
+        },
       },
     ],
   },
@@ -238,19 +303,34 @@ export const MENU: Record<string, MenuPage> = {
         id: "gamefeel",
         label: "🎚️ Game-feel intensity",
         description: "Off, subtle, or full",
-        action: { kind: "tool", tool: "buddy_gamefeel" },
+        action: {
+          kind: "choice",
+          tool: "buddy_gamefeel",
+          arg: "level",
+          question: "Game-feel intensity",
+          header: "Game-feel",
+          options: [
+            { label: "Off", value: "off", description: "Silent — classic status line" },
+            { label: "Subtle", value: "subtle", description: "Brief toasts only" },
+            { label: "Full", value: "full", description: "Toasts + animation + surprises" },
+          ],
+        },
       },
       {
         id: "wander",
         label: "🚶 Wander on/off",
         description: "Toggle idle wandering",
-        action: { kind: "tool", tool: "buddy_wander" },
-      },
-      {
-        id: "wander-modes",
-        label: "🤸 Wander modes",
-        description: "Hop, wide roam, bubble-follow",
-        action: { kind: "tool", tool: "buddy_wander" },
+        action: {
+          kind: "choice",
+          tool: "buddy_wander",
+          arg: "enabled",
+          question: "Idle wander",
+          header: "Wander",
+          options: [
+            { label: "On", value: true, description: "Buddy ambles when idle" },
+            { label: "Off", value: false, description: "Buddy stays put" },
+          ],
+        },
       },
     ],
   },
@@ -264,19 +344,49 @@ export const MENU: Record<string, MenuPage> = {
         id: "statusline",
         label: "📺 Status-line on/off",
         description: "Show the buddy in the status line",
-        action: { kind: "tool", tool: "buddy_statusline" },
+        action: {
+          kind: "choice",
+          tool: "buddy_statusline",
+          arg: "enabled",
+          question: "Buddy status line",
+          header: "Status line",
+          options: [
+            { label: "On", value: true, description: "Show the buddy in the status line" },
+            { label: "Off", value: false, description: "Hide it" },
+          ],
+        },
       },
       {
         id: "panel",
         label: "📊 Stat-bar panel",
         description: "Toggle the live stat-bar panel",
-        action: { kind: "tool", tool: "buddy_stats_panel" },
+        action: {
+          kind: "choice",
+          tool: "buddy_stats_panel",
+          arg: "enabled",
+          question: "Stat-bar panel",
+          header: "Stat panel",
+          options: [
+            { label: "On", value: true, description: "Show the stat bars" },
+            { label: "Off", value: false, description: "Hide them" },
+          ],
+        },
       },
       {
         id: "badge",
         label: "🏅 Prestige badge",
         description: "Toggle the prestige/streak badge",
-        action: { kind: "tool", tool: "buddy_prestige_badge" },
+        action: {
+          kind: "choice",
+          tool: "buddy_prestige_badge",
+          arg: "enabled",
+          question: "Prestige/streak badge",
+          header: "Badge",
+          options: [
+            { label: "On", value: true, description: "Show the prestige/streak badge" },
+            { label: "Off", value: false, description: "Hide it" },
+          ],
+        },
       },
       {
         id: "frequency",
@@ -442,8 +552,13 @@ export function getMenuPage(id?: string): MenuPage {
 export interface NavOption {
   label: string;
   description: string;
-  /** The pick_arg value to pass on selection. Defaults to `label` when absent. */
-  value?: string;
+  /**
+   * The pick_arg value to pass on selection. Defaults to `label` when absent.
+   * May be a boolean for `kind:"choice"` setters whose tool takes a boolean arg
+   * (e.g. `enabled`/`showRarity`) — JSON-encoded in the marker and passed through
+   * the validated tool-call path, so `z.boolean()` schemas accept it directly.
+   */
+  value?: string | boolean;
 }
 
 /** What to call when the user makes a pick — always present on a NavAsk. */
@@ -499,14 +614,34 @@ export interface MenuEnvelope {
 export type SelectResolution =
   | { kind: "page"; page: MenuPage }
   | { kind: "tool"; tool: string; args?: Record<string, unknown> }
+  | { kind: "ask"; ask: NavAsk }
   | { kind: "directive"; do: MenuDirective }
   | { kind: "miss" };
 
+/** Trim a heading to a ≤12-char AskUserQuestion chip (first clause, capped). */
+function chip(text: string): string {
+  const base = (text.split(/[—:]/)[0] || text).trim();
+  return base.length <= 12 ? base : base.slice(0, 12).trim();
+}
+
 /** Short header chip for a page; derive from the title when not set explicitly. */
 function headerFor(page: MenuPage): string {
-  if (page.header) return page.header;
-  const base = (page.title.split(/[—:]/)[0] || page.title).trim();
-  return base.length <= 12 ? base : base.slice(0, 12).trim();
+  return page.header ?? chip(page.title);
+}
+
+/** Build the second-picker NavAsk for a `kind:"choice"` setter. */
+function choiceAsk(action: Extract<MenuAction, { kind: "choice" }>): NavAsk {
+  return {
+    question: action.question,
+    header: action.header ?? chip(action.question),
+    multiSelect: false,
+    options: action.options.map((o) => ({
+      label: o.label,
+      description: o.description,
+      value: o.value,
+    })),
+    then: { tool: action.tool, args: {}, pick_arg: action.arg },
+  };
 }
 
 /** Build the harness-ready NavAsk for a menu page. */
@@ -557,6 +692,8 @@ export function resolveSelect(
     }
     case "tool":
       return { kind: "tool", tool: action.tool, args: action.args };
+    case "choice":
+      return { kind: "ask", ask: choiceAsk(action) };
     case "prompt":
       return {
         kind: "directive",
@@ -617,6 +754,7 @@ export type RouteResult = { route: { tool: string; args?: Record<string, unknown
  * Branch map:
  *   no select           → render `page` with `ask`
  *   select → tool       → `RouteResult`
+ *   select → choice     → `MenuEnvelope` with the setter's `ask`
  *   select → directive  → `MenuEnvelope` with `do`
  *   select → page       → render next page with `ask`
  *   select → miss       → re-render same page with `ask`
@@ -632,6 +770,9 @@ export function advance(
     const r = resolveSelect(node, select);
     if (r.kind === "tool") {
       return { route: { tool: r.tool, args: r.args } };
+    }
+    if (r.kind === "ask") {
+      return { display: `_${r.ask.question}_`, ask: r.ask };
     }
     if (r.kind === "directive") {
       return { display: directiveCard(r.do), do: r.do };

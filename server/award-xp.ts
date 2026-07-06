@@ -14,52 +14,13 @@ import {
   loadCompanionSlot,
   loadActiveSlot,
   writeStatusState,
-  type Celebration,
-  type StatusOpts,
+  pickCelebration,
 } from "./state";
 import { startSession, awardSessionComplete } from "./session";
 import { recordSessionStart } from "./streak";
 import { tickWhim } from "./quests";
 import { announceOnce } from "./discovery";
 import type { XpEvent } from "./xp";
-
-/**
- * Pick the celebration to surface for an award. Level-up wins the single bubble
- * slot; then a just-completed daily whim; then a one-time system discovery;
- * otherwise the caller's fallback cause (so session-completion can still surface
- * streak loot via the 🎁 toast).
- */
-function pickCelebration(
-  level: number,
-  leveled: boolean,
-  whimRewarded: boolean,
-  discovered: boolean,
-  fallbackCause: StatusOpts["cause"],
-): { celebration: Celebration | null; cause: StatusOpts["cause"] } {
-  if (leveled) {
-    return {
-      celebration: { text: `✨ LEVEL ${level} ✨`, kind: "levelup", at: Date.now() },
-      cause: "levelup",
-    };
-  }
-  if (whimRewarded) {
-    return {
-      celebration: { text: "⭐ today's whim — done!", kind: "whim", at: Date.now() },
-      cause: "whim",
-    };
-  }
-  if (discovered) {
-    return {
-      celebration: {
-        text: "🎁 new: a daily whim — see /buddy xp",
-        kind: "discovery",
-        at: Date.now(),
-      },
-      cause: undefined,
-    };
-  }
-  return { celebration: null, cause: fallbackCause };
-}
 
 /** Reconcile today's whim, swallowing any failure (game-feel NFR4). */
 function safeTickWhim(slot?: string): boolean {
@@ -125,17 +86,26 @@ function main(): void {
 
   if (event === "session_complete") {
     const prevLevel = getXpState().level;
-    const { bonus, state } = awardSessionComplete(slot, species, rarity);
+    const { bonus, state, fightSummary } = awardSessionComplete(
+      slot,
+      species,
+      rarity,
+    );
     // A commit ticks the daily whim (commits_made was bumped before this runs).
     const whimRewarded = safeTickWhim(slot);
     if (companion) {
       const leveled = state.level > prevLevel;
-      const discovered = maybeDiscoverWhim(leveled || whimRewarded);
+      // A fight summary also suppresses the once-ever discovery announce, so
+      // the intro isn't consumed on a write where the fight owns the bubble.
+      const discovered = maybeDiscoverWhim(
+        leveled || whimRewarded || fightSummary !== null,
+      );
       // Fallback "loot" so any streak/whim loot drop surfaces as a 🎁 toast.
       const { celebration, cause } = pickCelebration(
         state.level,
         leveled,
         whimRewarded,
+        fightSummary,
         discovered,
         "loot",
       );
@@ -163,10 +133,12 @@ function main(): void {
     const leveled = state.level > prevLevel;
     const discovered = maybeDiscoverWhim(leveled || whimRewarded);
     // No fallback cause: a plain event rolls no loot, so no side-channel echo.
+    // Fights only spawn on session completion, so no fight summary here.
     const { celebration, cause } = pickCelebration(
       state.level,
       leveled,
       whimRewarded,
+      null,
       discovered,
       undefined,
     );

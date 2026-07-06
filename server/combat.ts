@@ -21,7 +21,13 @@ import {
   type Species,
   type Eye,
 } from "./engine";
-import { getArtFrame, mirrorFrame, rectFrame, displayWidth } from "./art";
+import {
+  getArtFrame,
+  mirrorFrame,
+  rectFrame,
+  displayWidth,
+  eyeRowIndex,
+} from "./art";
 import { buddyStateDir } from "./path";
 import { resolveAppearance } from "./equipment";
 import { ITEMS, findItem, type Equipment, type ItemId } from "./items";
@@ -181,7 +187,11 @@ function bakeScene(
     const player = rectFrame(getArtFrame(playerSpecies, pose.pEye, 0));
     const enemy = mirrorFrame(getArtFrame(enemySpecies, pose.eEye, 0));
     const [pA, eA] = alignHeights(player, enemy);
-    const eyeRow = Math.floor(pA.length / 2);
+    // Clash on the PLAYER's actual eye row (not the block center), shifted by any
+    // top-padding alignHeights added when the player is the shorter sprite — so
+    // the sword lands at eye level for off-center species (goose/snail/mushroom)
+    // and the 6-line wyvern alike.
+    const eyeRow = eyeRowIndex(playerSpecies) + (pA.length - player.length);
     return pA
       .map((line, i) => line + gapRow(pose.strike, i === eyeRow, sword) + eA[i])
       .join("\n");
@@ -311,6 +321,11 @@ export function writeEncounter(result: CombatResult): void {
  * How long a baked encounter stays fresh (ms). Kept in sync with the
  * `$enc_fresh` window in buddy-status.sh and the full-gate celebration TTL, so
  * the glyph, the fight face, and the toast all fade together (≈10s).
+ *
+ * Note: the bash `$enc_fresh` check works in integer seconds while this gate is
+ * in milliseconds, so the two can disagree by up to ~1s at the very edge of the
+ * window. Harmless — both land at ≈10s and the elements are meant to fade as a
+ * group, not frame-exact.
  */
 export const ENCOUNTER_TTL_MS = 10_000;
 

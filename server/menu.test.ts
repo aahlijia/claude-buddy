@@ -13,7 +13,7 @@ import {
   type NavAsk,
   type RouteResult,
 } from "./menu";
-import { MENU_TOOLS } from "./registry";
+import { MENU_TOOLS, menuToolLeaves, runTool } from "./registry";
 
 
 const PAGES: MenuPage[] = Object.values(MENU);
@@ -49,9 +49,25 @@ describe("MENU tree invariants", () => {
     // cross-checking once index.ts is importable in tests.
     for (const page of PAGES) {
       for (const opt of page.options) {
-        if (opt.action.kind === "tool" || opt.action.kind === "prompt") {
+        if (
+          opt.action.kind === "tool" ||
+          opt.action.kind === "prompt" ||
+          opt.action.kind === "choice"
+        ) {
           expect(opt.action.tool).toMatch(/^buddy_/);
         }
+      }
+    }
+  });
+
+  test("no option references the retired wide/bubble wander modes", () => {
+    // Free-roam (2026-06-30) removed the wanderWide/wanderBubble flags; no menu
+    // label or description may advertise them again.
+    for (const page of PAGES) {
+      for (const opt of page.options) {
+        expect(`${opt.label} ${opt.description}`.toLowerCase()).not.toMatch(
+          /wide roam|bubble-follow|wander modes/,
+        );
       }
     }
   });
@@ -179,6 +195,9 @@ describe("resolveSelect", () => {
           case "tool":
             expect(byId.kind).toBe("tool");
             break;
+          case "choice":
+            expect(byId.kind).toBe("ask");
+            break;
           default: // prompt | shell | sequence
             expect(byId.kind).toBe("directive");
         }
@@ -242,6 +261,28 @@ describe("MENU security invariants", () => {
         }
       }
     }
+  });
+
+  test("runTool allowlist = the tree's kind:\"tool\" leaves, excludes the denylist", () => {
+    const allowed = menuToolLeaves();
+    // Every kind:"tool" leaf is allowed; nothing else is.
+    for (const page of Object.values(MENU)) {
+      for (const opt of page.options) {
+        if (opt.action.kind === "tool") {
+          expect(allowed.has(opt.action.tool)).toBe(true);
+        }
+      }
+    }
+    // The irreversible tool is reachable only as kind:"sequence", so it must NOT
+    // be in the in-process allowlist even though registerTool captures it.
+    expect(allowed.has("buddy_uninstall")).toBe(false);
+    // choice/prompt setters route via the validated assistant path, not runTool.
+    expect(allowed.has("buddy_theme")).toBe(false);
+  });
+
+  test("runTool refuses an off-allowlist tool (graceful miss)", async () => {
+    const res = await runTool("buddy_uninstall");
+    expect(res.content[0].text).toMatch(/unknown tool/i);
   });
 });
 
@@ -310,5 +351,62 @@ describe("advance", () => {
     expect(r.ask?.then.args?.page).toBe("gear");
     expect(r.ask).toBeDefined();
     expect(r.do).toBeUndefined();
+  });
+});
+
+describe("choice setters (kind:\"choice\")", () => {
+  test("resolveSelect → ask whose then targets the setter tool/arg", () => {
+    const r = resolveSelect(MENU.appearance, "theme");
+    expect(r.kind).toBe("ask");
+    if (r.kind !== "ask") return;
+    expect(r.ask.then.tool).toBe("buddy_theme");
+    expect(r.ask.then.pick_arg).toBe("theme");
+    expect(r.ask.then.args).toEqual({});
+    expect(r.ask.options.map((o) => o.value)).toEqual(["dark", "light", "auto"]);
+  });
+
+  test("advance → envelope with the setter ask (no route, no do)", () => {
+    const r = advance("appearance", "theme", "Waffle") as MenuEnvelope;
+    expect("route" in r).toBe(false);
+    expect(r.ask).toBeDefined();
+    expect(r.do).toBeUndefined();
+    // ask continues to the target tool, NOT back to buddy_menu
+    expect(r.ask?.then.tool).toBe("buddy_theme");
+    expect(r.ask?.then.args?.page).toBeUndefined();
+  });
+
+  test("boolean-arg setters carry real boolean values (no string coercion)", () => {
+    // The chosen value rides the validated tool-call path, so z.boolean() schemas
+    // accept it directly — the value must be a JS boolean, not "on"/"off".
+    const r = resolveSelect(MENU.statusbits, "statusline");
+    expect(r.kind).toBe("ask");
+    if (r.kind !== "ask") return;
+    expect(r.ask.then.pick_arg).toBe("enabled");
+    const values = r.ask.options.map((o) => o.value);
+    expect(values).toEqual([true, false]);
+    for (const v of values) expect(typeof v).toBe("boolean");
+  });
+
+  test("every choice setter has 2..4 options each with a value", () => {
+    for (const page of PAGES) {
+      for (const opt of page.options) {
+        if (opt.action.kind !== "choice") continue;
+        expect(opt.action.options.length).toBeGreaterThanOrEqual(2);
+        expect(opt.action.options.length).toBeLessThanOrEqual(4);
+        for (const o of opt.action.options) {
+          expect(o.value === undefined).toBe(false);
+        }
+      }
+    }
+  });
+
+  test("navMarker round-trips a boolean choice value", () => {
+    const r = advance("statusbits", "panel", "Waffle") as MenuEnvelope;
+    const marker = navMarker(r);
+    const json = JSON.parse(
+      marker.replace(/^<!-- buddy:nav /, "").replace(/ -->$/, ""),
+    );
+    expect(json.ask.options.some((o: { value: unknown }) => o.value === true)).toBe(true);
+    expect(json.ask.options.some((o: { value: unknown }) => o.value === false)).toBe(true);
   });
 });

@@ -408,3 +408,19 @@ No schema migrations, no state fields, no new currency. Additive + retire.
 5. ✅ `index.ts` — `buddy_shop` browse emits `buddy:nav`; `upgradesAsk()` added;
    `buddy_upgrades` browse emits `buddy:nav` when affordable unlocks exist;
    MENU NAVIGATION unified; SHOP MENUS removed.
+
+---
+
+## Addendum (2026-06-30) — `kind:"choice"` reuses this channel
+
+The unified nav channel built here is also what powers the new `kind:"choice"`
+setter (menu-fixes P2). A `choice` leaf resolves (`resolveSelect`) to a
+`SelectResolution` of `kind:"ask"`, and `advance` returns a `MenuEnvelope` whose
+`ask` is a second-picker `NavAsk` with `then = { tool: <setter>, args: {},
+pick_arg: <arg> }`. No new assistant behavior: the same MENU NAVIGATION directive
+(`then.tool({ ...then.args, [then.pick_arg]: option.value ?? option.label })`)
+drives it. `NavOption.value` was widened to `string | boolean` so boolean-arg
+setters (`enabled`, `showRarity`) pass a real boolean through the validated
+tool-call path — `false ?? label` correctly yields `false` (nullish coalescing).
+This keeps the unvalidated `runTool` path untouched. Spec: `design.md`
+(`MenuAction` `kind:"choice"`).

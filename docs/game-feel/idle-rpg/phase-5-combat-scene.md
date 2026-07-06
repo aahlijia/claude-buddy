@@ -62,10 +62,12 @@ separate-frame-set precedent).
   and `writeEncounter` persists them in `encounter.json`; `readEncounter` TTL-checks
   them. Phase 5 changes only **what** `bakeFrames` paints (a 2-sprite scene) and
   **wires the result through** — no I/O change.
-- **The cluster-travels-with-buddy mode.** `buddy-status.sh` already has a
-  `wanderBubble=true` branch (`:357-363`) that shifts bubble+connector+art as one
-  block via `WANDER_PAD_BUBBLE`. Free-roam makes that the default and widens its
-  range from a ≤10-cell corridor to the full span.
+- **The cluster-travels-with-buddy mode.** `buddy-status.sh` had a
+  `wanderBubble=true` branch that shifted bubble+connector+art as one block via
+  `WANDER_PAD_BUBBLE`. Free-roam makes that the default and widens its range from
+  a ≤10-cell corridor to the full span. _(2026-06-30: the `wanderBubble` flag was
+  since removed — the cluster always travels; `WANDER_PAD_BUBBLE` is now always
+  empty since the offset lands in the cluster's leading pad.)_
 - **The span bones.** Per-line assembly is already `SPACER(LEAD_PAD) + [stats +
   STATS_GAP + MID_SPACER(MID_PAD)] + WANDER_PAD_BUBBLE + [bubble+connector] +
   WANDER_PAD_ART + art` (`:855-926`). Stats are already left-anchored; `MID_PAD`

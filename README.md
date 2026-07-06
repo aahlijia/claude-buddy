@@ -333,7 +333,7 @@ claude-buddy/
 | Command | Description |
 |---|---|
 | `/buddy` | Show companion card with ASCII art and stats |
-| `/buddy menu` | Interactive command browser — navigate every buddy command as a guided tree |
+| `/buddy menu` | Interactive command browser — navigate every buddy command as a guided tree; common settings (theme, style, game-feel, toggles) are set right from the menu |
 | `/buddy pet` | Pet your companion |
 | `/buddy stats` | Stats-only card |
 | `/buddy xp` | Show XP, level, and unlocked reactions/upgrades |
