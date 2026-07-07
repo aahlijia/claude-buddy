@@ -130,6 +130,12 @@ export interface Companion {
   personality: string;
   hatchedAt: number;
   userId: string;
+  /**
+   * Set once the one-time upgrade-effects rebase (design-derive-upgrades.md
+   * D3) has processed this slot. Permanent slot metadata; absent = pre-
+   * migration or migration not yet run.
+   */
+  effectsRebased?: boolean;
 }
 
 // ─── Hash: wyhash via Bun.hash, pure JS fallback ───────────────────────────

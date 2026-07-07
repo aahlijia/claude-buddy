@@ -201,7 +201,7 @@ Rarer buddies earn a small flavor bonus (common ×1.0 → legendary ×1.2) — n
 - **Stat unlocks** — small permanent boosts to your buddy's peak stat
 - **Prestige titles** (level 11+) — `Committer`, `Debugger`, `Architect`, `Sage`, `Legend`. Equip one with `/buddy upgrades title <id>`; it shows under your buddy's name in the status line.
 
-Respec (refunding unlocks) is open until level 10, then locks permanently — `/buddy upgrades` always shows your current respec status and point balance.
+Respec (refunding unlocks) is open until level 10, then locks permanently — `/buddy upgrades` always shows your current respec status and point balance. Every unlock is derived on read rather than baked into your buddy, so refunds are always exact (no permanent stat loss, no clobbered hat) and an unlock applies to your **whole menagerie**, not just whoever was active when you bought it.
 
 ### Mood
 

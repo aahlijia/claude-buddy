@@ -188,6 +188,10 @@ export function tickWhim(slot?: string, now: Date = new Date()): WhimTick {
 
   if (current >= target) state.fulfilled = true;
 
+  // `fulfilled` and `rewarded` only ever flip together below, so this branch is
+  // the sole state change a tick can make — every other tick (unfulfilled, or
+  // already rewarded) leaves the file exactly as loadWhim persisted it, and
+  // saving again would just be a redundant write per XP event.
   let justRewarded = false;
   if (state.fulfilled && !state.rewarded) {
     state.rewarded = true;
@@ -198,8 +202,6 @@ export function tickWhim(slot?: string, now: Date = new Date()): WhimTick {
     } catch {
       // loot is best-effort; the whim still counts as fulfilled.
     }
-  } else {
-    saveWhim(state);
   }
   return { fulfilled: state.fulfilled, justRewarded, offer: def.offer };
 }

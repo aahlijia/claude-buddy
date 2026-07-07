@@ -22,6 +22,7 @@ import {
   type ItemId,
   type Slot,
 } from "./items";
+import type { UpgradeEffect } from "./xp";
 
 // ─── Pure equip / unequip ─────────────────────────────────────────────────────
 
@@ -134,17 +135,21 @@ export interface ResolvedAppearance {
 }
 
 /**
- * Fold innate identity + equipped items into a display view. Pure and
- * idempotent: `bones` is read-only, so equip→unequip→equip yields identical
- * output (no drift) and the innate hat is never clobbered (no-clobber).
+ * Fold innate identity + owned upgrade effects + equipped items into a display
+ * view. Pure and idempotent: `bones` is read-only, so equip→unequip→equip
+ * yields identical output (no drift) and the innate hat is never clobbered
+ * (no-clobber).
  *
- * Items are read in slot order (weapon, headgear, trinket) for stable stacking.
+ * Fold order: innate bones → `upgradeEffects` (purchase order) → equipped
+ * items (slot order, weapon/headgear/trinket) — later wins for `hat`, later
+ * equipment beats an owned upgrade so a deliberate gear choice always shows.
  */
 export function resolveAppearance(
   bones: BuddyBones,
   equipment: Equipment,
   cosmeticFlags: readonly string[] = [],
   catalog: readonly Item[] = ITEMS,
+  upgradeEffects: readonly UpgradeEffect[] = [],
 ): ResolvedAppearance {
   let hat: Hat = bones.hat;
   let weaponArt = "";
@@ -152,20 +157,14 @@ export function resolveAppearance(
   const flags = new Set<string>(cosmeticFlags);
   const stats: BuddyStats = { ...bones.stats };
 
-  for (const slot of SLOTS) {
-    const id = equipment[slot];
-    if (!id) continue;
-    const item = findItem(id, catalog);
-    if (!item) continue;
-    if (item.art && slot === "weapon") weaponArt = item.art;
-    const effect = item.effect;
-    if (!effect) continue;
+  const applyEffect = (effect: UpgradeEffect): void => {
     switch (effect.type) {
       case "hat":
         hat = effect.hat;
         break;
       case "shiny":
         shiny = true;
+        flags.add("aura_shiny");
         break;
       case "flag":
         flags.add(effect.flag);
@@ -177,23 +176,41 @@ export function resolveAppearance(
         );
         break;
     }
+  };
+
+  for (const effect of upgradeEffects) applyEffect(effect);
+
+  for (const slot of SLOTS) {
+    const id = equipment[slot];
+    if (!id) continue;
+    const item = findItem(id, catalog);
+    if (!item) continue;
+    if (item.art && slot === "weapon") weaponArt = item.art;
+    if (item.effect) applyEffect(item.effect);
   }
 
   return { hat, weaponArt, shiny, flags: [...flags], stats };
 }
 
 /**
- * A `bones`-shaped view with equipment folded in, for passing to the existing
- * card renderer without teaching it about equipment. The innate `bones` is
- * untouched; this is a fresh object.
+ * A `bones`-shaped view with equipment + owned upgrade effects folded in, for
+ * passing to the existing card renderer without teaching it about either. The
+ * innate `bones` is untouched; this is a fresh object.
  */
 export function gearedBones(
   bones: BuddyBones,
   equipment: Equipment,
   cosmeticFlags: readonly string[] = [],
   catalog: readonly Item[] = ITEMS,
+  upgradeEffects: readonly UpgradeEffect[] = [],
 ): BuddyBones {
-  const a = resolveAppearance(bones, equipment, cosmeticFlags, catalog);
+  const a = resolveAppearance(
+    bones,
+    equipment,
+    cosmeticFlags,
+    catalog,
+    upgradeEffects,
+  );
   return { ...bones, hat: a.hat, shiny: a.shiny, stats: a.stats };
 }
 

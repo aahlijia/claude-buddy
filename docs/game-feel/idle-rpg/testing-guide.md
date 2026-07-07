@@ -13,7 +13,7 @@ fast **deterministic harnesses** for triggering scenarios on demand.
 
 ```bash
 cd /Users/austinahlijian/Projects/claude-buddy
-bun test          # sanity: 653 pass
+bun test          # sanity: 724 pass
 bun run install-buddy
 ```
 Then **restart Claude Code** (the MCP server + hooks reload). In a session:
@@ -266,6 +266,53 @@ bun run server/award-xp.ts session_start
 A full uninstall (`bun run` the uninstall CLI, or the `buddy_uninstall` tool)
 removes plugin state entirely. Or just test against a throwaway profile from the
 start: prefix commands with `CLAUDE_CONFIG_DIR=$(mktemp -d)`.
+
+---
+
+## 7. Derive-on-read upgrades (buy/refund purity)
+
+Owned upgrades (hat/stat/shiny/flag) no longer mutate `companion.bones` — they
+fold into the display/combat view at read time from `unlockedUpgrades`, exactly
+like equipment (see
+[`design-derive-upgrades.md`](design-derive-upgrades.md)). The buy/refund cycle
+should now be **exact**: nothing about your buddy's saved bones changes,
+regardless of how many times you buy and refund.
+
+**Prompts:**
+> buy the royal crown
+
+> refund the royal crown
+
+**What happens / expect:**
+- `buddy_upgrades buy=crown` → the status line and `buddy_show` card show the
+  crown immediately, **without** `menagerie.json`'s `bones.hat` changing:
+  ```bash
+  jq '.companions[.active].bones.hat' ~/.claude/buddy-state/menagerie.json  # still your innate hat (e.g. "none")
+  jq '.unlockedUpgrades' ~/.claude/buddy-state/xp.json                      # now contains "crown"
+  echo '{}' | bash statusline/buddy-status.sh                               # buddy renders wearing the crown
+  ```
+- `buddy_upgrades refund=crown` while respec is open (below level 10, or right
+  after an ascension) → succeeds and removes `crown` from `unlockedUpgrades`.
+  Before this design, hat/stat upgrades were **permanently non-refundable**
+  once past their level gate (a lossy-revert guard) — that guard is gone.
+- **Menagerie-wide:** an owned upgrade now shows on **every** companion, not
+  just whoever was active at purchase — switch buddies (`/buddy list`, pick
+  another) and the crown still shows.
+
+**Migration (legacy state):** a save file from before this design has upgrade
+effects baked directly into `bones` (e.g. `bones.hat` already `"crown"`,
+`bones.stats.<peak>` already bumped). The one-time rebase runs automatically on
+the next `loadXpState()` call (any tool, any hook). Simulate it manually:
+```bash
+# Force the "needs migration" path by clearing the marker:
+jq 'del(.upgradeEffectsDerived)' ~/.claude/buddy-state/xp.json > /tmp/x && mv /tmp/x ~/.claude/buddy-state/xp.json
+bun -e 'import {getXpState} from "./server/xp.ts"; getXpState()'   # triggers the rebase
+jq '.upgradeEffectsDerived' ~/.claude/buddy-state/xp.json                        # now true
+jq '.companions[.active].effectsRebased' ~/.claude/buddy-state/menagerie.json    # now true
+```
+**Expect:** `buddy_show` / the status line render **identically** before and
+after (G4 parity) — the rebase only moves where the effect lives, not what it
+looks like.
 
 ---
 

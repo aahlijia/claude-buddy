@@ -35,6 +35,9 @@ import {
   COLLECTOR_TITLE,
   MAX_LEVEL,
   xpForLevel,
+  ownedUpgradeEffects,
+  spendUnlock,
+  refundUnlock,
   type XpState,
 } from "./xp.ts";
 import type { Companion } from "./engine.ts";
@@ -162,6 +165,25 @@ describe("backfillXpState — fresh/empty", () => {
   });
 });
 
+describe("backfillXpState — upgradeEffectsDerived marker (design-derive-upgrades)", () => {
+  test("brand-new state (null parsed) has nothing to migrate", () => {
+    expect(backfillXpState(null).upgradeEffectsDerived).toBe(true);
+  });
+
+  test("existing legacy blob without the field defaults false (needs migration)", () => {
+    const s = backfillXpState({ totalXp: 0 } as Partial<XpState>);
+    expect(s.upgradeEffectsDerived).toBe(false);
+  });
+
+  test("an already-migrated blob's true marker passes through unchanged", () => {
+    const s = backfillXpState({
+      totalXp: 0,
+      upgradeEffectsDerived: true,
+    } as Partial<XpState>);
+    expect(s.upgradeEffectsDerived).toBe(true);
+  });
+});
+
 describe("backfillXpState — legacy migration (no points fields)", () => {
   // A pre-points xp.json: owned unlocks were auto-granted, no economy fields.
   const legacy = {
@@ -253,6 +275,27 @@ describe("backfillXpState — self-healing & passthrough", () => {
   test("preserves an equipped title", () => {
     const s = backfillXpState({ totalXp: 0, title: "Committer" } as Partial<XpState>);
     expect(s.title).toBe("Committer");
+  });
+});
+
+describe("ownedUpgradeEffects", () => {
+  test("returns effects in purchase (unlockedUpgrades) order", () => {
+    const s = makeState({ unlockedUpgrades: ["extra_hat_slot", "crown"] });
+    expect(ownedUpgradeEffects(s)).toEqual([
+      { type: "hat", hat: "tinyduck" },
+      { type: "hat", hat: "crown" },
+    ]);
+  });
+
+  test("skips owned reactions and unknown ids (no effect to fold)", () => {
+    const s = makeState({
+      unlockedUpgrades: ["title_committer", "unknown_id"],
+    });
+    expect(ownedUpgradeEffects(s)).toEqual([]);
+  });
+
+  test("empty when nothing owned", () => {
+    expect(ownedUpgradeEffects(makeState({}))).toEqual([]);
   });
 });
 
@@ -352,6 +395,75 @@ describe("refundError", () => {
       unlockedUpgrades: ["prestige_aura"],
     });
     expect(refundError(s, "prestige_aura")).toContain("permanent");
+  });
+
+  // ── Post-ascension guards. applyAscension reopens respec with pointsSpent 0
+  //    while every pre-ascension unlock stays owned. Before derive-on-read,
+  //    hat/stat refunds were blocked here because reverting them was lossy
+  //    (mutated bones, best-effort undo). Now ownership alone drives the
+  //    effect (design-derive-upgrades.md), so a refund is exact — these two
+  //    guards are flipped: hat/stat refunds succeed like any other, gated
+  //    only by the pointsSpent-coverage rule below. ─────────────────────────
+
+  test("allows refunding a stat upgrade with respec open (exact refund, no mutation)", () => {
+    const s = makeState({
+      level: 1,
+      respecLockedAt: null,
+      prestigeLevel: 1,
+      unlockedUpgrades: ["quick_study"],
+      pointsSpent: 5,
+    });
+    expect(refundError(s, "quick_study")).toBeNull();
+  });
+
+  test("allows refunding a hat upgrade with respec open (exact refund, no mutation)", () => {
+    const s = makeState({
+      level: 1,
+      respecLockedAt: null,
+      prestigeLevel: 1,
+      unlockedUpgrades: ["crown"],
+      pointsSpent: 5,
+    });
+    expect(refundError(s, "crown")).toBeNull();
+  });
+
+  test("rejects a refund the current budget never paid for", () => {
+    // Ascension reset pointsSpent to 0; the pre-ascension cosmetic stays owned.
+    // A "refund" here would strip the unlock while crediting nothing back.
+    const s = makeState({
+      level: 1,
+      respecLockedAt: null,
+      prestigeLevel: 1,
+      unlockedUpgrades: ["bonus_eye"],
+      pointsSpent: 0,
+    });
+    expect(refundError(s, "bonus_eye")).toContain("yours to keep");
+  });
+
+  test("allows refunding a fresh post-ascension purchase", () => {
+    // Bought after ascending (pointsSpent covers it) — refunds work as normal.
+    const s = makeState({
+      level: 3,
+      respecLockedAt: null,
+      prestigeLevel: 1,
+      unlockedUpgrades: ["bonus_eye"],
+      pointsSpent: 1,
+      pointsTotal: 2,
+    });
+    expect(refundError(s, "bonus_eye")).toBeNull();
+  });
+
+  test("a full ascension round-trip blocks every stale refund", () => {
+    const s = backfillXpState({
+      totalXp: xpForLevel(MAX_LEVEL),
+      unlockedUpgrades: ["quick_study", "crown", "bonus_eye"],
+      pointsSpent: 6,
+    });
+    applyAscension(s);
+    expect(s.respecLockedAt).toBeNull(); // respec is open again…
+    expect(refundError(s, "quick_study")).not.toBeNull(); // …but nothing leaks
+    expect(refundError(s, "crown")).not.toBeNull();
+    expect(refundError(s, "bonus_eye")).not.toBeNull();
   });
 });
 
@@ -611,6 +723,120 @@ describe("multiplier stacking ceiling (risk R2)", () => {
 // the menagerie via state.ts, whose dir is frozen at module load, so this suite
 // deliberately asserts only on the temp-backed lines (prestige/streak/loot) and
 // the fresh-install no-throw guarantee (checkpoint C6).
+// ─── spendUnlock / refundUnlock purity (design-derive-upgrades.md G1/G3) ──────
+//
+// Ownership alone now drives an upgrade's effect (derived on read); buying or
+// refunding must never touch companion.bones. Seeds upgradeEffectsDerived:true
+// so these tests exercise spend/refund purity only, not the migration path.
+describe("spendUnlock / refundUnlock purity (temp dir)", () => {
+  let cfgDir: string;
+  let stateDir: string;
+  let prevEnv: string | undefined;
+
+  beforeEach(() => {
+    prevEnv = process.env.CLAUDE_CONFIG_DIR;
+    cfgDir = mkdtempSync(join(tmpdir(), "buddy-xpspend-test-"));
+    stateDir = join(cfgDir, "buddy-state");
+    mkdirSync(stateDir, { recursive: true });
+    process.env.CLAUDE_CONFIG_DIR = cfgDir;
+  });
+
+  afterEach(() => {
+    if (prevEnv === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prevEnv;
+    rmSync(cfgDir, { recursive: true, force: true });
+  });
+
+  function seedLevel(level: number): void {
+    writeFileSync(
+      join(stateDir, "xp.json"),
+      JSON.stringify({
+        totalXp: xpForLevel(level),
+        respecLockedAt: null, // open, as it would be right after an ascension
+        upgradeEffectsDerived: true,
+      }),
+    );
+  }
+
+  function testCompanion(
+    overrides: Partial<Companion["bones"]> = {},
+  ): Companion {
+    return {
+      name: "t",
+      personality: "",
+      hatchedAt: 0,
+      userId: "u",
+      bones: {
+        species: "cactus",
+        rarity: "common",
+        eye: "·",
+        hat: "none",
+        shiny: false,
+        peak: "SNARK",
+        dump: "WISDOM",
+        stats: { DEBUGGING: 50, PATIENCE: 50, CHAOS: 50, WISDOM: 50, SNARK: 50 },
+        ...overrides,
+      },
+    } as unknown as Companion;
+  }
+
+  test("buying a hat upgrade never mutates the companion object (G1)", () => {
+    seedLevel(16); // crown: level 16, cost 3
+    const companion = testCompanion();
+    const before = JSON.parse(JSON.stringify(companion));
+    const res = spendUnlock("crown", companion);
+    expect(res.ok).toBe(true);
+    expect(res.state.unlockedUpgrades).toContain("crown");
+    expect(companion).toEqual(before);
+  });
+
+  test("buying a stat upgrade never mutates the companion object (G1)", () => {
+    seedLevel(12); // stat_boost: level 12, cost 2
+    const companion = testCompanion();
+    const before = JSON.parse(JSON.stringify(companion));
+    const res = spendUnlock("stat_boost", companion);
+    expect(res.ok).toBe(true);
+    expect(companion).toEqual(before);
+  });
+
+  test("refundUnlock takes no companion parameter and removes ownership only", () => {
+    seedLevel(16);
+    spendUnlock("crown", testCompanion());
+    const res = refundUnlock("crown");
+    expect(res.ok).toBe(true);
+    expect(res.state.unlockedUpgrades).not.toContain("crown");
+  });
+
+  test("hat/stat refunds now succeed with respec open (G3 — the 2026-07-06 guard is gone)", () => {
+    seedLevel(16);
+    spendUnlock("crown", testCompanion());
+    const res = refundUnlock("crown");
+    expect(res.ok).toBe(true);
+    expect(res.message).toContain("Refunded");
+  });
+
+  test("buy → refund → buy round-trip at the 100 stat cap loses nothing (the old lossy case, now exact)", () => {
+    seedLevel(12); // stat_boost
+    const companion = testCompanion({
+      peak: "SNARK",
+      stats: { DEBUGGING: 50, PATIENCE: 50, CHAOS: 50, WISDOM: 50, SNARK: 100 },
+    });
+    const before = JSON.parse(JSON.stringify(companion));
+
+    const buy1 = spendUnlock("stat_boost", companion);
+    expect(buy1.ok).toBe(true);
+    expect(companion).toEqual(before); // no mutation on buy
+
+    const refund = refundUnlock("stat_boost");
+    expect(refund.ok).toBe(true);
+    expect(companion).toEqual(before); // no mutation on refund
+
+    const buy2 = spendUnlock("stat_boost", companion);
+    expect(buy2.ok).toBe(true);
+    expect(companion).toEqual(before); // still untouched — no lossy cap, unlike the old model
+  });
+});
+
 describe("renderXpCardMarkdown — additional rewards surfacing", () => {
   let cfgDir: string;
   let stateDir: string;

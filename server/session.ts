@@ -35,6 +35,7 @@ import {
   getXpState,
   accountMultiplier,
   accrueStatProgress,
+  ownedUpgradeEffects,
   type XpState,
 } from "./xp.ts";
 import { updateStreak } from "./streak.ts";
@@ -260,9 +261,17 @@ export function maybeFightBug(
   const companion = slot ? loadCompanionSlot(slot) : loadCompanion();
   if (!companion) return null;
 
-  const { equipment, inventory } = getXpState();
+  const xpState = getXpState();
+  const { equipment, inventory } = xpState;
   const owned = ownedItems(inventory, equipment);
-  const result = resolveCombat(companion.bones, bug, equipment, seed, owned);
+  const result = resolveCombat(
+    companion.bones,
+    bug,
+    equipment,
+    seed,
+    owned,
+    ownedUpgradeEffects(xpState),
+  );
   applyCombatDrops(result.drop);
   writeEncounter(result);
   return result.summary;

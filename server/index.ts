@@ -86,12 +86,13 @@ import {
   equipFromInventory,
   unequipToInventory,
   buyShopItem,
+  ownedUpgradeEffects,
   MAX_LEVEL,
   PRESTIGE_MAX,
   computeLevel,
 } from "./xp";
 import { gearedBones, renderLoadoutCard } from "./equipment";
-import { SLOTS, findItem, type Slot } from "./items";
+import { ITEMS, SLOTS, findItem, type Slot } from "./items";
 import {
   shopListing,
   shopStateOf,
@@ -280,7 +281,13 @@ registerTool(
     // stat-bearing gear show on the card without mutating the innate bones.
     const xp = getXpState();
     const card = renderCompanionCardMarkdown(
-      gearedBones(companion.bones, xp.equipment, xp.cosmeticFlags),
+      gearedBones(
+        companion.bones,
+        xp.equipment,
+        xp.cosmeticFlags,
+        ITEMS,
+        ownedUpgradeEffects(xp),
+      ),
       companion.name,
       companion.personality,
       reactionText,
@@ -1135,7 +1142,6 @@ registerTool(
     if (buy) {
       const companion = loadCompanion();
       const res = spendUnlock(buy, companion);
-      if (res.ok && res.companionChanged && companion) saveCompanion(companion);
       let msg = res.message;
       // Cosmetic-set milestone (game-feel FR-C1): a purchase may complete a set.
       if (res.ok) {
@@ -1153,9 +1159,7 @@ registerTool(
       return text(msg);
     }
     if (refund) {
-      const companion = loadCompanion();
-      const res = refundUnlock(refund, companion);
-      if (res.ok && res.companionChanged && companion) saveCompanion(companion);
+      const res = refundUnlock(refund);
       return text(res.message);
     }
     if (titleId !== undefined) {

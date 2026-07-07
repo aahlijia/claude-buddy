@@ -426,7 +426,9 @@ export interface BuddyConfig {
 /** Game-feel intensity level (game-feel FR-E1). */
 export type GameFeel = "off" | "subtle" | "full";
 
-const DEFAULT_CONFIG: BuddyConfig = {
+/** The documented defaults. Exported so tests can assert the bash renderer's
+ *  fallback values (buddy-status.sh) stay in lockstep — see statusline.test.ts. */
+export const DEFAULT_CONFIG: BuddyConfig = {
   commentCooldown: 30,
   reactionTTL: 0,
   bubbleStyle: "classic",
@@ -612,7 +614,7 @@ export function autoQuietReasonFor(
     focusOptIn &&
     deepFocusActive({
       sessionElapsedSec,
-      hasFreshError: autoQuietActive(reason),
+      hasFreshError: false, // a spike already returned above
     })
   ) {
     return "deep-focus";
@@ -1000,10 +1002,15 @@ export function writeStatusState(
     try {
       const { gearedBones } =
         require("./equipment.ts") as typeof import("./equipment.ts");
+      const { ITEMS } = require("./items.ts") as typeof import("./items.ts");
+      const { ownedUpgradeEffects } =
+        require("./xp.ts") as typeof import("./xp.ts");
       displayBones = gearedBones(
         companion.bones,
         xpStateForStatus.equipment,
         xpStateForStatus.cosmeticFlags,
+        ITEMS,
+        ownedUpgradeEffects(xpStateForStatus),
       );
     } catch {
       // Equipment is optional during first install / version skew.

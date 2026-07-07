@@ -5,10 +5,13 @@ tying together the arcs that each have their own design/status docs. For the
 per-arc detail, follow the links in [Doc map](#doc-map).
 
 _Last updated: 2026-07-06 · branch `feature/interactive-menu`_
-_Baseline: **679 tests pass** · `tsc --noEmit` clean · `bash -n` clean_
+_Baseline: **724 tests pass** · `tsc --noEmit` clean · `bash -n` clean_
 _Status: all arcs **done and committed** — `feature/free-roam-combat` was merged into
 `feature/interactive-menu` via `fa8cc6f` on 2026-07-06, absorbing everything in
-[Recent changes](#recent-changes-2026-06-30) below. No PR opened yet._
+[Recent changes](#recent-changes-2026-06-30) below. Two **uncommitted** passes on
+top: the [Rewards/leveling fix pass](#rewardsleveling-fix-pass-2026-07-06-scanalyze--scimprove)
+and [Derive-on-read for upgrades](#derive-on-read-for-upgrades-2026-07-06)
+(Phases 1-4, model flip). No PR opened yet._
 
 > **What "game-feel" is.** A layer of optional juice on top of the buddy
 > companion: celebratory feedback, an expressive idle status line, light RPG
@@ -127,8 +130,12 @@ testable:
 2. **Pure cores, seeded RNG.** `wander.ts`, `combat.ts`, `bugs.ts`, and the
    `art.ts` frame helpers take an injected seed and do no I/O or clock reads →
    deterministic and unit-testable. Thin I/O wrappers persist results.
-3. **Derive-on-read.** Equipment/seasonal/gear fold into the *rendered* appearance
-   on read; innate bones are never mutated.
+3. **Derive-on-read.** Equipment/seasonal/gear **and owned upgrades**
+   (`ownedUpgradeEffects` + `resolveAppearance`, see
+   [design-derive-upgrades.md](idle-rpg/design-derive-upgrades.md)) fold into
+   the *rendered* appearance on read; innate bones are never mutated. A
+   one-time migration rebases any pre-existing state where an upgrade's effect
+   was still baked into bones.
 4. **Guarded writes.** `writeStatusState` wraps every optional subsystem in a lazy
    `require` + try/catch, so first-install / version-skew never breaks the line.
    Writes are atomic (`tmp` + `rename`) — three processes touch `status.json`.
@@ -248,6 +255,87 @@ into `feature/interactive-menu` (merge commit `fa8cc6f`), landing alongside the
 branch and one test baseline (679 pass). No pull request has been opened for
 this branch yet.
 
+### Rewards/leveling fix pass (2026-07-06, `/sc:analyze` → `/sc:improve`)
+
+Two correctness bugs plus smaller cleanups, all **uncommitted**:
+
+1. **Loot cosmetics never applied — and could crash a commit.** `rollLoot`
+   persisted the applied cosmetic via the *append-only* `saveCompanionSlot`,
+   which **throws** for an existing slot — so every cosmetic drop on a live
+   buddy failed. Swallowed at most call sites (cosmetics silently never worked),
+   but the streak-milestone call in `session.ts` is unwrapped: ~12% of every 3rd
+   commit crashed `award-xp` *before* the session re-baselined (double-counting
+   the next session). Now `updateCompanionSlot`, the whole apply block is
+   guarded, and a drop only counts (owned/logged/toast) once a companion
+   actually received it — no companion ⇒ points-only, cosmetic stays in the
+   pool. New fresh-process regression test exercises the real-slot path.
+2. **Post-ascension refunds corrupted stats/hats and credited nothing.**
+   `applyAscension` reopens respec with `pointsSpent = 0` while every
+   pre-ascension unlock stays owned, so `refundError` allowed refunding plain
+   L11+ upgrades: a stat bought at the 100 cap under-refunded (permanent innate
+   loss), a hat revert set `bones.hat="none"` (clobbering innate/loot hats), and
+   the "+N pt" credit was a no-op (`max(0, 0−cost)`). Two new guards: lossy
+   (hat/stat) upgrades are never refundable, and a refund requires
+   `pointsSpent >= cost` (the current budget actually paid for it). Fresh
+   post-ascension purchases stay refundable. +5 regression tests.
+3. **`bubbleWidth` default drift** — bash fell back to 44 where
+   `DEFAULT_CONFIG` says 28, so the first config write visibly narrowed the
+   bubble. Aligned to 28; `DEFAULT_CONFIG` is now exported and a new parity
+   test pins every bash fallback (jq `//` defaults + pre-read initializers) to
+   it.
+4. **Smaller:** `tickWhim` no longer rewrites `whims.json` on every XP event
+   (saves only on the fulfilled→rewarded flip); prestige-badge centering
+   accounts for 🔥's double width; `saveXpState` imports `renameSync` normally;
+   `autoQuietReasonFor`'s dead `hasFreshError` re-check is a literal `false`.
+
+Tests: **685 pass** (679 + 8 new − 3 rewritten to the corrected loot
+semantics), `tsc` + `bash -n` clean.
+
+### Derive-on-read for upgrades (2026-07-06)
+
+Root-fixed the mutation model the rewards fix pass above had papered over with
+guards. Full design: [design-derive-upgrades.md](idle-rpg/design-derive-upgrades.md).
+
+Upgrade purchases used to mutate `companion.bones` directly
+(`applyUpgradeEffect`/`revertUpgradeEffect`), the same bug class equipment
+solved back in idle-RPG Phase 1 with derive-on-read. Four phases, in order
+(each a working-tree checkpoint, tests green throughout):
+
+1. **Resolver extension (inert).** `resolveAppearance`/`gearedBones`
+   (equipment.ts) gained an `upgradeEffects` param, defaulting to `[]` so
+   nothing changed yet; `ownedUpgradeEffects(state)` (xp.ts) maps
+   `unlockedUpgrades` to their catalog effects in purchase order.
+2. **Migration machinery (inert).** New `server/migrate.ts`: a pure per-slot
+   rebase (subtract baked stat amounts on the active slot only; reset a
+   baked-in hat unless an owned loot cosmetic also grants it; undo the aura's
+   shiny only where it's actually set) plus the I/O entry point
+   (`migrateUpgradeEffects`, lazy-requires the companion store, guarded
+   try/catch). Two new markers — `XpState.upgradeEffectsDerived`,
+   `Companion.effectsRebased` — but **not yet wired** into `loadXpState`, so
+   still fully inert.
+3. **The flip.** `loadXpState` now runs the migration once per un-migrated
+   state; all six consumer sites (status write, `buddy_show` card, combat,
+   `sets.ts` set-completion, spend/refund) rewired to fold owned-upgrade
+   effects in at read time. `applyUpgradeEffect`/`revertUpgradeEffect`,
+   `UnlockResult.companionChanged`, and the vestigial `active` field on the
+   upgrade catalog are all deleted. `refundError`'s hat/stat "can't be cleanly
+   reverted" guard (added in the rewards fix pass, above) is gone — refunds
+   are exact now, so the two guard regression tests from that pass **flipped**
+   to expect success instead of rejection.
+4. **Docs + validation (this).** README semantic-delta note (unlocks now
+   apply menagerie-wide and hat/stat refunds work like any other), a
+   testing-guide section with a live buy/refund/migration harness, this
+   snapshot, and a full-suite + `tsc`/`bash -n` re-verification.
+
+User-visible deltas: an owned upgrade now affects **every** companion (global
+ownership, matching equipment), not just whoever was active at purchase; hat
+precedence is a stable rule (last-purchased upgrade → equipped item → loot
+base) instead of "whatever mutated bones last"; a naturally-shiny buddy that
+buys `shiny_aura` now also completes the Twinkle set (previously impossible).
+
+Tests: **724 pass** (685 + 39 new across equipment/xp/migrate/combat/sets/
+statusline), `tsc --noEmit` + `bash -n` clean. Uncommitted.
+
 ---
 
 ## Going live
@@ -269,9 +357,15 @@ bun run install-buddy   # copies the repo script into place
 - ~~Commit the 2026-06-30 fixes~~ **done** — merged into `feature/interactive-menu`
   via `fa8cc6f` on 2026-07-06 (see above). Opening a PR for that branch is the
   next step.
+- Commit the rewards/leveling fix pass **and** the derive-on-read upgrades work
+  (both above) — currently uncommitted on the same branch.
 - Leftward-roam magnitude tune (`moodWalkOpts` ranges) — intentionally conservative.
 - Idle-RPG niceties: sell/refund gear (buy-only today), inventory cap, gear-bonus
   delta in `buddy_xp`, post-TTL encounter inspection command.
+- Hat wardrobe (design-derive-upgrades.md §9): with multiple owned hat
+  upgrades, let the user pick which one is worn instead of purchase-order
+  default. Deferred as a follow-up — derive-on-read makes it a pure
+  preference field to add later.
 - The stale top-level [`status.md`](status.md) is a point-in-time artifact for the
   quick-wins sub-arc (440 tests, `feature/leveling-system`) — superseded by this
   doc for the current picture.
@@ -288,6 +382,7 @@ bun run install-buddy   # copies the repo script into place
 | [design-movement.md](design-movement.md) | idle wander + free-roam (§11) |
 | [idle-rpg/design.md](idle-rpg/design.md) · [idle-rpg/status.md](idle-rpg/status.md) | idle-RPG arc + tracker |
 | [idle-rpg/phase-{1..5}-*.md](idle-rpg/) | per-phase idle-RPG specs |
+| [idle-rpg/design-derive-upgrades.md](idle-rpg/design-derive-upgrades.md) | derive-on-read for upgrades (bones-mutation fix) |
 | [idle-rpg/testing-guide.md](idle-rpg/testing-guide.md) | hands-on verification harnesses |
 | [menu/](menu/) | interactive menu + nav channel |
 | [anaylsis.md](anaylsis.md) | earlier analysis notes |

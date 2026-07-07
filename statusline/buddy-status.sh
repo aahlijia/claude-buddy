@@ -38,7 +38,7 @@ GAME_FEEL="subtle"
 _CFG_THEME="auto"
 _RAINBOW_CSV=""
 REACTION_TTL=0
-INNER_W=44
+INNER_W=28
 MARGIN=8
 SHOW_STATS="false"
 SHOW_PRESTIGE_BADGE="false"
@@ -56,7 +56,7 @@ if [ -f "$CONFIG_FILE" ]; then
         (.theme // "auto"),
         ((.rainbowColors // []) | join(",")),
         ((.reactionTTL // 0) | tostring),
-        ((.bubbleWidth // 44) | tostring),
+        ((.bubbleWidth // 28) | tostring),
         ((.bubbleMargin // 8) | tostring),
         ((.showStats // false) | tostring),
         ((.showPrestigeBadge // false) | tostring),
@@ -68,7 +68,7 @@ fi
 # back to the documented default.
 case "$GAME_FEEL" in off|subtle|full) ;; *) GAME_FEEL="subtle" ;; esac
 case "$REACTION_TTL" in ''|*[!0-9]*) REACTION_TTL=0 ;; esac
-case "$INNER_W" in ''|*[!0-9]*) INNER_W=44 ;; esac
+case "$INNER_W" in ''|*[!0-9]*) INNER_W=28 ;; esac
 case "$MARGIN" in ''|*[!0-9]*) MARGIN=8 ;; esac
 [ "$SHOW_STATS" = "true" ] || SHOW_STATS="false"
 [ "$SHOW_PRESTIGE_BADGE" = "true" ] || SHOW_PRESTIGE_BADGE="false"
@@ -475,6 +475,9 @@ if [ "$SHOW_PRESTIGE_BADGE" = "true" ]; then
     fi
     if [ -n "$BADGE" ]; then
         BADGE_LEN=${#BADGE}
+        # 🔥 counts as 1 char in ${#} but renders 2 cols — correct the centering
+        # without paying dwidth()'s fork chain for this tiny known-shape string.
+        [ "$STREAK" -gt 0 ] && BADGE_LEN=$(( BADGE_LEN + 1 ))
         BADGE_PAD=$(( ART_CENTER - BADGE_LEN / 2 ))
         [ "$BADGE_PAD" -lt 0 ] && BADGE_PAD=0
         BADGE_LINE="$(printf '%*s%s' "$BADGE_PAD" '' "$BADGE")"

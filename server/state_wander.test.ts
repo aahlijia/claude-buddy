@@ -200,3 +200,46 @@ describe("writeStatusState — generator failure is swallowed (NFR4)", () => {
     expect(state!.wanderRowSequence).toBeUndefined();
   });
 });
+
+describe("writeStatusState — owned-upgrade hat (design-derive-upgrades.md)", () => {
+  test("status.json's hat reflects an owned upgrade, not the innate (none) bones", () => {
+    const cfgDir = mkdtempSync(join(tmpdir(), "buddy-wander-"));
+    const stateDir = join(cfgDir, "buddy-state");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+      join(stateDir, "xp.json"),
+      JSON.stringify({
+        totalXp: 0,
+        unlockedUpgrades: ["crown"],
+        upgradeEffectsDerived: true,
+      }),
+    );
+
+    const childSrc = `
+import { writeStatusState } from ${STATE_TS};
+import { generateBones } from ${ENGINE_TS};
+const bones = generateBones("smoke", "salt");
+bones.hat = "none"; // innate hat — the derived "crown" must come from ownership
+writeStatusState({
+  bones,
+  name: "Waffle",
+  personality: "x",
+  hatchedAt: Date.now(),
+  userId: "smoke",
+});
+`;
+    const childPath = join(cfgDir, "child.mjs");
+    writeFileSync(childPath, childSrc);
+    const res = spawnSync("bun", [childPath], {
+      env: { ...process.env, CLAUDE_CONFIG_DIR: cfgDir },
+      encoding: "utf8",
+    });
+    expect(res.status).toBe(0);
+
+    const status = JSON.parse(
+      readFileSync(join(stateDir, "status.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(status.hat).toBe("crown");
+    rmSync(cfgDir, { recursive: true, force: true });
+  });
+});

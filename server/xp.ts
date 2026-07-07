@@ -5,7 +5,7 @@
  * State persists to xp.json in the buddy state directory.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, renameSync } from "fs";
 import { join } from "path";
 import { buddyStateDir } from "./path";
 import type { Species, Rarity, Companion, Hat, StatName } from "./engine";
@@ -207,8 +207,6 @@ export interface UnlockableUpgrade {
   rarity?: Rarity[];
   /** What buying this upgrade does to the companion (none → pure unlock). */
   effect?: UpgradeEffect;
-  /** Whether this upgrade is currently active on a companion */
-  active?: boolean;
   /** Minimum prestige tier required to buy (omitted = available to everyone). */
   prestigeLevel?: number;
 }
@@ -595,6 +593,14 @@ export interface XpState {
   // appearance is derived on read by equipment.ts — bones is never mutated.
   equipment: Equipment; // equipped item per slot
   inventory: ItemId[]; // owned-but-unequipped item ids
+
+  /**
+   * Set once the one-time upgrade-effects rebase (design-derive-upgrades.md)
+   * has run. `false` for a legacy blob that predates derive-on-read (still
+   * needs the migration); `true` for a brand-new state (nothing to migrate)
+   * or one already migrated.
+   */
+  upgradeEffectsDerived?: boolean;
 }
 
 /** Level at and beyond which respec is permanently locked. */
@@ -773,16 +779,32 @@ export function backfillXpState(parsed: Partial<XpState> | null): XpState {
     prestigeLevel,
     prestigeMultiplier: prestigeMultiplierFor(prestigeLevel),
     ...coerceEquipment(p.equipment, p.inventory),
+    // Brand-new state (no prior blob) has nothing to migrate; a legacy blob
+    // defaults false so the one-time rebase (design-derive-upgrades.md) runs.
+    upgradeEffectsDerived:
+      parsed === null ? true : (p.upgradeEffectsDerived ?? false),
   };
 }
 
 function loadXpState(): XpState {
+  let state: XpState;
   try {
     const raw = readFileSync(xpFile(), "utf8");
-    return backfillXpState(JSON.parse(raw) as Partial<XpState>);
+    state = backfillXpState(JSON.parse(raw) as Partial<XpState>);
   } catch {
-    return backfillXpState(null);
+    state = backfillXpState(null);
   }
+  if (!state.upgradeEffectsDerived) {
+    try {
+      const { migrateUpgradeEffects } =
+        require("./migrate.ts") as typeof import("./migrate.ts");
+      state = migrateUpgradeEffects(state);
+      saveXpState(state);
+    } catch {
+      // Best-effort: an un-migrated state simply re-attempts on the next load.
+    }
+  }
+  return state;
 }
 
 function saveXpState(state: XpState): void {
@@ -790,12 +812,10 @@ function saveXpState(state: XpState): void {
   const file = xpFile();
   const tmp = file + ".tmp";
   writeFileSync(tmp, JSON.stringify(state, null, 2));
-  // Atomic rename
+  // Atomic rename, matching the other state writers.
   try {
-    const { renameSync } = require("fs");
     renameSync(tmp, file);
   } catch {
-    // fallback: just write directly
     writeFileSync(file, JSON.stringify(state, null, 2));
   }
 }
@@ -1050,6 +1070,16 @@ export function findUnlockable(id: string): FoundUnlock | null {
   return null;
 }
 
+/** Effects of owned upgrades, in purchase order (`unlockedUpgrades` order). */
+export function ownedUpgradeEffects(state: XpState): UpgradeEffect[] {
+  const effects: UpgradeEffect[] = [];
+  for (const id of state.unlockedUpgrades) {
+    const upg = UNLOCKABLE_UPGRADES.find((u) => u.id === id);
+    if (upg?.effect) effects.push(upg.effect);
+  }
+  return effects;
+}
+
 function isOwned(state: XpState, id: string): boolean {
   return (
     state.unlockedReactions.includes(id) ||
@@ -1081,91 +1111,14 @@ function labelOf(found: FoundUnlock): string {
     : found.item.name;
 }
 
-function addFlag(state: XpState, flag: string): void {
-  if (!state.cosmeticFlags.includes(flag)) state.cosmeticFlags.push(flag);
-}
-
-function removeFlag(state: XpState, flag: string): void {
-  const i = state.cosmeticFlags.indexOf(flag);
-  if (i >= 0) state.cosmeticFlags.splice(i, 1);
-}
-
-/**
- * Apply an owned upgrade's declarative effect to a companion. Flag/shiny effects
- * revert cleanly; hat/stat effects are reserved for non-refundable (L>=10)
- * upgrades, so their revert is best-effort only.
- */
-function applyUpgradeEffect(
-  companion: Companion,
-  state: XpState,
-  id: string,
-): void {
-  const upg = UNLOCKABLE_UPGRADES.find((u) => u.id === id);
-  const effect = upg?.effect;
-  if (!effect) return;
-  switch (effect.type) {
-    case "flag":
-      addFlag(state, effect.flag);
-      break;
-    case "shiny":
-      if (!companion.bones.shiny) {
-        companion.bones.shiny = true;
-        addFlag(state, "aura_shiny");
-      }
-      break;
-    case "hat":
-      companion.bones.hat = effect.hat;
-      break;
-    case "stat":
-      companion.bones.stats[companion.bones.peak] = Math.min(
-        100,
-        companion.bones.stats[companion.bones.peak] + effect.amount,
-      );
-      break;
-  }
-}
-
-/** Inverse of applyUpgradeEffect, for refunds while respec is open. */
-function revertUpgradeEffect(
-  companion: Companion,
-  state: XpState,
-  id: string,
-): void {
-  const upg = UNLOCKABLE_UPGRADES.find((u) => u.id === id);
-  const effect = upg?.effect;
-  if (!effect) return;
-  switch (effect.type) {
-    case "flag":
-      removeFlag(state, effect.flag);
-      break;
-    case "shiny":
-      if (state.cosmeticFlags.includes("aura_shiny")) {
-        removeFlag(state, "aura_shiny");
-        companion.bones.shiny = false; // only undo the aura, not natural shimmer
-      }
-      break;
-    case "hat":
-      companion.bones.hat = "none";
-      break;
-    case "stat":
-      companion.bones.stats[companion.bones.peak] = Math.max(
-        0,
-        companion.bones.stats[companion.bones.peak] - effect.amount,
-      );
-      break;
-  }
-}
-
 export interface UnlockResult {
   ok: boolean;
   message: string;
   state: XpState;
-  /** True when the companion object was mutated and must be persisted. */
-  companionChanged: boolean;
 }
 
 function fail(state: XpState, message: string): UnlockResult {
-  return { ok: false, message, state, companionChanged: false };
+  return { ok: false, message, state };
 }
 
 /**
@@ -1216,12 +1169,20 @@ export function refundError(state: XpState, id: string): string | null {
   if (found.item.prestigeLevel) {
     return `${labelOf(found)} is a prestige unlock — those are permanent.`;
   }
+  // A refund can only return points the current budget actually spent. After an
+  // ascension resets pointsSpent to 0, pre-ascension purchases aren't covered —
+  // "refunding" one would strip the unlock while crediting nothing back.
+  if (state.pointsSpent < found.item.cost) {
+    return `${labelOf(found)} predates your current point budget — it's yours to keep.`;
+  }
   return null;
 }
 
 /**
  * Buy an unlock with skill points. Validates via purchaseError, then commits:
- * marks owned, debits points, and applies any upgrade effect.
+ * marks owned and debits points. Ownership alone drives the upgrade's effect
+ * (derived on read, see equipment.ts/ownedUpgradeEffects) — bones are never
+ * mutated here.
  */
 export function spendUnlock(
   id: string,
@@ -1233,15 +1194,10 @@ export function spendUnlock(
   const found = findUnlockable(id)!;
   const cost = found.item.cost;
 
-  let companionChanged = false;
   if (found.kind === "reaction") {
     state.unlockedReactions.push(id);
   } else {
     state.unlockedUpgrades.push(id);
-    if (companion) {
-      applyUpgradeEffect(companion, state, id);
-      companionChanged = true;
-    }
   }
   state.pointsSpent += cost;
   saveXpState(state);
@@ -1249,33 +1205,26 @@ export function spendUnlock(
     ok: true,
     message: `Unlocked ${labelOf(found)} (−${cost} pt).`,
     state,
-    companionChanged,
   };
 }
 
 /**
- * Refund an owned unlock, reverting its effect and returning the points. Only
- * permitted while respec is open (below the lock level).
+ * Refund an owned unlock and return the points. Only permitted while respec
+ * is open (below the lock level). Ownership alone drives the upgrade's
+ * effect, so a refund is exact — removing the id is enough, nothing to
+ * revert on bones.
  */
-export function refundUnlock(
-  id: string,
-  companion: Companion | null,
-): UnlockResult {
+export function refundUnlock(id: string): UnlockResult {
   const state = loadXpState();
   const err = refundError(state, id);
   if (err) return fail(state, err);
   const found = findUnlockable(id)!;
 
-  let companionChanged = false;
   if (found.kind === "reaction") {
     state.unlockedReactions = state.unlockedReactions.filter((x) => x !== id);
   } else {
     state.unlockedUpgrades = state.unlockedUpgrades.filter((x) => x !== id);
     if (state.title === found.item.name) state.title = null; // unequip if active
-    if (companion) {
-      revertUpgradeEffect(companion, state, id);
-      companionChanged = true;
-    }
   }
   state.pointsSpent = Math.max(0, state.pointsSpent - found.item.cost);
   saveXpState(state);
@@ -1283,7 +1232,6 @@ export function refundUnlock(
     ok: true,
     message: `Refunded ${labelOf(found)} (+${found.item.cost} pt).`,
     state,
-    companionChanged,
   };
 }
 
@@ -1377,7 +1325,7 @@ export function equipTitle(id: string): UnlockResult {
   if (id === "" || id.toLowerCase() === "none") {
     state.title = null;
     saveXpState(state);
-    return { ok: true, message: "Title cleared.", state, companionChanged: false };
+    return { ok: true, message: "Title cleared.", state };
   }
   // The Collector title is earned via the rarity-set milestone, not bought —
   // it's equippable once that account-wide bonus is active (FR3.1).
@@ -1391,7 +1339,6 @@ export function equipTitle(id: string): UnlockResult {
       ok: true,
       message: `Title set to "${COLLECTOR_TITLE}".`,
       state,
-      companionChanged: false,
     };
   }
   const found = findUnlockable(id);
@@ -1407,7 +1354,6 @@ export function equipTitle(id: string): UnlockResult {
     ok: true,
     message: `Title set to "${found.item.name}".`,
     state,
-    companionChanged: false,
   };
 }
 
@@ -1463,7 +1409,6 @@ export function ascend(): UnlockResult {
       `×${state.prestigeMultiplier.toFixed(2)}. Heads up: respec is open again ` +
       `until you next reach level ${RESPEC_LOCK_LEVEL}.`,
     state,
-    companionChanged: false,
   };
 }
 

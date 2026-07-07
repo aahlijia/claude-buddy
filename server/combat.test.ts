@@ -127,6 +127,33 @@ describe("resolveCombat", () => {
     expect(flee.drop.itemId).toBeUndefined();
     expect(flee.summary).toContain("scuttled off");
   });
+
+  // ── Owned upgrade effects (design-derive-upgrades.md G4: power parity) ────
+  test("an owned stat upgrade raises the win rate exactly like a baked-in stat", () => {
+    const bare = winRate(bones(50), t1, {});
+    const owned = (() => {
+      let wins = 0;
+      const n = 400;
+      for (let s = 0; s < n; s++) {
+        const r = resolveCombat(bones(50), t1, {}, s, new Set(), [
+          { type: "stat", amount: 5 },
+        ]);
+        if (r.outcome === "win") wins++;
+      }
+      return wins / n;
+    })();
+    expect(owned).toBeGreaterThan(bare);
+    // ...and matches a companion whose bones already carry the +5 (the old
+    // baked-in path), i.e. equivalent power regardless of which model applied it.
+    const baked = winRate(bones(55), t1, {});
+    expect(owned).toBeCloseTo(baked, 1);
+  });
+
+  test("owned upgrade effects default to [] — behavior unchanged when omitted", () => {
+    const a = resolveCombat(bones(50), t1, {}, 42);
+    const b = resolveCombat(bones(50), t1, {}, 42, new Set(), []);
+    expect(a).toEqual(b);
+  });
 });
 
 describe("two-sprite combat scene (Phase 5)", () => {

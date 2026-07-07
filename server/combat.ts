@@ -31,7 +31,7 @@ import {
 import { buddyStateDir } from "./path";
 import { resolveAppearance } from "./equipment";
 import { ITEMS, findItem, type Equipment, type ItemId } from "./items";
-import { grantBonusPoints, grantItem } from "./xp";
+import { grantBonusPoints, grantItem, type UpgradeEffect } from "./xp";
 import type { Bug } from "./bugs";
 
 // ─── Tunable win curve (design-rpg-phase3 OQ-P3.4) ────────────────────────────
@@ -228,9 +228,12 @@ function rollItemDrop(
 /**
  * Resolve one encounter deterministically. Same inputs ⇒ same result. Gear
  * matters: effective DEBUGGING reads the equipped weapon's stat effect via
- * resolveAppearance, and an equipped weapon adds a flat bonus. `owned` (the
- * player's inventory ∪ equipped) is excluded from item drops so the summary
- * never announces loot the grant would silently skip.
+ * resolveAppearance, and an equipped weapon adds a flat bonus. Owned upgrades
+ * (derive-on-read, see equipment.ts/ownedUpgradeEffects) count too — a bought
+ * stat upgrade must carry the same combat power a migrated buddy would have
+ * had baked into bones. `owned` (the player's inventory ∪ equipped) is
+ * excluded from item drops so the summary never announces loot the grant
+ * would silently skip.
  */
 export function resolveCombat(
   bones: BuddyBones,
@@ -238,11 +241,18 @@ export function resolveCombat(
   equipment: Equipment,
   seed: number,
   owned: ReadonlySet<ItemId> = new Set(),
+  upgradeEffects: readonly UpgradeEffect[] = [],
 ): CombatResult {
   // Seeded once, consumed in a fixed order ⇒ reproducible resolution.
   const rng = mulberry32(seed);
 
-  const appearance = resolveAppearance(bones, equipment);
+  const appearance = resolveAppearance(
+    bones,
+    equipment,
+    [],
+    ITEMS,
+    upgradeEffects,
+  );
   const effDebug = appearance.stats.DEBUGGING;
   const weaponEquipped = Boolean(equipment.weapon);
   const p = winChance(effDebug, weaponEquipped, bug.tier);

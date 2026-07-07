@@ -13,9 +13,10 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { spawnSync } from "child_process";
 import {
   rollLoot,
   loadLoot,
@@ -132,18 +133,18 @@ describe("rollLoot", () => {
     expect(getXpState().bonusPoints).toBe(3 * LOOT_BONUS_POINTS);
   });
 
-  test("drops a cosmetic when the roll lands under the chance", () => {
-    const drop = rollLoot("ascension", FAKE_SLOT, () => 0); // forces a drop
-    expect(drop.cosmetic).not.toBeNull();
-    expect(loadLoot().ownedLootCosmetics).toContain(drop.cosmetic!.id);
+  test("degrades to points-only when no companion can receive the cosmetic", () => {
+    // The roll lands under the chance, but the slot doesn't exist: the drop
+    // must not count — the cosmetic stays in the pool for a later roll instead
+    // of being marked owned without ever having been applied.
+    const drop = rollLoot("ascension", FAKE_SLOT, () => 0);
+    expect(drop.cosmetic).toBeNull();
+    expect(drop.bonusPoints).toBe(LOOT_BONUS_POINTS);
+    expect(loadLoot().ownedLootCosmetics).toEqual([]);
+    expect(loadLoot().log.at(-1)!.id).toBe("points");
   });
 
-  test("honors the 12% threshold exactly", () => {
-    // Just under the chance → a cosmetic is attempted.
-    const under = rollLoot("level_up", FAKE_SLOT, () => LOOT_COSMETIC_CHANCE - 0.001);
-    expect(under.cosmetic).not.toBeNull();
-
-    // Exactly at / above the chance → point only.
+  test("a roll at/above the 12% threshold never attempts a cosmetic", () => {
     const at = rollLoot("level_up", FAKE_SLOT, () => LOOT_COSMETIC_CHANCE);
     expect(at.cosmetic).toBeNull();
   });
@@ -168,24 +169,12 @@ describe("rollLoot", () => {
     expect(last.grantedAt).toBeGreaterThan(0);
   });
 
-  test("a cosmetic drop logs the cosmetic id under its trigger", () => {
-    const drop = rollLoot("ascension", FAKE_SLOT, () => 0);
-    const last = loadLoot().log.at(-1)!;
-    expect(last.id).toBe(drop.cosmetic!.id);
-    expect(last.trigger).toBe("ascension");
-  });
-
   test("sets lastDrop on a points-only roll (game-feel FR-A2, never silent)", () => {
     rollLoot("level_up", FAKE_SLOT, () => 0.99); // no cosmetic
     const last = loadLoot().lastDrop!;
     expect(last).toBeTruthy();
     expect(last.label).toContain("pt");
     expect(last.at).toBeGreaterThan(0);
-  });
-
-  test("sets lastDrop to the cosmetic flavor when one drops", () => {
-    const drop = rollLoot("ascension", FAKE_SLOT, () => 0);
-    expect(loadLoot().lastDrop!.label).toBe(drop.cosmetic!.flavorText);
   });
 
   test("caps the log at the most-recent LOOT_LOG_CAP entries", () => {
@@ -206,5 +195,70 @@ describe("rollLoot", () => {
 
   test("an absent loot.json loads as an empty state", () => {
     expect(loadLoot()).toEqual({ log: [], ownedLootCosmetics: [], lastDrop: null });
+  });
+});
+
+// ─── Fresh-process: the real companion apply path ─────────────────────────────
+//
+// state.ts freezes its state dir at module load, so exercising a REAL slot
+// needs a subprocess whose CLAUDE_CONFIG_DIR is set before any import (the same
+// isolation idiom as the renderer's spawnSync tests). Regression: rollLoot used
+// to persist the applied cosmetic via the append-only saveCompanionSlot, which
+// THROWS for an existing slot — so every cosmetic drop on a live buddy crashed
+// (unhandled at the streak-milestone call site) and the cosmetic was lost.
+
+describe("rollLoot cosmetic apply (fresh process)", () => {
+  test("applies + persists to an existing companion and records the drop", () => {
+    const cfgDir = mkdtempSync(join(tmpdir(), "buddy-loot-proc-"));
+    const script = `
+      const { saveCompanionSlot, loadCompanionSlot } = await import("./server/state.ts");
+      const { rollLoot, loadLoot, LOOT_COSMETIC_CHANCE } = await import("./server/loot.ts");
+      const companion = {
+        name: "loottest",
+        personality: "",
+        bones: {
+          species: "blob", rarity: "common", eye: "\\u00b7", hat: "none",
+          shiny: false, peak: "SNARK", dump: "WISDOM",
+          stats: { DEBUGGING: 10, PATIENCE: 10, CHAOS: 10, WISDOM: 10, SNARK: 10 },
+        },
+      };
+      saveCompanionSlot(companion, "loottest");
+      const drop = rollLoot("level_up", "loottest", () => 0);
+      const afterDrop = loadLoot();
+      const missed = rollLoot("level_up", "loottest", () => LOOT_COSMETIC_CHANCE);
+      console.log(JSON.stringify({
+        droppedId: drop.cosmetic?.id ?? null,
+        lastDropLabel: afterDrop.lastDrop?.label ?? null,
+        loggedId: afterDrop.log.at(-1)?.id ?? null,
+        missedId: missed.cosmetic?.id ?? null,
+        eye: loadCompanionSlot("loottest").bones.eye,
+      }));
+    `;
+    try {
+      const res = spawnSync("bun", ["-e", script], {
+        cwd: join(import.meta.dir, ".."),
+        env: { ...process.env, CLAUDE_CONFIG_DIR: cfgDir },
+        encoding: "utf8",
+      });
+      expect(res.stderr).toBe("");
+      expect(res.status).toBe(0);
+      const out = JSON.parse(res.stdout.trim());
+      // rng () => 0 picks the first pool entry: loot_starlit_eyes (eye ✦),
+      // applied to the companion and persisted through updateCompanionSlot.
+      expect(out.droppedId).toBe("loot_starlit_eyes");
+      expect(out.eye).toBe("✦");
+      // The drop is logged under its id and surfaces as the toast label.
+      expect(out.loggedId).toBe("loot_starlit_eyes");
+      expect(out.lastDropLabel).toBe("Eyes like distant stars.");
+      // A roll at the threshold drops nothing (the 12% bound is exclusive).
+      expect(out.missedId).toBeNull();
+      // …and the owned list marks the cosmetic so it never re-drops.
+      const loot = JSON.parse(
+        readFileSync(join(cfgDir, "buddy-state", "loot.json"), "utf8"),
+      );
+      expect(loot.ownedLootCosmetics).toEqual(["loot_starlit_eyes"]);
+    } finally {
+      rmSync(cfgDir, { recursive: true, force: true });
+    }
   });
 });
