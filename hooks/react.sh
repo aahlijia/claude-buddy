@@ -1073,7 +1073,11 @@ elif echo "$RESULT" | grep -qiE 'TS[0-9]{4}:|Type .+ is not assignable|Argument 
     REASON="type-error"
     pick_reaction "type-error"
 
-elif echo "$RESULT" | grep -qiE '✖|[0-9]+ problems? \([0-9]+ error|error:|warning:.+ ESLint|Ruff|flake8.*error|pylint.*error'; then
+# NOTE: no bare `error:` here — it would swallow every generic error (and bun
+# test failures, which print `error: expect(...)`) before the test-fail/error
+# branches below ever ran, starving errors_seen/tests_failed and the combat
+# spawn that feeds on them. Lint detection keys on lint-shaped output only.
+elif echo "$RESULT" | grep -qiE '✖|[0-9]+ problems? \([0-9]+ error|warning:.+ ESLint|Ruff|flake8.*error|pylint.*error'; then
     REASON="lint-fail"
     pick_reaction "lint-fail"
 
@@ -1081,7 +1085,9 @@ elif echo "$RESULT" | grep -qiE 'deprecat|will be removed in|is deprecated|DEPRE
     REASON="deprecation"
     pick_reaction "deprecation"
 
-elif echo "$RESULT" | grep -qiE 'all [0-9]+ tests passed|0 failures|100% passed|all [0-9]+ passed'; then
+# `\b0 fail(s|ed|ures)?\b` covers bun's summary ("724 pass / 0 fail"); the
+# leading \b keeps "20 fail" from matching on its trailing zero.
+elif echo "$RESULT" | grep -qiE 'all [0-9]+ tests passed|\b0 fail(s|ed|ures)?\b|100% passed|all [0-9]+ passed'; then
     REASON="all-green"
     pick_reaction "all-green"
 
@@ -1097,7 +1103,9 @@ elif echo "$RESULT" | grep -qiE 'Coverage:.*[0-9]+%|All files.*\|.*[0-9]+%'; the
     REASON="coverage"
     pick_reaction "coverage"
 
-elif echo "$RESULT" | grep -qiE '\b[1-9][0-9]* (failed|failing)\b|tests? failed|^FAIL(ED)?|✗|✘'; then
+# `[1-9][0-9]* fail` covers bun's failing summary ("14 fail"); the leading
+# non-zero digit keeps a green run's "0 fail" out (that's all-green, above).
+elif echo "$RESULT" | grep -qiE '\b[1-9][0-9]* (fail|failed|failing)\b|tests? failed|^FAIL(ED)?|✗|✘'; then
     REASON="test-fail"
     pick_reaction "test-fail"
 

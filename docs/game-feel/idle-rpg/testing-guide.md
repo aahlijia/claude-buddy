@@ -101,9 +101,11 @@ bun -e 'import {grantBonusPoints} from "./server/xp.ts"; grantBonusPoints(20)'
 
 ## 3. Combat — fighting bugs
 
-Bugs spawn from the **errors seen during a session**, resolved **on git commit**
-(`react.sh` → `award-xp.ts session_complete` → `maybeFightBug`). Tier scales with
-error count: 1–2 → t1, 3–5 → t2, 6–9 → t3, 10+ → t4.
+Bugs spawn from the **error-ish events seen during a session** — the sum of
+`errors_seen`, `tests_failed`, `type_errors`, `lint_fails`, and `build_fails`
+(`combatErrorCount`) — resolved **on git commit** (`react.sh` →
+`award-xp.ts session_complete` → `maybeFightBug`). Tier scales with the count:
+1–2 → t1, 3–5 → t2, 6–9 → t3, 10+ → t4.
 
 ### A. Natural workflow
 1. During a session, cause some errors (failing tests, a command that errors out)
@@ -119,6 +121,7 @@ error count (tier-1 bug) for a near-guaranteed **win** demo:
 cd /Users/austinahlijian/Projects/claude-buddy
 bun run server/award-xp.ts session_start                                   # baseline = now
 bun -e 'import {incrementEvent} from "./server/achievements.ts"; incrementEvent("errors_seen", 2)'
+# (any error-ish counter works — e.g. incrementEvent("tests_failed", 2))
 bun run server/award-xp.ts session_complete                                # → fights a tier-1 bug
 ```
 Then inspect:

@@ -53,12 +53,23 @@ import {
 
 // ─── Counters that feed the bonus ────────────────────────────────────────────
 
-/** The slice of lifetime counters the session bonus cares about. */
+/**
+ * The slice of lifetime counters the session bonus cares about, plus the
+ * error-ish counters that feed the combat spawn. Only the first three are
+ * scored by computeSessionBonus; the rest exist so a session's failed tests /
+ * type errors / lint runs / broken builds can spawn a bug to fight
+ * (combatErrorCount) — react.sh's classifier routes most real-world errors to
+ * those buckets rather than `errors_seen`.
+ */
 export interface SessionCounters {
   all_green: number; // green test runs
   large_diffs: number; // substantive changes
   errors_seen: number; // errors worked through
   commits_made: number; // baseline only — not scored
+  tests_failed: number; // combat spawn only — not scored
+  type_errors: number; // combat spawn only — not scored
+  lint_fails: number; // combat spawn only — not scored
+  build_fails: number; // combat spawn only — not scored
 }
 
 export interface SessionSnapshot {
@@ -72,6 +83,10 @@ function extractCounters(g: GlobalCounters): SessionCounters {
     large_diffs: g.large_diffs,
     errors_seen: g.errors_seen,
     commits_made: g.commits_made,
+    tests_failed: g.tests_failed,
+    type_errors: g.type_errors,
+    lint_fails: g.lint_fails,
+    build_fails: g.build_fails,
   };
 }
 
@@ -110,19 +125,43 @@ export function saveSnapshot(snapshot: SessionSnapshot): void {
 /**
  * Per-event diff between the current counters and a baseline, clamped to ≥ 0
  * (counters only ever grow, but a missing/younger baseline shouldn't go
- * negative).
+ * negative). A counter absent from the baseline diffs to 0, not to its full
+ * lifetime value: on-disk snapshots written before a counter existed would
+ * otherwise credit the whole history to one session.
  */
 export function counterDelta(
   current: SessionCounters,
   baseline: SessionCounters,
 ): SessionCounters {
-  const d = (a: number, b: number): number => Math.max(0, a - b);
+  const d = (a: number, b: number | undefined): number =>
+    typeof b === "number" ? Math.max(0, a - b) : 0;
   return {
     all_green: d(current.all_green, baseline.all_green),
     large_diffs: d(current.large_diffs, baseline.large_diffs),
     errors_seen: d(current.errors_seen, baseline.errors_seen),
     commits_made: d(current.commits_made, baseline.commits_made),
+    tests_failed: d(current.tests_failed, baseline.tests_failed),
+    type_errors: d(current.type_errors, baseline.type_errors),
+    lint_fails: d(current.lint_fails, baseline.lint_fails),
+    build_fails: d(current.build_fails, baseline.build_fails),
   };
+}
+
+/**
+ * How many error-ish events this session's delta carries — the signal that
+ * spawns a bug to fight (tierForErrors scales with it). Broader than
+ * `errors_seen` alone because react.sh's classifier routes most real errors
+ * to the more specific buckets (a failing `bun test` prints `error:` and
+ * lands in lint/test counters, not `errors_seen`).
+ */
+export function combatErrorCount(delta: SessionCounters): number {
+  return (
+    delta.errors_seen +
+    delta.tests_failed +
+    delta.type_errors +
+    delta.lint_fails +
+    delta.build_fails
+  );
 }
 
 /** Hard cap on the raw session bonus, before any multiplier. */
@@ -234,9 +273,9 @@ export function accrueSessionStats(
 }
 
 /**
- * Idle-RPG combat (design-rpg Phase 3): a session's errors spawn a bug the buddy
- * auto-fights. Runs once per commit (reusing the error delta already computed),
- * so it adds no per-event cost. Wins drop skill points / items; the baked fight
+ * Idle-RPG combat (design-rpg Phase 3): a session's error-ish events (see
+ * combatErrorCount) spawn a bug the buddy auto-fights. Runs once per commit
+ * (reusing the counter delta already computed), so it adds no per-event cost. Wins drop skill points / items; the baked fight
  * lands in the transient encounter side-channel (rendered by Phase 4).
  * Seeded deterministically for reproducibility.
  *
@@ -333,10 +372,11 @@ export function awardSessionComplete(
   const elapsedSec = snapshot ? Math.max(0, nowSeconds() - snapshot.startedAt) : 0;
   accrueSessionStats(slot, delta, elapsedSec);
 
-  // Idle-RPG combat (Phase 3): this session's errors spawn a bug to fight.
+  // Idle-RPG combat (Phase 3): this session's error-ish events (errors, failed
+  // tests/lint/type-checks/builds) spawn a bug to fight.
   const fightSummary = maybeFightBug(
     slot,
-    delta.errors_seen,
+    combatErrorCount(delta),
     snapshot?.startedAt ?? 0,
   );
 

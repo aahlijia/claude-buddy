@@ -336,6 +336,37 @@ buys `shiny_aura` now also completes the Twinkle set (previously impossible).
 Tests: **724 pass** (685 + 39 new across equipment/xp/migrate/combat/sets/
 statusline), `tsc --noEmit` + `bash -n` clean. Uncommitted.
 
+### Combat spawn signal broadened + classifier fixes (2026-07-08)
+
+Field report: months at `gameFeel=full`, zero fight scenes. Live state showed
+why — `encounter.json` had never been written and lifetime `errors_seen` was
+**1** against 31 commits, while `lint_fails` sat at 30. Two stacked causes,
+both fixed:
+
+1. **The spawn read the one starved counter.** `maybeFightBug` keyed off
+   `delta.errors_seen` alone. `SessionCounters` now also carries
+   `tests_failed`/`type_errors`/`lint_fails`/`build_fails`, and a new pure
+   `combatErrorCount(delta)` (session.ts) sums all five as the spawn signal —
+   tier cutoffs unchanged. Bonus scoring (`computeSessionBonus`) and stat
+   accrual are untouched. `counterDelta` treats counters missing from an
+   on-disk baseline as delta-0 so pre-upgrade snapshots can't credit a
+   lifetime of lint failures to one session.
+2. **react.sh's classifier starved `errors_seen` and the test counters.** The
+   `lint-fail` pattern contained a bare `error:` alternation four branches
+   ahead of `test-fail`/`error`, so any output with `error:` — including bun
+   test failures (`error: expect(...)`) — became a lint fail. Bare `error:`
+   removed. The test patterns also missed bun's summary shapes: `test-fail`
+   now matches `N fail` (leading non-zero digit) and `all-green` matches
+   `0 fail` (leading `\b` so `20 fail` can't match its trailing zero) — so
+   test outcomes in bun projects finally feed `tests_failed`/`all_green`
+   (and their achievements/quests/WISDOM accrual, starved by the same bug).
+
+Verified: classifier smoke through the real `react.sh` (six output shapes →
+six correct counters) and an e2e in a temp `CLAUDE_CONFIG_DIR`
+(`tests_failed`+2 → `session_complete` → `encounter.json` baked → statusline
+renders the two-sprite scene). Tests: **729 pass** (+5 in session.test.ts),
+`tsc` + `bash -n` clean.
+
 ---
 
 ## Going live
