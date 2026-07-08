@@ -11,7 +11,7 @@
  * of the baked frames is Phase 4.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, renameSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, renameSync, rmSync } from "fs";
 import { join } from "path";
 
 import {
@@ -32,7 +32,7 @@ import { buddyStateDir } from "./path";
 import { resolveAppearance } from "./equipment";
 import { ITEMS, findItem, type Equipment, type ItemId } from "./items";
 import { grantBonusPoints, grantItem, type UpgradeEffect } from "./xp";
-import type { Bug } from "./bugs";
+import type { Bug, BugId, BugTier } from "./bugs";
 
 // ─── Tunable win curve (design-rpg-phase3 OQ-P3.4) ────────────────────────────
 
@@ -77,6 +77,27 @@ export interface EncounterRecord {
   sequence: number[];
   enemyGlyph: string;
   at: number; // Date.now() — TTL freshness, like loot's lastDrop.at
+}
+
+/**
+ * The persistent pre-fight standoff (design-pending-encounter §3.1). A separate
+ * side-channel from `encounter.json` so the resolved phase's 10s TTL contract
+ * and every existing `readEncounter` test stay untouched. Unlike an encounter
+ * there is **no TTL** — the standoff lives until a commit resolves it.
+ */
+export interface PendingEncounter {
+  /** Pinned enemy identity — the bug sighted is the bug fought (G4). */
+  bugId: BugId;
+  /** Tier at the last (re)bake — the escalation watermark (G3). */
+  tier: BugTier;
+  /** Baked standoff flipbook (2 poses). */
+  frames: string[];
+  /** Playback indices, e.g. [0, 0, 0, 1] — mostly ready, an occasional glare. */
+  sequence: number[];
+  /** Date.now() of the first sighting (display/debug). */
+  sightedAt: number;
+  /** The session snapshot `startedAt` that spawned it — staleness guard (§5.3). */
+  startedAt: number;
 }
 
 // ─── Win odds ─────────────────────────────────────────────────────────────────
@@ -166,6 +187,29 @@ function scenePoses(
   ];
 }
 
+/** Compose one scene row-block: the player buddy, a fixed-width gap, and the
+ *  mirrored enemy, bottom-aligned. The gap clashes blades only on a strike
+ *  frame's eye row. Shared by the fight scene (`bakeScene`) and the pending
+ *  standoff (`bakePendingScene`) so both stay pixel-identical in layout. */
+function composePose(
+  playerSpecies: Species,
+  enemySpecies: Species,
+  pose: Pose,
+  sword: string,
+): string {
+  const player = rectFrame(getArtFrame(playerSpecies, pose.pEye, 0));
+  const enemy = mirrorFrame(getArtFrame(enemySpecies, pose.eEye, 0));
+  const [pA, eA] = alignHeights(player, enemy);
+  // Clash on the PLAYER's actual eye row (not the block center), shifted by any
+  // top-padding alignHeights added when the player is the shorter sprite — so
+  // the sword lands at eye level for off-center species (goose/snail/mushroom)
+  // and the 6-line wyvern alike.
+  const eyeRow = eyeRowIndex(playerSpecies) + (pA.length - player.length);
+  return pA
+    .map((line, i) => line + gapRow(pose.strike, i === eyeRow, sword) + eA[i])
+    .join("\n");
+}
+
 /**
  * Bake the two-sprite fight scene: the player buddy and the mirrored enemy
  * creature side by side, with a short sword-swing flipbook. Every frame is the
@@ -183,21 +227,45 @@ function bakeScene(
   outcome: Outcome,
 ): { frames: string[]; sequence: number[] } {
   const sword = swingGlyph(weaponArt);
-  const frames = scenePoses(playerEye, enemyEye, outcome).map((pose) => {
-    const player = rectFrame(getArtFrame(playerSpecies, pose.pEye, 0));
-    const enemy = mirrorFrame(getArtFrame(enemySpecies, pose.eEye, 0));
-    const [pA, eA] = alignHeights(player, enemy);
-    // Clash on the PLAYER's actual eye row (not the block center), shifted by any
-    // top-padding alignHeights added when the player is the shorter sprite — so
-    // the sword lands at eye level for off-center species (goose/snail/mushroom)
-    // and the 6-line wyvern alike.
-    const eyeRow = eyeRowIndex(playerSpecies) + (pA.length - player.length);
-    return pA
-      .map((line, i) => line + gapRow(pose.strike, i === eyeRow, sword) + eA[i])
-      .join("\n");
-  });
+  const frames = scenePoses(playerEye, enemyEye, outcome).map((pose) =>
+    composePose(playerSpecies, enemySpecies, pose, sword),
+  );
   // Gentle oscillation: ready, wind-up, strike, strike, resolve, resolve.
   const sequence = [0, 1, 2, 2, 3, 3];
+  return { frames, sequence };
+}
+
+/** The two standoff poses: a calm ready and a periodic glare — no strike, no
+ *  resolve, no clash glyph (the gap stays blank), so the pending scene needs no
+ *  weapon plumbing at sighting time. Pose 0 matches `scenePoses[0]` (ready) and
+ *  pose 1 matches its wind-up (fight eyes, no strike). */
+function pendingPoses(restingP: Eye, restingE: Eye): Pose[] {
+  return [
+    { pEye: restingP, eEye: restingE, strike: false }, // ready
+    { pEye: asEye(">"), eEye: asEye(">"), strike: false }, // glare
+  ];
+}
+
+/**
+ * Bake the persistent standoff flipbook (design-pending-encounter §4.2): the
+ * same two-sprite composition as `bakeScene`, but only ready/glare poses and no
+ * strike — the enemy that appears when the first error lands and stares the
+ * buddy down until a commit resolves it. Pure & deterministic, constant display
+ * width across both frames (body fixed to art frame 0), bottom-aligned.
+ */
+export function bakePendingScene(
+  playerSpecies: Species,
+  playerEye: Eye,
+  enemySpecies: Species,
+  enemyEye: Eye = DEFAULT_ENEMY_EYE,
+): { frames: string[]; sequence: number[] } {
+  const frames = pendingPoses(playerEye, enemyEye).map((pose) =>
+    // strike is always false ⇒ the sword arg is inert (gap stays blank).
+    composePose(playerSpecies, enemySpecies, pose, DEFAULT_SWORD),
+  );
+  // A calm loop with a periodic glare (design-pending-encounter §4.2). Data —
+  // cheap to tune later.
+  const sequence = [0, 0, 0, 1];
   return { frames, sequence };
 }
 
@@ -356,5 +424,57 @@ export function readEncounter(
     return rec;
   } catch {
     return null;
+  }
+}
+
+// ─── Pending-encounter side-channel (design-pending-encounter §3.1) ───────────
+
+function pendingEncounterFile(): string {
+  return join(buddyStateDir(), "pending-encounter.json");
+}
+
+/** Persist the pending standoff atomically (tmp+rename), like `writeEncounter`. */
+export function writePendingEncounter(rec: PendingEncounter): void {
+  mkdirSync(buddyStateDir(), { recursive: true });
+  const file = pendingEncounterFile();
+  const tmp = file + ".tmp";
+  writeFileSync(tmp, JSON.stringify(rec));
+  try {
+    renameSync(tmp, file);
+  } catch {
+    writeFileSync(file, JSON.stringify(rec));
+  }
+}
+
+/**
+ * Read the pending standoff if present. Returns null when missing or malformed.
+ * Unlike `readEncounter` there is **no TTL** — the standoff persists until a
+ * commit clears it (design-pending-encounter G2). Staleness is instead guarded
+ * by matching `startedAt` against the live snapshot at the call site (§5.3).
+ */
+export function readPendingEncounter(): PendingEncounter | null {
+  try {
+    const rec = JSON.parse(
+      readFileSync(pendingEncounterFile(), "utf8"),
+    ) as PendingEncounter;
+    if (
+      !Array.isArray(rec.frames) ||
+      typeof rec.bugId !== "string" ||
+      typeof rec.startedAt !== "number"
+    ) {
+      return null;
+    }
+    return rec;
+  } catch {
+    return null;
+  }
+}
+
+/** Clear the pending standoff (commit / session_start / staleness — §4, G5). */
+export function clearPendingEncounter(): void {
+  try {
+    rmSync(pendingEncounterFile(), { force: true });
+  } catch {
+    /* already gone — clearing is idempotent */
   }
 }

@@ -16,7 +16,7 @@ import {
   writeStatusState,
   pickCelebration,
 } from "./state";
-import { startSession, awardSessionComplete } from "./session";
+import { startSession, awardSessionComplete, sightBug } from "./session";
 import { recordSessionStart } from "./streak";
 import { tickWhim } from "./quests";
 import { announceOnce } from "./discovery";
@@ -59,16 +59,38 @@ const VALID_EVENTS = new Set([
 // path: session_start captures a baseline, session_complete awards the bonus.
 const SESSION_EVENTS = new Set(["session_start", "session_complete"]);
 
+// Encounter events carry no XP — they only drive the pending-encounter standoff
+// (design-pending-encounter): bug_sighted spawns/escalates the standoff scene.
+const ENCOUNTER_EVENTS = new Set(["bug_sighted"]);
+
 function main(): void {
   const event = process.argv[2] as string;
   const slot = process.argv[3] ?? loadActiveSlot();
 
-  if (!event || (!VALID_EVENTS.has(event) && !SESSION_EVENTS.has(event))) {
-    const all = [...VALID_EVENTS, ...SESSION_EVENTS].join(" | ");
+  if (
+    !event ||
+    (!VALID_EVENTS.has(event) &&
+      !SESSION_EVENTS.has(event) &&
+      !ENCOUNTER_EVENTS.has(event))
+  ) {
+    const all = [...VALID_EVENTS, ...SESSION_EVENTS, ...ENCOUNTER_EVENTS].join(
+      " | ",
+    );
     console.error(
       `Usage: bun run server/award-xp.ts <event> [slot]\nValid events: ${all}`,
     );
     process.exit(1);
+  }
+
+  // Encounter events run before the companion/XP setup below: sightBug loads its
+  // own companion and attaches no XP. Best-effort (version-skew tolerant).
+  if (event === "bug_sighted") {
+    try {
+      sightBug(slot);
+    } catch {
+      // The standoff is an optional delighter — never break the hook.
+    }
+    return;
   }
 
   // Get species and rarity for bonus calculation

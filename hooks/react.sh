@@ -1401,6 +1401,19 @@ if [ -n "$REASON" ] && [ -n "$REACTION" ]; then
             esac
             [ -n "$MOOD_TRIGGER" ] && bun run "$PLUGIN_ROOT/server/shift-mood.ts" "$MOOD_TRIGGER" >/dev/null 2>&1 &
         fi
+        # Pending encounter (design-pending-encounter): an error-ish reaction
+        # sights a bug that stands its ground on the status line until the next
+        # commit resolves it (the "commit nudge"). Fire-and-forget, same idiom as
+        # errors_spotted; the server gates it to gameFeel=full and no-ops fast on
+        # same-tier repeats, so this stays cheap.
+        case "$REASON" in
+            error|test-fail|type-error|lint-fail|build-fail)
+                if [ -x "$(command -v bun)" ]; then
+                    PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+                    bun run "$PLUGIN_ROOT/server/award-xp.ts" bug_sighted >/dev/null 2>&1 &
+                fi
+                ;;
+        esac
         # Session-completion bonus: a commit closes out the session. The 30s
         # reaction cooldown above naturally rate-limits this to at most once per
         # window, guarding against rapid back-to-back commits (risk R1).

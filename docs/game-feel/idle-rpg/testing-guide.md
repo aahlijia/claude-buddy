@@ -151,6 +151,61 @@ jq '{enemyGlyph, encounterAt}' ~/.claude/buddy-state/status.json
 
 ---
 
+## 3b. Pending encounter — the standoff before the fight
+
+The fight above is no longer the *first* time you see the bug. From the **first
+error-ish event** the enemy appears as a persistent **standoff** on the status
+line (`react.sh` → `award-xp.ts bug_sighted` → `sightBug`) and stays there — **no
+TTL** — until a commit resolves it. It's the "you have uncommitted, error-marked
+work" nudge. It only shows at `gameFeel=full`; `subtle`/`off` no-op the sighting.
+
+**Deterministic harness** (drives the real `bug_sighted` pipeline):
+```bash
+cd /Users/austinahlijian/Projects/claude-buddy
+bun run server/award-xp.ts session_start                                   # baseline = now
+bun -e 'import {incrementEvent} from "./server/achievements.ts"; incrementEvent("tests_failed", 1)'
+bun run server/award-xp.ts bug_sighted                                     # → spawns a tier-1 standoff
+jq '{bugId, tier, startedAt}' ~/.claude/buddy-state/pending-encounter.json
+jq '{combatSticky, hasScene:(.combatFrames|length>0), encounterAt}' ~/.claude/buddy-state/status.json
+```
+**Expect:** `pending-encounter.json` pins a `bugId` at `tier: 1`; `status.json`
+carries `combatSticky: 1`, a baked `combatFrames` scene, and **no `encounterAt`**
+(the standoff bypasses the 10s TTL — that's the whole point).
+
+**Escalation** — more errors upgrade the enemy's tier (a fresh same-seeded roll
+at the higher tier); a same-tier repeat is a cheap no-op (pinned bug unchanged):
+```bash
+bun -e 'import {incrementEvent} from "./server/achievements.ts"; incrementEvent("tests_failed", 2)'  # 1 → 3 ⇒ t2
+bun run server/award-xp.ts bug_sighted
+jq '.tier' ~/.claude/buddy-state/pending-encounter.json                    # → 2
+```
+
+**Render the standoff** (full-only, animates ready ↔ periodic glare, no strike):
+```bash
+for n in 0 1 2 3; do echo "--- tick $n ---"; BUDDY_FAKE_NOW=$(( $(date +%s) + n )) bash statusline/buddy-status.sh < /dev/null; done
+```
+Your buddy on the left, the mirrored enemy on the right, the gap **blank** (no
+`/\` clash — that's the resolved fight only), and the buddy **doesn't wander**
+while it renders. The buddy's normal chatter still shows during the standoff.
+
+**Commit dismisses it** (the nudge semantics — G5/D6). Fixing the error does
+**not** clear the standoff; only a commit does, which also fights the pinned bug:
+```bash
+bun -e 'import {incrementEvent} from "./server/achievements.ts"; incrementEvent("commits_made", 1)'
+bun run server/award-xp.ts session_complete
+ls ~/.claude/buddy-state/pending-encounter.json 2>&1                       # → No such file (cleared)
+jq '{enemyGlyph, encounterAt}' ~/.claude/buddy-state/status.json           # → the resolved 10s fight
+```
+`session_start` also clears an orphaned standoff (a fresh baseline would make it
+a ghost). To wipe one by hand: `rm -f ~/.claude/buddy-state/pending-encounter.json`.
+
+> **Cooldown note:** in a live session `react.sh`'s 30s reaction cooldown can lag
+> the first sighting behind the first error. The commit-time fight never
+> under-counts regardless — resolution falls back to a fresh roll if no standoff
+> was pinned — so only the *nudge* is delayed, never the reward.
+
+---
+
 ## 4. Statusline fight render — the two-sprite scene (Phase 5)
 
 The fight **renders only at `gameFeel=full`**, for ~10s after it lands. The bug
@@ -260,10 +315,11 @@ line shows **no** two-sprite fight scene (the buddy keeps idling).
 ## 6. Reset / cleanup
 
 ```bash
-# Nuke the transient fight so the status line goes idle immediately:
-rm -f ~/.claude/buddy-state/encounter.json
+# Nuke the transient fight AND any pending standoff so the line goes idle now:
+rm -f ~/.claude/buddy-state/encounter.json ~/.claude/buddy-state/pending-encounter.json
 
-# Re-baseline so a stray error count doesn't trigger a fight on your next commit:
+# Re-baseline so a stray error count doesn't trigger a fight on your next commit
+# (this also clears any surviving standoff):
 bun run server/award-xp.ts session_start
 ```
 A full uninstall (`bun run` the uninstall CLI, or the `buddy_uninstall` tool)

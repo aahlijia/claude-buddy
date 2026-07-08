@@ -27,6 +27,7 @@ import {
   updateCompanionSlot,
   resolveUserId,
   effectiveGameFeel,
+  writeStatusState,
 } from "./state.ts";
 import { loadGlobalEvents, type GlobalCounters } from "./achievements.ts";
 import {
@@ -40,8 +41,16 @@ import {
 } from "./xp.ts";
 import { updateStreak } from "./streak.ts";
 import { rollLoot } from "./loot.ts";
-import { spawnBug } from "./bugs.ts";
-import { resolveCombat, applyCombatDrops, writeEncounter } from "./combat.ts";
+import { spawnBug, tierForErrors, bugById, type Bug, type BugTier } from "./bugs.ts";
+import {
+  resolveCombat,
+  applyCombatDrops,
+  writeEncounter,
+  bakePendingScene,
+  writePendingEncounter,
+  readPendingEncounter,
+  clearPendingEncounter,
+} from "./combat.ts";
 import { ownedItems } from "./shop.ts";
 import {
   STAT_NAMES,
@@ -272,12 +281,123 @@ export function accrueSessionStats(
   return increments;
 }
 
+// ─── Pending encounter (design-pending-encounter): the standoff before combat ─
+
+/** What a sighting event should do to the current pending file. Pure. */
+export type PendingDecision = "spawn" | "escalate" | "noop";
+
 /**
- * Idle-RPG combat (design-rpg Phase 3): a session's error-ish events (see
- * combatErrorCount) spawn a bug the buddy auto-fights. Runs once per commit
- * (reusing the counter delta already computed), so it adds no per-event cost. Wins drop skill points / items; the baked fight
- * lands in the transient encounter side-channel (rendered by Phase 4).
- * Seeded deterministically for reproducibility.
+ * Decide a sighting's action from the tier it implies and any existing pending
+ * standoff at the *same* session. No pending ⇒ spawn; a strictly higher tier ⇒
+ * escalate (a fresh roll at the bigger tier); otherwise no-op — repeated
+ * same-tier errors don't re-bake, keeping the per-event cost zero.
+ */
+export function pendingAction(
+  tier: 0 | BugTier,
+  existing: { tier: BugTier } | null,
+): PendingDecision {
+  if (tier === 0) return "noop";
+  if (!existing) return "spawn";
+  if (tier > existing.tier) return "escalate";
+  return "noop";
+}
+
+/**
+ * Bug-selection seed for a sighting/escalation, keyed per (session, tier). A
+ * re-sighting at the same tier re-derives the same bug (idempotent), while an
+ * escalation to a new tier rolls a fresh same-tier pick — matching the roll the
+ * commit-time resolution will reproduce for that tier.
+ */
+function pendingSeed(startedAt: number, tier: number): number {
+  return hashString(`${resolveUserId()}:${startedAt}:${tier}`);
+}
+
+/**
+ * Sight a bug (design-pending-encounter §4.1): on the first error-ish event of a
+ * session a two-sprite standoff appears on the status line and stands there
+ * until a commit resolves it; further errors escalate its tier. Full-only — the
+ * standoff's only surface is the scene, so `subtle`/`off` no-op (they keep
+ * today's toast-at-resolve / nothing). Best-effort and self-guarded; called
+ * from award-xp.ts `bug_sighted`.
+ */
+export function sightBug(slot?: string): void {
+  // The standoff is a full-only surface (§D5): quietly do nothing otherwise.
+  if (effectiveGameFeel() !== "full") return;
+
+  const snapshot = loadSnapshot();
+  const current = extractCounters(loadGlobalEvents());
+  const baseline = snapshot?.baseline ?? current;
+  // A sighting event just fired, so even a missing/older snapshot counts the
+  // event that summoned us (floor at 1).
+  const count = Math.max(1, combatErrorCount(counterDelta(current, baseline)));
+  const tier = tierForErrors(count);
+  const startedAt = snapshot?.startedAt ?? nowSeconds();
+
+  // Only an existing standoff from THIS session escalates; a stale one (crash
+  // between session_start's clear and its snapshot save) is treated as absent.
+  const existing = readPendingEncounter();
+  const sameSession = existing && existing.startedAt === startedAt ? existing : null;
+  const decision = pendingAction(tier, sameSession);
+  if (decision === "noop") return;
+
+  const bug = spawnBug(count, pendingSeed(startedAt, tier));
+  if (!bug) return;
+  const companion = slot ? loadCompanionSlot(slot) : loadCompanion();
+  if (!companion) return;
+
+  const scene = bakePendingScene(
+    companion.bones.species,
+    companion.bones.eye,
+    bug.species,
+    bug.eye,
+  );
+  writePendingEncounter({
+    bugId: bug.id,
+    tier: tier as BugTier, // decision !== "noop" ⇒ tier >= 1
+    frames: scene.frames,
+    sequence: scene.sequence,
+    sightedAt: Date.now(),
+    startedAt,
+  });
+  // Land the standoff on the line immediately (§4.1.6); writeStatusState reads
+  // the pending file we just wrote (P3 render branch).
+  writeStatusState(companion, {});
+}
+
+/**
+ * Choose the bug a commit fights (design-pending-encounter §4.3, G4). Prefer the
+ * pinned enemy from this session's standoff; tier-upgrade it if the final count
+ * outgrew the displayed tier (errors during react.sh's 30s cooldown can outrun
+ * sightings). Falls back to a fresh roll when no pending standoff belongs to
+ * this session — behavior identical to the pre-pending code.
+ */
+function resolveFightBug(
+  pending: { bugId: string; tier: BugTier; startedAt: number } | null,
+  errorsSeen: number,
+  startedAt: number,
+  fallbackSeed: number,
+): Bug | null {
+  const fallback = (): Bug | null => spawnBug(errorsSeen, fallbackSeed);
+  if (!pending || pending.startedAt !== startedAt) return fallback();
+  const finalTier = tierForErrors(errorsSeen);
+  if (finalTier > pending.tier) {
+    // Escalate: a fresh same-seeded roll at the higher tier (§D1).
+    return spawnBug(errorsSeen, pendingSeed(startedAt, finalTier)) ?? bugById(pending.bugId);
+  }
+  return bugById(pending.bugId) ?? fallback();
+}
+
+/**
+ * Idle-RPG combat (design-rpg Phase 3, extended by design-pending-encounter): a
+ * session's error-ish events (see combatErrorCount) spawn a bug the buddy
+ * auto-fights on commit. Runs once per commit (reusing the counter delta already
+ * computed), so it adds no per-event cost. Wins drop skill points / items; the
+ * baked fight lands in the transient encounter side-channel (rendered by
+ * Phase 4). Seeded deterministically for reproducibility.
+ *
+ * The enemy fought is the one the standoff pinned (G4); a commit ALSO clears the
+ * pending standoff unconditionally (G5) — even at `off` or a zero-delta commit —
+ * so "commit dismisses the nudge" is a hard invariant, not a happy-path effect.
  *
  * Returns the fight's one-line summary so the CALLER's final status write can
  * surface it as a toast (via pickCelebration). This function deliberately does
@@ -291,11 +411,16 @@ export function maybeFightBug(
   errorsSeen: number,
   startedAt: number,
 ): string | null {
+  // Read the pinned standoff, then dismiss it unconditionally (§4.3, G5): the
+  // commit resolves the nudge regardless of gate or delta.
+  const pending = readPendingEncounter();
+  clearPendingEncounter();
+
   // Opt-out (design-rpg Phase 4): gameFeel=off disables the idle-RPG loop —
-  // no spawns, no drops, no encounter file.
+  // no spawns, no drops, no encounter file (the clear above still ran).
   if (effectiveGameFeel() === "off") return null;
   const seed = hashString(`${resolveUserId()}:${startedAt}:${errorsSeen}`);
-  const bug = spawnBug(errorsSeen, seed);
+  const bug = resolveFightBug(pending, errorsSeen, startedAt, seed);
   if (!bug) return null;
   const companion = slot ? loadCompanionSlot(slot) : loadCompanion();
   if (!companion) return null;
@@ -320,6 +445,10 @@ export function maybeFightBug(
 
 /** Capture the baseline at the start of a session (overwrites any stale one). */
 export function startSession(): SessionSnapshot {
+  // A fresh session re-baselines the counters, so any surviving standoff would
+  // resolve against a zero delta — a ghost. Clear it (§4.4, G5) before the new
+  // snapshot lands so a sighting is always matched to a live baseline.
+  clearPendingEncounter();
   const snapshot: SessionSnapshot = {
     startedAt: nowSeconds(),
     baseline: extractCounters(loadGlobalEvents()),

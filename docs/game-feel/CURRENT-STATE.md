@@ -4,14 +4,15 @@ A single top-level snapshot of the **whole** game-feel system as it stands today
 tying together the arcs that each have their own design/status docs. For the
 per-arc detail, follow the links in [Doc map](#doc-map).
 
-_Last updated: 2026-07-06 · branch `feature/interactive-menu`_
-_Baseline: **724 tests pass** · `tsc --noEmit` clean · `bash -n` clean_
-_Status: all arcs **done and committed** — `feature/free-roam-combat` was merged into
-`feature/interactive-menu` via `fa8cc6f` on 2026-07-06, absorbing everything in
-[Recent changes](#recent-changes-2026-06-30) below. Two **uncommitted** passes on
-top: the [Rewards/leveling fix pass](#rewardsleveling-fix-pass-2026-07-06-scanalyze--scimprove)
-and [Derive-on-read for upgrades](#derive-on-read-for-upgrades-2026-07-06)
-(Phases 1-4, model flip). No PR opened yet._
+_Last updated: 2026-07-08 · branch `feature/interactive-fight-scene`_
+_Baseline: **755 tests pass** · `tsc --noEmit` clean · `bash -n` clean_
+_Status: the idle-RPG arc through P5 plus the rewards/derive-on-read passes are
+**committed** on `feature/interactive-fight-scene` (through `711103d`/`39d44da`,
+2026-07-07/08). Newest work, **uncommitted** on top: the
+[Combat spawn signal broadened](#combat-spawn-signal-broadened--classifier-fixes-2026-07-08)
+fix and the fully-landed
+[Pending encounter](#pending-encounter--the-standoff-2026-07-08) arc
+(Phases 1–4). No PR opened yet._
 
 > **What "game-feel" is.** A layer of optional juice on top of the buddy
 > companion: celebratory feedback, an expressive idle status line, light RPG
@@ -105,6 +106,11 @@ no stat drift and spawns no encounters.
   ready→wind-up→strike(clash)→resolve flipbook (`bakeScene` in `combat.ts`,
   `mirrorFrame`/`eyeRowIndex` in `art.ts`). The frames Phase 4 baked-but-discarded
   are now consumed as the render.
+- **Pending encounter / standoff** (design-pending-encounter, 2026-07-08) — the
+  enemy now appears at the **first error** and stands its ground (a strike-less
+  `bakePendingScene` flipbook in its own no-TTL `pending-encounter.json`) until a
+  commit fights the pinned bug; a *commit nudge*. See
+  [the standoff section](#pending-encounter--the-standoff-2026-07-08).
 
 ### 6. Interactive menu
 - `buddy_menu` + a unified nav channel route `/buddy` sub-commands through
@@ -367,6 +373,50 @@ six correct counters) and an e2e in a temp `CLAUDE_CONFIG_DIR`
 renders the two-sprite scene). Tests: **729 pass** (+5 in session.test.ts),
 `tsc` + `bash -n` clean.
 
+### Pending encounter — the standoff (2026-07-08)
+
+The fight was invisible until it was over. Now the enemy appears the moment the
+**first error-ish event** lands and stands its ground on the status line until a
+commit resolves it — a persistent standoff that doubles as a *commit nudge* (a
+bug on your line means uncommitted, error-marked work). Full spec:
+[idle-rpg/design-pending-encounter.md](idle-rpg/design-pending-encounter.md).
+Four phases, all landed and **uncommitted** on `feature/interactive-fight-scene`:
+
+1. **P1 — Bake + I/O (inert).** `bakePendingScene` (ready + periodic-glare poses,
+   no strike/clash — shares `bakeScene`'s row composer via the extracted
+   `composePose`), the `PendingEncounter` type, and
+   `write/read/clearPendingEncounter` in `combat.ts` (a **separate**
+   `pending-encounter.json` side-channel — no TTL — so the resolved phase's 10s
+   contract is untouched). `TRANSIENT_PREFIXES` gains the prefix; `BugId` +
+   `bugById` added to `bugs.ts`.
+2. **P2 — Lifecycle.** Pure `pendingAction` (spawn/escalate/no-op) + `sightBug`
+   in `session.ts`; a `bug_sighted` verb (no XP) in `award-xp.ts`; `react.sh`
+   fires it on the five error-ish reasons (backgrounded-bun idiom). `maybeFightBug`
+   now fights the **pinned** enemy (G4), tier-upgrades it if the final count
+   outgrew the standoff, and **clears the pending file unconditionally** (G5 —
+   even at `off`/zero-delta); `startSession` clears it too.
+3. **P3 — Render.** `writeStatusState` gained a pending branch (surfaces the
+   scene through the same `combatFrames`/`artWidth` fields plus a new
+   `combatSticky: 1` bit, gated `full` + `startedAt`-match; resolved always
+   outranks pending). `buddy-status.sh`: folds `combatSticky` into `$combat_on`
+   (full-gated), **freezes wander** during any scene (D3), and **suppresses the
+   reaction bubble only in the 10s resolved phase** (D4) — the standoff keeps its
+   normal chatter. (Folds in the old "stop the chat bubble during a fight" item.)
+4. **P4 — Docs + validation (this).** README "Bug fights" rewrite (standoff +
+   nudge semantics), testing-guide §3b pending harness + §6 cleanup, this
+   snapshot.
+
+User-visible delta: at `full`, errors summon a standing enemy that escalates and
+persists until commit; fixing the error does **not** dismiss it (nudge semantics,
+D6). `subtle` is unchanged (resolve-toast only); `off` shows nothing. No new
+config — it all rides the existing `gameFeel` knob.
+
+Verified: **755 pass** (+14: 5 `pendingAction`, 9 pending-render), `tsc` +
+`bash -n` clean, plus a fresh-process e2e through the real `award-xp.ts`
+(sighting → sticky scene with no `encounterAt`; escalation across a tier cutoff;
+same-tier repeat no-op; `session_complete` resolves + clears; `session_start`
+clears an orphan).
+
 ---
 
 ## Going live
@@ -397,6 +447,11 @@ bun run install-buddy   # copies the repo script into place
   upgrades, let the user pick which one is worn instead of purchase-order
   default. Deferred as a follow-up — derive-on-read makes it a pure
   preference field to add later.
+- ~~**Pending encounter** (designed 2026-07-08, awaiting `/sc:implement`)~~
+  **done 2026-07-08** — persistent standoff from first error-ish event until
+  commit, escalating tier, resolved-phase bubble suppression folded in. See
+  [Pending encounter — the standoff](#pending-encounter--the-standoff-2026-07-08).
+  Uncommitted on `feature/interactive-fight-scene`.
 - The stale top-level [`status.md`](status.md) is a point-in-time artifact for the
   quick-wins sub-arc (440 tests, `feature/leveling-system`) — superseded by this
   doc for the current picture.
@@ -414,6 +469,7 @@ bun run install-buddy   # copies the repo script into place
 | [idle-rpg/design.md](idle-rpg/design.md) · [idle-rpg/status.md](idle-rpg/status.md) | idle-RPG arc + tracker |
 | [idle-rpg/phase-{1..5}-*.md](idle-rpg/) | per-phase idle-RPG specs |
 | [idle-rpg/design-derive-upgrades.md](idle-rpg/design-derive-upgrades.md) | derive-on-read for upgrades (bones-mutation fix) |
+| [idle-rpg/design-pending-encounter.md](idle-rpg/design-pending-encounter.md) | persistent standoff until commit (**implemented** 2026-07-08, P1–4) |
 | [idle-rpg/testing-guide.md](idle-rpg/testing-guide.md) | hands-on verification harnesses |
 | [menu/](menu/) | interactive menu + nav channel |
 | [anaylsis.md](anaylsis.md) | earlier analysis notes |

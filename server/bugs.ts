@@ -10,8 +10,12 @@ import { mulberry32, type Species, type Eye } from "./engine";
 
 export type BugTier = 1 | 2 | 3 | 4;
 
+/** A bug's stable catalog id (see `BUGS`). Used to pin a pending encounter's
+ *  enemy identity across sightings and resolution (design-pending-encounter G4). */
+export type BugId = string;
+
 export interface Bug {
-  id: string;
+  id: BugId;
   name: string;
   /** Single status-line glyph (kept narrow, like item icons). Used in the toast
    *  summary and as the degraded-skew fallback render (Phase 5). */
@@ -55,6 +59,12 @@ export function tierForErrors(errorsSeen: number): 0 | BugTier {
 /** All bugs at a given tier. */
 export function bugsOfTier(tier: BugTier): Bug[] {
   return BUGS.filter((b) => b.tier === tier);
+}
+
+/** Look up a bug by its catalog id, or null for an unknown id (renamed/removed
+ *  catalog entry). Used to fight the exact enemy a pending encounter pinned. */
+export function bugById(id: BugId): Bug | null {
+  return BUGS.find((b) => b.id === id) ?? null;
 }
 
 /**

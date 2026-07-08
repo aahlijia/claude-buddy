@@ -271,9 +271,11 @@ Default on; toggle with `/buddy wander [on|off]`. `/buddy wander hop` adds a sma
 
 ### Bug fights
 
-After a commit where Claude wrestled with errors, your buddy squares off against the bug as a **second creature** right in the status line — a quick sword-swing duel (ready → wind-up → ⚔ strike → resolve) playing out next to your buddy. Tougher sessions summon tougher foes, each rendered as a full creature of a different kind: a *typo gremlin* shows up as a blob, a *null wraith* as a ghost, a *segfault dragon* as an actual dragon. Win and your buddy pockets skill points (and, now and then, an item); lose and the bug scuttles off. A win/flee toast rides the speech bubble, the fight plays for ~10 seconds, then your buddy goes back to idling.
+The moment Claude hits an error, a bug appears as a **second creature** in the status line and squares off against your buddy — a tense standoff that **stays put until you commit**. That persistence is the point: a bug on your status line means you have uncommitted, error-marked work, so the standoff doubles as a gentle *commit nudge*. More errors in the same session summon a tougher foe (the enemy escalates as you go), each rendered as a full creature of a different kind: a *typo gremlin* shows up as a blob, a *null wraith* as a ghost, a *segfault dragon* as an actual dragon. Fixing the error doesn't clear the standoff — **only committing does**.
 
-Like all the ambient animation it only shows at game-feel `full`, and it respects the opt-out: `/buddy gamefeel off` disables fights entirely (no spawns, no rewards, no render).
+When you commit, the buddy actually fights the bug it's been staring down: a quick sword-swing duel (ready → wind-up → ⚔ strike → resolve). Win and your buddy pockets skill points (and, now and then, an item); lose and the bug scuttles off. A win/flee toast rides the speech bubble, the fight plays for ~10 seconds, then your buddy goes back to idling. Your buddy keeps its usual chatter during the standoff, but the chat bubble steps aside for those 10 seconds so the duel has the stage.
+
+Like all the ambient animation the standoff only shows at game-feel `full`; `/buddy gamefeel subtle` keeps just the win/flee toast at commit, and `/buddy gamefeel off` disables fights entirely (no standoff, no spawns, no rewards, no render).
 
 > All multipliers stack multiplicatively but stay modest: rarity (≤×1.20) × prestige (≤×1.15) × collection (×1.05) caps around ×1.45. Every new reward back-fills cleanly onto existing buddies — nothing is lost on upgrade.
 

@@ -733,6 +733,12 @@ export interface StatusState {
    *  widens its art column to fit the two sprites. Absent ⇒ shell keeps its
    *  default single-sprite width. */
   artWidth?: number;
+  /** Pending encounter (design-pending-encounter §3.2): present (=1) only when
+   *  the combat scene is the persistent PRE-fight standoff rather than a fresh
+   *  resolved fight. Tells the shell to bypass the 10s encounter TTL for the
+   *  frame-source decision (the standoff has no `encounterAt`). Resolved scenes
+   *  never carry it, so the two phases never mix fields. */
+  combatSticky?: 1;
 }
 
 // ─── Celebration channel (game-feel §2 — one transient slot, many producers) ──
@@ -944,29 +950,50 @@ export function writeStatusState(
   let combatFrames: string[] | undefined;
   let combatSequence: number[] | undefined;
   let artWidth: number | undefined;
+  let combatSticky: 1 | undefined;
   if (gate !== "off") {
     try {
-      const { readEncounter } =
+      const { readEncounter, readPendingEncounter } =
         require("./combat.ts") as typeof import("./combat.ts");
       const { displayWidth } = require("./art.ts") as typeof import("./art.ts");
+      const sceneWidth = (frs: string[]): number =>
+        frs.reduce(
+          (max, frame) =>
+            frame
+              .split("\n")
+              .reduce((m, line) => Math.max(m, displayWidth(line)), max),
+          0,
+        );
       const enc = readEncounter();
       if (enc) {
-        // Phase 5: surface the baked two-sprite scene + its width. The scene
-        // carries its own fight eyes, so idle `.frames` stay neutral (no angry
-        // bias). `enemyGlyph`/`encounterAt` remain for the degraded-skew render
-        // when a stale bash can't read `combatFrames`.
+        // Resolved phase (Phase 5) — always outranks pending (§5.2). Surface the
+        // baked two-sprite scene + its width. The scene carries its own fight
+        // eyes, so idle `.frames` stay neutral (no angry bias).
+        // `enemyGlyph`/`encounterAt` remain for the degraded-skew render when a
+        // stale bash can't read `combatFrames`.
         enemyGlyph = enc.enemyGlyph;
         encounterAt = enc.at;
         if (Array.isArray(enc.frames) && enc.frames.length > 0) {
           combatFrames = enc.frames;
           combatSequence = enc.sequence;
-          artWidth = enc.frames.reduce(
-            (max, frame) =>
-              frame
-                .split("\n")
-                .reduce((m, line) => Math.max(m, displayWidth(line)), max),
-            0,
-          );
+          artWidth = sceneWidth(enc.frames);
+        }
+      } else if (gate === "full") {
+        // Pending standoff (design-pending-encounter §5.1): no TTL, full-only,
+        // and only when it belongs to the live session (staleness guard §5.3).
+        // Surfaced through the same combat fields plus the `combatSticky` bit so
+        // the shell bypasses the encounter TTL (the standoff has no encounterAt).
+        const pending = readPendingEncounter();
+        if (pending && Array.isArray(pending.frames) && pending.frames.length > 0) {
+          const { loadSnapshot } =
+            require("./session.ts") as typeof import("./session.ts");
+          const snap = loadSnapshot();
+          if (snap && snap.startedAt === pending.startedAt) {
+            combatFrames = pending.frames;
+            combatSequence = pending.sequence;
+            artWidth = sceneWidth(pending.frames);
+            combatSticky = 1;
+          }
         }
       }
     } catch {
@@ -1142,6 +1169,7 @@ export function writeStatusState(
     ...(combatFrames && combatSequence && artWidth
       ? { combatFrames, combatSequence, artWidth }
       : {}),
+    ...(combatSticky ? { combatSticky } : {}),
   };
   // Atomic write (game-feel §2.6): the MCP server, the award-xp.ts process, and
   // react.sh's jq patch all touch status.json — tmp+rename avoids torn reads.
@@ -1224,6 +1252,7 @@ const TRANSIENT_PREFIXES = [
   ".last_comment.",
   ".session_start.",
   "session.",
+  "pending-encounter.", // standoff side-channel + its .tmp (design-pending-encounter §3.1)
 ];
 
 /**

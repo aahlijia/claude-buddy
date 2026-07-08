@@ -77,6 +77,10 @@ interface StatusOverrides {
   combatFrames?: string[];
   combatSequence?: number[];
   artWidth?: number;
+  /** Pending encounter (design-pending-encounter §5): render the scene as the
+   *  persistent standoff — writes combatSticky:1 and, crucially, NO encounterAt
+   *  (proving the TTL bypass). Requires combatFrames; ignores encounterSecondsAgo. */
+  combatSticky?: boolean;
   /** Combined-status mode: model/context/usage/reset metrics, written into
    *  config.json (useCombinedStatus) and fed as the Claude Code stdin JSON. */
   useCombinedStatus?: boolean;
@@ -145,9 +149,14 @@ function renderStatus(overrides: StatusOverrides): string {
     status.combatFrames = overrides.combatFrames;
     status.combatSequence = overrides.combatSequence ?? [0];
     status.artWidth = overrides.artWidth ?? 28;
-    // The scene render keys off encounterAt freshness (glyph-independent).
-    status.encounterAt =
-      (fakeNow - (overrides.encounterSecondsAgo ?? 0)) * 1000;
+    if (overrides.combatSticky) {
+      // Pending standoff: sticky bit, no encounterAt — the TTL is bypassed.
+      status.combatSticky = 1;
+    } else {
+      // Resolved phase: the scene render keys off encounterAt freshness.
+      status.encounterAt =
+        (fakeNow - (overrides.encounterSecondsAgo ?? 0)) * 1000;
+    }
   }
   if (overrides.wanderSequence) status.wanderSequence = overrides.wanderSequence;
   if (overrides.wanderRowSequence) {
@@ -1092,6 +1101,104 @@ describe("idle-RPG combat scene (Phase 5)", () => {
       }
       expect(lines.some((l) => l.includes("LA0"))).toBe(true); // not degraded away
     }
+  });
+});
+
+describe("pending standoff render (design-pending-encounter Phase 3)", () => {
+  const W = 24;
+  const mkLine = (l: string, r: string): string =>
+    (l.padEnd(10) + "  " + r.padEnd(10)).padEnd(W);
+  const sceneA = ["SA0", "SA1", "SA2", "SA3"].map((l, i) => mkLine(l, `EA${i}`));
+  const sceneB = ["SB0", "SB1", "SB2", "SB3"].map((l, i) => mkLine(l, `EB${i}`));
+  const SCENE = [sceneA.join("\n"), sceneB.join("\n")];
+
+  const renderStandoff = (o: Partial<StatusOverrides> = {}): string =>
+    stripAnsi(
+      renderStatus({
+        gameFeel: "full",
+        combatFrames: SCENE,
+        combatSequence: [0],
+        artWidth: W,
+        combatSticky: true, // sticky bit, NO encounterAt
+        ...o,
+      }),
+    );
+
+  test("renders the standoff with NO encounterAt (TTL bypass proves out)", () => {
+    const out = renderStandoff();
+    expect(out).toContain("SA0"); // player half
+    expect(out).toContain("EA2"); // enemy half
+  });
+
+  test("the sticky standoff persists even when any encounter would be stale", () => {
+    // A resolved scene at the same age (99s) reverts to idle; the sticky one
+    // does not, because it carries no TTL at all.
+    const out = renderStandoff({ fakeNow: 1_700_009_999 });
+    expect(out).toContain("SA0"); // still rendering, hours later
+  });
+
+  test("does NOT render the standoff at subtle (full-only surface)", () => {
+    const out = renderStandoff({ gameFeel: "subtle" });
+    expect(out).not.toContain("SA0");
+    expect(out).toContain("("); // the idle fixture is drawn instead
+  });
+
+  test("cycles the standoff flipbook by NOW", () => {
+    const even = renderStandoff({ combatSequence: [0, 1], fakeNow: 1_700_000_000 });
+    const odd = renderStandoff({ combatSequence: [0, 1], fakeNow: 1_700_000_001 });
+    expect(even).toContain("SA0");
+    expect(even).not.toContain("SB0");
+    expect(odd).toContain("SB0");
+    expect(odd).not.toContain("SA0");
+  });
+
+  test("wander is frozen while the standoff renders (D3)", () => {
+    // A wanderSequence that would push the buddy right on odd ticks. With the
+    // scene active the offsets are zeroed, so the two ticks render identically.
+    const a = renderStandoff({ wanderSequence: [0, 9], fakeNow: 1_700_000_000 });
+    const b = renderStandoff({ wanderSequence: [0, 9], fakeNow: 1_700_000_001 });
+    expect(a).toBe(b);
+  });
+
+  test("the standoff keeps the reaction bubble (pending is NOT suppressed, D4)", () => {
+    const out = renderStandoff({
+      persistedReaction: { reaction: "you have uncommitted work" },
+    });
+    expect(out).toContain("you have uncommitted work");
+  });
+
+  test("a RESOLVED fight suppresses the reaction bubble (D4, resolved-only)", () => {
+    // Same scene, but as a fresh resolved encounter (encounterAt, no sticky) and
+    // no celebration set — so the ONLY thing that can hide the reaction is the
+    // resolved-phase suppression.
+    const out = stripAnsi(
+      renderStatus({
+        gameFeel: "full",
+        combatFrames: SCENE,
+        combatSequence: [0],
+        artWidth: W,
+        encounterSecondsAgo: 0,
+        persistedReaction: { reaction: "you have uncommitted work" },
+      }),
+    );
+    expect(out).toContain("SA0"); // the scene is up
+    expect(out).not.toContain("you have uncommitted work"); // ...bubble muted
+  });
+
+  test("the wide standoff stays fully in-window (no clip) across widths", () => {
+    for (const columns of [125, 100, 80]) {
+      const lines = renderStandoff({ columns }).split("\n");
+      for (const line of lines) {
+        expect([...line].length).toBeLessThanOrEqual(columns);
+      }
+      expect(lines.some((l) => l.includes("SA0"))).toBe(true);
+    }
+  });
+
+  test("no combatSticky and no encounter ⇒ plain idle art, no scene", () => {
+    const out = stripAnsi(renderStatus({ gameFeel: "full" }));
+    expect(out).not.toContain("SA0");
+    expect(out).toContain("("); // the default idle fixture
   });
 });
 

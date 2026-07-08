@@ -12,6 +12,7 @@ import {
   counterDelta,
   combatErrorCount,
   computeStatGains,
+  pendingAction,
   SESSION_BASE_BONUS,
   SESSION_BONUS_CAP,
   type SessionCounters,
@@ -174,6 +175,33 @@ describe("combatErrorCount", () => {
     // The real-world regression: bun test failures print `error:` and land in
     // tests_failed/lint_fails, never errors_seen — the spawn must see them.
     expect(combatErrorCount({ ...ZERO, tests_failed: 1 })).toBe(1);
+  });
+});
+
+describe("pendingAction (design-pending-encounter §4.1)", () => {
+  test("no existing standoff → spawn", () => {
+    expect(pendingAction(1, null)).toBe("spawn");
+    expect(pendingAction(4, null)).toBe("spawn");
+  });
+
+  test("a strictly higher tier → escalate", () => {
+    expect(pendingAction(2, { tier: 1 })).toBe("escalate");
+    expect(pendingAction(4, { tier: 2 })).toBe("escalate");
+  });
+
+  test("the same tier → no-op (no re-bake on repeated same-tier errors)", () => {
+    expect(pendingAction(1, { tier: 1 })).toBe("noop");
+    expect(pendingAction(3, { tier: 3 })).toBe("noop");
+  });
+
+  test("a lower tier never downgrades an existing standoff", () => {
+    expect(pendingAction(1, { tier: 3 })).toBe("noop");
+    expect(pendingAction(2, { tier: 4 })).toBe("noop");
+  });
+
+  test("tier 0 (no spawn) is always a no-op, even with no existing file", () => {
+    expect(pendingAction(0, null)).toBe("noop");
+    expect(pendingAction(0, { tier: 2 })).toBe("noop");
   });
 });
 

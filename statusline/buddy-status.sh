@@ -109,9 +109,17 @@ _STATUS=$(jq -r --argjson now "$NOW" --arg gf "$GAME_FEEL" '
                    and ($now - ($ea / 1000 | floor)) <= 10
                then 1 else 0 end)
        else 0 end) as $enc_fresh
-    # Combat scene active (Phase 5): a fresh encounter WITH a baked two-sprite
-    # scene. Takes priority over flourish/idle as the frame source.
-    | (if $enc_fresh == 1
+    # Pending standoff (design-pending-encounter §5.2): the server sets
+    # combatSticky=1 only on the persistent PRE-fight standoff, which has no
+    # encounterAt/TTL — never alongside a resolved scene. Full-only, mirroring the
+    # enc_fresh gate, so a status.json written at full stops rendering the standoff
+    # after a flip to subtle/off (belt-and-suspenders; the server also emits the
+    # field only at full). NB: no apostrophes in this block — the whole jq program
+    # is single-quoted in bash, so a stray quote would truncate it.
+    | (if $gf == "full" and (.combatSticky // 0) == 1 then 1 else 0 end) as $sticky
+    # Combat scene active (Phase 5 + pending): a fresh resolved encounter OR a
+    # sticky standoff, WITH a baked two-sprite scene. Priority over flourish/idle.
+    | (if (($enc_fresh == 1) or ($sticky == 1))
           and ((.combatFrames | type) == "array")
           and ((.combatFrames | length) > 0) then 1 else 0 end) as $combat_on
     # Frame source: combat scene > flourish (while a celebration is fresh) > idle.
@@ -129,18 +137,21 @@ _STATUS=$(jq -r --argjson now "$NOW" --arg gf "$GAME_FEEL" '
     # Active art display width: the combat scene widens the art column; 0 ⇒ the
     # shell keeps its default single-sprite ART_W.
     | (if $combat_on == 1 then (.artWidth // 0) else 0 end) as $awidth
-    # Wander offsets — only at gameFeel=full with no fresh celebration; all three
-    # stay 0 otherwise (parity with the old gf==full && !celeb_fresh gate, incl.
-    # WANDER_ROW_MAX, which must not reserve hop headroom when wander is idle).
-    | (if $gf == "full" and $celeb_fresh != 1
+    # Wander offsets — only at gameFeel=full with no fresh celebration AND no
+    # combat scene (design-pending-encounter D3: a standoff/fight that ambles
+    # around undercuts the tension, and pinning it maximizes the roam-math
+    # headroom for the wide scene during a now-potentially-hours-long render).
+    # All three stay 0 otherwise (parity with the old gate incl. WANDER_ROW_MAX,
+    # which must not reserve hop headroom when wander is idle).
+    | (if $gf == "full" and $celeb_fresh != 1 and $combat_on != 1
        then ((.wanderSequence // []) as $w
              | if ($w | length) > 0 then ($w[$now % ($w | length)] // 0) else 0 end)
        else 0 end) as $woff
-    | (if $gf == "full" and $celeb_fresh != 1
+    | (if $gf == "full" and $celeb_fresh != 1 and $combat_on != 1
        then ((.wanderRowSequence // []) as $w
              | if ($w | length) > 0 then ($w[$now % ($w | length)] // 0) else 0 end)
        else 0 end) as $wrow
-    | (if $gf == "full" and $celeb_fresh != 1
+    | (if $gf == "full" and $celeb_fresh != 1 and $combat_on != 1
        then (((.wanderRowSequence // []) | max) // 0)
        else 0 end) as $wrmax
     | [
@@ -371,18 +382,30 @@ if [ "$_CELEB_FRESH" = 1 ]; then
     CELEB_SHOWN=1
 fi
 
+# Bubble suppression during the 10s RESOLVED fight scene (design-pending-encounter
+# D4): the fight summary already rides the celebration toast (kept), so a
+# competing sticky reaction would clutter the two-sprite scene — this folds in the
+# pre-existing "stop the chat bubble during a fight" follow-up. Only the resolved
+# phase suppresses (enc_fresh && combat_on); the PENDING standoff (combat_on but
+# no enc_fresh) keeps the buddy's normal chatter, since it can last hours and
+# muting all reactions would silence the whole personality.
+SUPPRESS_REACTION=0
+if [ "$_ENC_FRESH" = 1 ] && [ "$_COMBAT_ON" = 1 ]; then
+    SUPPRESS_REACTION=1
+fi
+
 # Sticky bubble: status.json's .reaction is volatile — an incidental status
 # refresh (writeStatusState with no reaction) clears it to "". The per-session
 # reaction.$SID.json instead persists the LAST real reaction (hooks only ever
 # write it with content), so fall back to it when the live field is empty. The
 # bubble then stays until a new message replaces it. The TTL check below still
 # uses this file's timestamp, so an opt-in reactionTTL>0 keeps expiring as before.
-if { [ -z "$REACTION" ] || [ "$REACTION" = "null" ]; } && [ -f "$REACTION_FILE" ]; then
+if [ "$SUPPRESS_REACTION" -eq 0 ] && { [ -z "$REACTION" ] || [ "$REACTION" = "null" ]; } && [ -f "$REACTION_FILE" ]; then
     # Same control-char sanitization as the status.json free-text fields.
     REACTION=$(jq -r '(.reaction // "") | gsub("[\\x01-\\x1f\\x7f]"; " ")' "$REACTION_FILE" 2>/dev/null || echo "")
 fi
 
-if [ "$CELEB_SHOWN" -eq 0 ] && [ -n "$REACTION" ] && [ "$REACTION" != "null" ] && [ "$REACTION" != "" ]; then
+if [ "$SUPPRESS_REACTION" -eq 0 ] && [ "$CELEB_SHOWN" -eq 0 ] && [ -n "$REACTION" ] && [ "$REACTION" != "null" ] && [ "$REACTION" != "" ]; then
     FRESH=0
     if [ "$REACTION_TTL" -eq 0 ]; then
         FRESH=1

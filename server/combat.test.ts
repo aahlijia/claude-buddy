@@ -1,14 +1,23 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 
 import type { BuddyBones } from "./engine";
 import { displayWidth, getArtFrame, mirrorFrame } from "./art";
 import type { Equipment } from "./items";
 import type { Bug } from "./bugs";
+import { buddyStateDir } from "./path";
 import {
   WIN_CEIL,
   WIN_FLOOR,
+  bakePendingScene,
+  clearPendingEncounter,
+  readPendingEncounter,
   resolveCombat,
   winChance,
+  writePendingEncounter,
+  type PendingEncounter,
 } from "./combat";
 
 function bones(debug: number, overrides: Partial<BuddyBones> = {}): BuddyBones {
@@ -211,5 +220,121 @@ describe("two-sprite combat scene (Phase 5)", () => {
     const a = resolveCombat(bones(50), t4, {}, 11);
     const b = resolveCombat(bones(50), t4, {}, 11);
     expect(a.frames).toEqual(b.frames);
+  });
+});
+
+describe("pending standoff scene (Phase 1: bakePendingScene)", () => {
+  test("bakes exactly two poses on the [0,0,0,1] loop", () => {
+    const scene = bakePendingScene("cactus", "·", "dragon", "·");
+    expect(scene.frames.length).toBe(2);
+    expect(scene.sequence).toEqual([0, 0, 0, 1]);
+  });
+
+  test("every line of every frame is the same display width (no jitter)", () => {
+    const scene = bakePendingScene("cactus", "·", "dragon", "·");
+    const widths = new Set<number>();
+    for (const frame of scene.frames) {
+      for (const line of frame.split("\n")) widths.add(displayWidth(line));
+    }
+    expect(widths.size).toBe(1);
+  });
+
+  test("the standoff is wider than a single sprite (two creatures present)", () => {
+    const scene = bakePendingScene("cactus", "·", "dragon", "·");
+    const sceneW = displayWidth(scene.frames[0].split("\n")[0]);
+    const playerW = Math.max(
+      ...getArtFrame("cactus", "·", 0).map((l) => displayWidth(l)),
+    );
+    expect(sceneW).toBeGreaterThan(playerW * 2);
+  });
+
+  test("no strike frame — the gap never clashes blades", () => {
+    const scene = bakePendingScene("cactus", "·", "dragon", "·");
+    for (const frame of scene.frames) expect(frame).not.toContain("/\\");
+  });
+
+  test("the ready and glare poses differ (glare swaps the eyes)", () => {
+    const scene = bakePendingScene("cactus", "·", "dragon", "·");
+    expect(scene.frames[0]).not.toBe(scene.frames[1]);
+    // Glare pose uses ">" fight eyes on the player half.
+    expect(scene.frames[1]).toContain(">");
+  });
+
+  test("the enemy half is the mirror of its species art", () => {
+    const scene = bakePendingScene("cactus", "·", "dragon", "·");
+    const enemyMirror = mirrorFrame(getArtFrame("dragon", "·", 0));
+    const ready = scene.frames[0].split("\n");
+    for (let i = 0; i < enemyMirror.length; i++) {
+      const sceneLine = ready[ready.length - enemyMirror.length + i];
+      expect(sceneLine.endsWith(enemyMirror[i])).toBe(true);
+    }
+  });
+
+  test("is pure & deterministic given the same inputs", () => {
+    const a = bakePendingScene("wyvern", "·", "octopus", "×");
+    const b = bakePendingScene("wyvern", "·", "octopus", "×");
+    expect(a.frames).toEqual(b.frames);
+    expect(a.sequence).toEqual(b.sequence);
+  });
+});
+
+describe("pending-encounter I/O (Phase 1)", () => {
+  let prevEnv: string | undefined;
+  let cfgDir: string;
+
+  beforeEach(() => {
+    prevEnv = process.env.CLAUDE_CONFIG_DIR;
+    cfgDir = mkdtempSync(join(tmpdir(), "buddy-pending-test-"));
+    process.env.CLAUDE_CONFIG_DIR = cfgDir;
+    mkdirSync(buddyStateDir(), { recursive: true });
+  });
+
+  afterEach(() => {
+    if (prevEnv === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prevEnv;
+    rmSync(cfgDir, { recursive: true, force: true });
+  });
+
+  const sample = (): PendingEncounter => {
+    const scene = bakePendingScene("cactus", "·", "dragon", "·");
+    return {
+      bugId: "segfault_dragon",
+      tier: 4,
+      frames: scene.frames,
+      sequence: scene.sequence,
+      sightedAt: 1_700_000_000_000,
+      startedAt: 1_699_999_999_000,
+    };
+  };
+
+  test("round-trips a written record (no TTL — persists)", () => {
+    const rec = sample();
+    writePendingEncounter(rec);
+    expect(readPendingEncounter()).toEqual(rec);
+  });
+
+  test("clearPendingEncounter removes the file (idempotent)", () => {
+    writePendingEncounter(sample());
+    clearPendingEncounter();
+    expect(readPendingEncounter()).toBeNull();
+    // Clearing an already-absent file is a no-op, not a throw.
+    expect(() => clearPendingEncounter()).not.toThrow();
+  });
+
+  test("missing file reads as null", () => {
+    expect(readPendingEncounter()).toBeNull();
+  });
+
+  test("malformed file reads as null", () => {
+    writeFileSync(join(buddyStateDir(), "pending-encounter.json"), "{ not json");
+    expect(readPendingEncounter()).toBeNull();
+  });
+
+  test("a record missing required fields reads as null", () => {
+    writeFileSync(
+      join(buddyStateDir(), "pending-encounter.json"),
+      JSON.stringify({ frames: ["x"], tier: 4 }), // no bugId / startedAt
+    );
+    expect(readPendingEncounter()).toBeNull();
   });
 });
