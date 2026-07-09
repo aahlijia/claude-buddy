@@ -978,9 +978,13 @@ export function writeStatusState(
           combatSequence = enc.sequence;
           artWidth = sceneWidth(enc.frames);
         }
-      } else if (gate === "full") {
+      } else if (cfg.gameFeel === "full") {
         // Pending standoff (design-pending-encounter §5.1): no TTL, full-only,
         // and only when it belongs to the live session (staleness guard §5.3).
+        // Gated on the CONFIGURED level, not the clamped `gate`: the standoff
+        // exists BECAUSE of errors, and the fresh error reaction keeps the
+        // auto-quiet spike clamp active (FR-E1) — the clamped gate would strip
+        // the scene sightBug just landed on the very next status write.
         // Surfaced through the same combat fields plus the `combatSticky` bit so
         // the shell bypasses the encounter TTL (the standoff has no encounterAt).
         const pending = readPendingEncounter();

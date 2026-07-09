@@ -129,9 +129,14 @@ session_start ──────────────────────
 
 New I/O entry point, called by `award-xp.ts bug_sighted`:
 
-1. Gate: `effectiveGameFeel() !== "full"` → no-op. (Pending's *only* surface
+1. Gate: `gameFeelLevel() !== "full"` → no-op. (Pending's *only* surface
    is the scene, which is full-only. `subtle` keeps today's toast-at-resolve;
-   `off` keeps nothing.)
+   `off` keeps nothing.) **Configured level, NOT `effectiveGameFeel()`** —
+   the original clamped gate was a bug: a sighting fires on the very
+   error-family events whose fresh reaction trips the auto-quiet spike clamp
+   (FR-E1), and `reactionTTL` defaults to 0 (never expires), so the clamped
+   read was "subtle" by construction and *every* spawn was suppressed. The
+   standoff exists *because* of errors; it is exempt from auto-quiet.
 2. `count = combatErrorCount(counterDelta(current, snapshot.baseline))`,
    floored at 1 — a sighting event just fired, so even a missing/older
    snapshot (`loadSnapshot() === null`) counts the event that summoned us.
@@ -201,11 +206,16 @@ read:
 ```
 resolved fresh (readEncounter ≠ null, frames present)
     → combatFrames/… as today                      (no sticky bit)
-else if gate === "full" and pending exists and pending.startedAt matches
+else if cfg.gameFeel === "full" and pending exists and pending.startedAt matches
     → combatFrames/combatSequence from pending, artWidth computed the same
       way, combatSticky: 1
 else → no combat fields                            (byte-identical idle)
 ```
+
+The pending branch reads the **configured** `cfg.gameFeel`, not the clamped
+`gate` — same auto-quiet exemption as §4.1: while the error reaction is fresh
+the spike clamp holds `gate` at "subtle", so a clamped gate would strip the
+standoff `sightBug` just landed on the very next status write.
 
 Same lazy `require("./combat.ts")` + try/catch (version-skew tolerant); the
 pending read is one more `readFileSync` at event frequency, not per tick.

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -336,5 +337,96 @@ describe("pending-encounter I/O (Phase 1)", () => {
       JSON.stringify({ frames: ["x"], tier: 4 }), // no bugId / startedAt
     );
     expect(readPendingEncounter()).toBeNull();
+  });
+});
+
+// ─── Fresh-process: sighting under the auto-quiet error spike ─────────────────
+//
+// state.ts freezes its state dir at module load, so the real sightBug →
+// writeStatusState path needs a subprocess whose CLAUDE_CONFIG_DIR is set
+// before any import (same idiom as loot.test.ts). Regression: sightBug gated on
+// effectiveGameFeel(), but a sighting fires on the very error events whose
+// fresh reaction trips the auto-quiet spike clamp (FR-E1) — and reactionTTL
+// defaults to 0 (never expires), so the clamped read was "subtle" by
+// construction and every spawn was suppressed. Both the spawn (session.ts) and
+// the combatSticky status write (state.ts) must read the CONFIGURED level.
+
+describe("sightBug under auto-quiet error spike (fresh process)", () => {
+  test("spawns the standoff and lands combatSticky despite a fresh spike reaction", () => {
+    const cfgDir = mkdtempSync(join(tmpdir(), "buddy-sight-proc-"));
+    const script = `
+      const { readFileSync } = await import("fs");
+      const { join } = await import("path");
+      const {
+        saveConfig, saveCompanion, saveReaction, effectiveGameFeel,
+      } = await import("./server/state.ts");
+      const { startSession, sightBug } = await import("./server/session.ts");
+      const { readPendingEncounter, clearPendingEncounter } =
+        await import("./server/combat.ts");
+      saveConfig({ gameFeel: "full" });
+      saveCompanion({
+        name: "sighttest",
+        personality: "",
+        bones: {
+          species: "cactus", rarity: "common", eye: "\\u00b7", hat: "none",
+          shiny: false, peak: "SNARK", dump: "WISDOM",
+          stats: { DEBUGGING: 10, PATIENCE: 10, CHAOS: 10, WISDOM: 10, SNARK: 10 },
+        },
+      });
+      const snap = startSession();
+      // The exact live sequence: react.sh writes the error-family reaction,
+      // THEN fires bug_sighted. reactionTTL=0 (default) keeps it fresh forever.
+      saveReaction("*glares at the failing tests*", "test-fail");
+      const clampedWhileSighting = effectiveGameFeel();
+      sightBug();
+      const pending = readPendingEncounter();
+      const status = JSON.parse(readFileSync(
+        join(process.env.CLAUDE_CONFIG_DIR, "buddy-state", "status.json"),
+        "utf8",
+      ));
+      // Negative control: a configured subtle/off level still no-ops.
+      clearPendingEncounter();
+      saveConfig({ gameFeel: "subtle" });
+      sightBug();
+      console.log(JSON.stringify({
+        clampedWhileSighting,
+        pendingTier: pending?.tier ?? null,
+        startedAtMatch: pending ? pending.startedAt === snap.startedAt : null,
+        sticky: status.combatSticky ?? null,
+        frames: Array.isArray(status.combatFrames) ? status.combatFrames.length : 0,
+        encounterAt: status.encounterAt ?? null,
+        subtleNoop: readPendingEncounter() === null,
+      }));
+    `;
+    try {
+      const env: Record<string, string | undefined> = {
+        ...process.env,
+        CLAUDE_CONFIG_DIR: cfgDir,
+      };
+      delete env.TMUX_PANE; // pin SID to "default" so reaction/session files agree
+      const res = spawnSync("bun", ["-e", script], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        encoding: "utf8",
+      });
+      expect(res.stderr).toBe("");
+      expect(res.status).toBe(0);
+      const out = JSON.parse(res.stdout.trim());
+      // Precondition of the regression: the spike clamp IS active when the
+      // sighting runs — effectiveGameFeel() reads "subtle" at configured full.
+      expect(out.clampedWhileSighting).toBe("subtle");
+      // The standoff spawns anyway (configured-level gate)…
+      expect(out.pendingTier).toBe(1);
+      expect(out.startedAtMatch).toBe(true);
+      // …and the status write surfaces it as a sticky scene (no encounterAt —
+      // the shell must not TTL it away), also despite the active clamp.
+      expect(out.sticky).toBe(1);
+      expect(out.frames).toBeGreaterThan(0);
+      expect(out.encounterAt).toBeNull();
+      // Full-only still holds: configured subtle never spawns.
+      expect(out.subtleNoop).toBe(true);
+    } finally {
+      rmSync(cfgDir, { recursive: true, force: true });
+    }
   });
 });

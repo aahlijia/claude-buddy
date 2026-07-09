@@ -380,7 +380,8 @@ The fight was invisible until it was over. Now the enemy appears the moment the
 commit resolves it — a persistent standoff that doubles as a *commit nudge* (a
 bug on your line means uncommitted, error-marked work). Full spec:
 [idle-rpg/design-pending-encounter.md](idle-rpg/design-pending-encounter.md).
-Four phases, all landed and **uncommitted** on `feature/interactive-fight-scene`:
+Four phases, all landed on `feature/interactive-fight-scene` (committed as
+`22f6733`):
 
 1. **P1 — Bake + I/O (inert).** `bakePendingScene` (ready + periodic-glare poses,
    no strike/clash — shares `bakeScene`'s row composer via the extracted
@@ -416,6 +417,26 @@ Verified: **755 pass** (+14: 5 `pendingAction`, 9 pending-render), `tsc` +
 (sighting → sticky scene with no `encounterAt`; escalation across a tier cutoff;
 same-tier repeat no-op; `session_complete` resolves + clears; `session_start`
 clears an orphan).
+
+#### Fix: auto-quiet suppressed every sighting (2026-07-09)
+
+Live playtesting never showed a standoff, and the cause was deterministic:
+`sightBug` gated on `effectiveGameFeel() === "full"`, but a sighting fires on
+the **exact five error-family reasons** in `SPIKE_REASONS` — the reaction
+`react.sh` writes just before firing `bug_sighted` trips the auto-quiet
+error-spike clamp (FR-E1), and `reactionTTL` defaults to `0` (the reaction
+never expires), so the clamped read was `"subtle"` by construction. Every
+spawn was suppressed; the P1-4 e2e missed it because it invoked
+`award-xp.ts bug_sighted` directly without the reaction write that the live
+`react.sh` path always performs first.
+
+Fix: the standoff is **exempt from auto-quiet** (it exists *because* of
+errors) — `sightBug` and `writeStatusState`'s pending branch now gate on the
+**configured** level (`gameFeelLevel()` / `cfg.gameFeel`), not the clamped
+one. The resolved-phase scene and every other delight producer keep the clamp.
+Regression pinned by a fresh-process test in `combat.test.ts` that writes a
+spike reaction before sighting (red on the old gates, green now). **756 pass**,
+`tsc` clean.
 
 ---
 

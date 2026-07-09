@@ -27,6 +27,7 @@ import {
   updateCompanionSlot,
   resolveUserId,
   effectiveGameFeel,
+  gameFeelLevel,
   writeStatusState,
 } from "./state.ts";
 import { loadGlobalEvents, type GlobalCounters } from "./achievements.ts";
@@ -321,8 +322,12 @@ function pendingSeed(startedAt: number, tier: number): number {
  * from award-xp.ts `bug_sighted`.
  */
 export function sightBug(slot?: string): void {
-  // The standoff is a full-only surface (§D5): quietly do nothing otherwise.
-  if (effectiveGameFeel() !== "full") return;
+  // The standoff is a full-only surface (§D5), gated on the CONFIGURED level —
+  // NOT effectiveGameFeel(). A sighting fires on the very error events whose
+  // fresh reaction trips the auto-quiet spike clamp (FR-E1, and reactionTTL
+  // defaults to 0 = the reaction never expires), so the clamped read is
+  // "subtle" here by construction and would suppress every spawn.
+  if (gameFeelLevel() !== "full") return;
 
   const snapshot = loadSnapshot();
   const current = extractCounters(loadGlobalEvents());
