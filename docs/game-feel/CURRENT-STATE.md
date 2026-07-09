@@ -438,6 +438,19 @@ Regression pinned by a fresh-process test in `combat.test.ts` that writes a
 spike reaction before sighting (red on the old gates, green now). **756 pass**,
 `tsc` clean.
 
+#### Caption: "Bug fight in \<project\>!" (2026-07-09)
+
+Encounter state is global, so a scene sighted in one project follows the buddy
+into every other instance's status line — confusing without context. Both
+encounter records now carry an optional `project` (hook-cwd basename, captured
+by `currentProject()` in `combat.ts`: control chars stripped — frame art is
+exempt from the shell-side jq sanitizer — and clamped to 24 chars), and
+`writeStatusState` prepends a centered "Bug fight in \<project\>!" caption line
+to the surfaced `combatFrames` (both standoff and resolved). **Zero shell
+changes** — art height/width already derive from the frames. Records written
+before the field render caption-less (back-compat). e2e-verified through the
+real `react.sh` chain for both scenes; **757 pass**, `tsc` clean.
+
 ---
 
 ## Going live

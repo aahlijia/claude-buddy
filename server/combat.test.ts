@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { basename, join } from "path";
 
 import type { BuddyBones } from "./engine";
 import { displayWidth, getArtFrame, mirrorFrame } from "./art";
@@ -326,6 +326,15 @@ describe("pending-encounter I/O (Phase 1)", () => {
     expect(readPendingEncounter()).toBeNull();
   });
 
+  test("optional project field survives the roundtrip", () => {
+    const rec = { ...sample(), project: "claude-buddy" };
+    writePendingEncounter(rec);
+    expect(readPendingEncounter()?.project).toBe("claude-buddy");
+    // Records written before the field existed read back without it.
+    writePendingEncounter(sample());
+    expect(readPendingEncounter()?.project).toBeUndefined();
+  });
+
   test("malformed file reads as null", () => {
     writeFileSync(join(buddyStateDir(), "pending-encounter.json"), "{ not json");
     expect(readPendingEncounter()).toBeNull();
@@ -395,6 +404,7 @@ describe("sightBug under auto-quiet error spike (fresh process)", () => {
         sticky: status.combatSticky ?? null,
         frames: Array.isArray(status.combatFrames) ? status.combatFrames.length : 0,
         encounterAt: status.encounterAt ?? null,
+        caption: status.combatFrames?.[0]?.split("\\n")[0]?.trim() ?? null,
         subtleNoop: readPendingEncounter() === null,
       }));
     `;
@@ -423,6 +433,9 @@ describe("sightBug under auto-quiet error spike (fresh process)", () => {
       expect(out.sticky).toBe(1);
       expect(out.frames).toBeGreaterThan(0);
       expect(out.encounterAt).toBeNull();
+      // The cross-instance caption names the project the sighting ran in
+      // (the child's cwd is the repo root).
+      expect(out.caption).toBe(`Bug fight in ${basename(join(import.meta.dir, ".."))}!`);
       // Full-only still holds: configured subtle never spawns.
       expect(out.subtleNoop).toBe(true);
     } finally {

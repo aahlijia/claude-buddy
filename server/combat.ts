@@ -12,7 +12,7 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, renameSync, rmSync } from "fs";
-import { join } from "path";
+import { basename, join } from "path";
 
 import {
   RARITY_WEIGHTS,
@@ -77,6 +77,11 @@ export interface EncounterRecord {
   sequence: number[];
   enemyGlyph: string;
   at: number; // Date.now() — TTL freshness, like loot's lastDrop.at
+  /** Project the fight belongs to (hook cwd basename). Encounter state is
+   *  global, so the scene shows in every instance's status line — the caption
+   *  "Bug fight in <project>!" says where it came from. Absent on records
+   *  written before the field existed. */
+  project?: string;
 }
 
 /**
@@ -98,6 +103,9 @@ export interface PendingEncounter {
   sightedAt: number;
   /** The session snapshot `startedAt` that spawned it — staleness guard (§5.3). */
   startedAt: number;
+  /** Project the standoff belongs to (hook cwd basename) — see
+   *  `EncounterRecord.project`. Absent on records written before the field. */
+  project?: string;
 }
 
 // ─── Win odds ─────────────────────────────────────────────────────────────────
@@ -376,14 +384,34 @@ function encounterFile(): string {
   return join(buddyStateDir(), "encounter.json");
 }
 
+/**
+ * The project a sighting/fight belongs to: the basename of the process cwd
+ * (react.sh's backgrounded bun inherits the session's working directory).
+ * Control characters are stripped here because frame art is exempt from the
+ * shell-side jq sanitizer, and the name is clamped so a long directory name
+ * can't blow out the scene width. Undefined when the cwd yields nothing usable.
+ */
+export function currentProject(): string | undefined {
+  try {
+    const name = basename(process.cwd())
+      .replace(/[\x00-\x1f\x7f]/g, "")
+      .trim()
+      .slice(0, 24);
+    return name || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Persist the baked encounter to the transient side-channel (like lastDrop). */
-export function writeEncounter(result: CombatResult): void {
+export function writeEncounter(result: CombatResult, project?: string): void {
   mkdirSync(buddyStateDir(), { recursive: true });
   const record: EncounterRecord = {
     frames: result.frames,
     sequence: result.sequence,
     enemyGlyph: result.enemyGlyph,
     at: Date.now(),
+    project,
   };
   const file = encounterFile();
   const tmp = file + ".tmp";

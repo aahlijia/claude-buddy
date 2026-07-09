@@ -964,6 +964,23 @@ export function writeStatusState(
               .reduce((m, line) => Math.max(m, displayWidth(line)), max),
           0,
         );
+      // "Bug fight in <project>!" caption: encounter state is global, so the
+      // scene follows the buddy into every instance's status line — the caption
+      // says which project the fight belongs to. Prepended as a frame line
+      // (centered over the scene) so the shell needs no layout change: art
+      // height and width already come from the frames themselves. Re-stripped
+      // here because frame art is exempt from the shell-side jq sanitizer.
+      const captionFrames = (frs: string[], project?: string): string[] => {
+        const name = (project ?? "").replace(/[\x00-\x1f\x7f]/g, "").trim();
+        if (!name) return frs;
+        const caption = `Bug fight in ${name}!`;
+        const pad = Math.max(
+          0,
+          Math.floor((sceneWidth(frs) - displayWidth(caption)) / 2),
+        );
+        const line = " ".repeat(pad) + caption;
+        return frs.map((frame) => line + "\n" + frame);
+      };
       const enc = readEncounter();
       if (enc) {
         // Resolved phase (Phase 5) — always outranks pending (§5.2). Surface the
@@ -974,9 +991,9 @@ export function writeStatusState(
         enemyGlyph = enc.enemyGlyph;
         encounterAt = enc.at;
         if (Array.isArray(enc.frames) && enc.frames.length > 0) {
-          combatFrames = enc.frames;
+          combatFrames = captionFrames(enc.frames, enc.project);
           combatSequence = enc.sequence;
-          artWidth = sceneWidth(enc.frames);
+          artWidth = sceneWidth(combatFrames);
         }
       } else if (cfg.gameFeel === "full") {
         // Pending standoff (design-pending-encounter §5.1): no TTL, full-only,
@@ -993,9 +1010,9 @@ export function writeStatusState(
             require("./session.ts") as typeof import("./session.ts");
           const snap = loadSnapshot();
           if (snap && snap.startedAt === pending.startedAt) {
-            combatFrames = pending.frames;
+            combatFrames = captionFrames(pending.frames, pending.project);
             combatSequence = pending.sequence;
-            artWidth = sceneWidth(pending.frames);
+            artWidth = sceneWidth(combatFrames);
             combatSticky = 1;
           }
         }

@@ -51,6 +51,7 @@ import {
   writePendingEncounter,
   readPendingEncounter,
   clearPendingEncounter,
+  currentProject,
 } from "./combat.ts";
 import { ownedItems } from "./shop.ts";
 import {
@@ -363,6 +364,7 @@ export function sightBug(slot?: string): void {
     sequence: scene.sequence,
     sightedAt: Date.now(),
     startedAt,
+    project: currentProject(),
   });
   // Land the standoff on the line immediately (§4.1.6); writeStatusState reads
   // the pending file we just wrote (P3 render branch).
@@ -442,7 +444,7 @@ export function maybeFightBug(
     ownedUpgradeEffects(xpState),
   );
   applyCombatDrops(result.drop);
-  writeEncounter(result);
+  writeEncounter(result, currentProject());
   return result.summary;
 }
 
