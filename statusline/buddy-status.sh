@@ -137,6 +137,9 @@ _STATUS=$(jq -r --argjson now "$NOW" --arg gf "$GAME_FEEL" '
     # Active art display width: the combat scene widens the art column; 0 ⇒ the
     # shell keeps its default single-sprite ART_W.
     | (if $combat_on == 1 then (.artWidth // 0) else 0 end) as $awidth
+    # Caption row present (1): the scene top row is a "Bug fight in <project>!"
+    # line the shell may fold onto the combined-status metrics header row.
+    | (if $combat_on == 1 then (.combatCaption // 0) else 0 end) as $combat_caption
     # Wander offsets — only at gameFeel=full with no fresh celebration AND no
     # combat scene (design-pending-encounter D3: a standoff/fight that ambles
     # around undercuts the tension, and pinning it maximizes the roam-math
@@ -179,6 +182,7 @@ _STATUS=$(jq -r --argjson now "$NOW" --arg gf "$GAME_FEEL" '
         ($combat_on | tostring),
         ($awidth | tostring),
         ((.enemyGlyph // "") | gsub("[\\x01-\\x1f\\x7f]"; " ")),
+        ($combat_caption | tostring),
         ($frame | @base64)
       ] | join("")
 ' "$STATE" 2>/dev/null)
@@ -189,7 +193,7 @@ IFS=$'\x1f' read -r \
     STATS_TSV XP_PCT XP_GAIN_TSV CELEB_TSV \
     _HAS_FLOURISH _CELEB_FRESH WANDER_OFF WANDER_ROW WANDER_ROW_MAX \
     _ENC_FRESH _COMBAT_ON ART_WIDTH ENEMY_GLYPH \
-    _FRAME_B64 <<< "$_STATUS"
+    _COMBAT_CAPTION _FRAME_B64 <<< "$_STATUS"
 
 [ "$MUTED" = "true" ] && exit 0
 [ -z "$NAME" ] && exit 0
@@ -213,6 +217,7 @@ case "$WANDER_ROW_MAX" in ''|*[!0-9]*) WANDER_ROW_MAX=0 ;; esac
 # active two-sprite scene; 0 unless a fresh fight is being rendered.
 case "$_COMBAT_ON" in 1) ;; *) _COMBAT_ON=0 ;; esac
 case "$ART_WIDTH" in ''|*[!0-9]*) ART_WIDTH=0 ;; esac
+case "$_COMBAT_CAPTION" in 1) ;; *) _COMBAT_CAPTION=0 ;; esac
 
 # Fallback when status.json lacks .frames — e.g. server/bash version skew
 # during install or while the MCP server hasn't rewritten the file yet. Keep
@@ -846,6 +851,38 @@ else
     MID_PAD=0
 fi
 
+# ─── Fold the fight caption onto the metrics header row (combined mode) ──────
+# The server prepends a centered "Bug fight in <project>!" line as frame row 0 of
+# a combat scene (_COMBAT_CAPTION=1). When the combined-status header owns the row
+# ABOVE the buddy block, fold that caption onto the header row instead of spending
+# a whole scene row on it: pull it out of the block (so the stats/bubble recenter
+# over the now-shorter scene) and place it over the art column, right of the
+# metrics text. With no metrics header the caption stays frame row 0 (unchanged).
+MERGED_HEADER=""
+if [ -n "$METRICS_HEADER" ] && [ "$_COMBAT_ON" = 1 ] && [ "$_COMBAT_CAPTION" = 1 ] \
+   && [ ${#ALL_LINES[@]} -gt 1 ]; then
+    _CAP_LINE="${ALL_LINES[0]}"
+    _CAP_COLOR="${ALL_COLORS[0]}"
+    ALL_LINES=("${ALL_LINES[@]:1}")
+    ALL_COLORS=("${ALL_COLORS[@]:1}")
+    ART_COUNT=${#ALL_LINES[@]}
+    # Absolute column where the art column (and the caption's own centering pad)
+    # begins on a block row — mirrors the per-row lead accumulation in the output
+    # loop (SPACER + stats + gap + mid-roam + bubble + connector). Wander is frozen
+    # during a scene, so there is no per-segment WANDER_PAD to add.
+    _ART_LEFT=$LEAD_PAD
+    [ $STATS_COUNT -gt 0 ] && _ART_LEFT=$(( _ART_LEFT + STATS_W + STATS_GAP + MID_PAD ))
+    [ $BUBBLE_COUNT -gt 0 ] && _ART_LEFT=$(( _ART_LEFT + BOX_W + CONNECTOR_W ))
+    case "$(uname -s)" in
+        MINGW*|CYGWIN*|MSYS*) _MH_LEAD=$(printf '%*s' "$STATS_LEFT_MARGIN" '') ;;
+        *)                     _MH_LEAD=$(printf "${B}%${STATS_LEFT_MARGIN}s" "") ;;
+    esac
+    _MET_W=$(dwidth "$_METRICS_LINE")
+    _GAP=$(( _ART_LEFT - STATS_LEFT_MARGIN - _MET_W ))
+    [ "$_GAP" -lt 1 ] && _GAP=1
+    MERGED_HEADER="${_MH_LEAD}${METRICS_HEADER}$(printf '%*s' "$_GAP" '')${_CAP_COLOR}${_CAP_LINE}${NC}"
+fi
+
 # On Windows (Git Bash / MSYS2), Braille Blank (U+2800) renders as double-width,
 # which doubles the spacer and pushes content off-screen. Use regular spaces instead.
 # MID_SPACER sits mid-line (never trimmed), so it's always plain spaces — only
@@ -911,8 +948,11 @@ fi
 # Printed before the buddy block so it never shares a row with — or inflates the
 # width of — the stats column/bubble. Indented to line up with the stats panel's
 # left edge; the lead uses Braille Blank (like SPACER) so a JS .trim() can't eat
-# it and shift the header left of the stats below it.
-if [ -n "$METRICS_HEADER" ]; then
+# it and shift the header left of the stats below it. During a captioned fight the
+# caption is folded onto this row (MERGED_HEADER, built above) so it costs no row.
+if [ -n "$MERGED_HEADER" ]; then
+    echo "$MERGED_HEADER"
+elif [ -n "$METRICS_HEADER" ]; then
     # Same lead idiom as SPACER (B + margin spaces) so the header aligns with the
     # stats column below whether or not the stats panel itself is shown.
     case "$(uname -s)" in

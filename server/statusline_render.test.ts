@@ -84,6 +84,9 @@ interface StatusOverrides {
    *  persistent standoff — writes combatSticky:1 and, crucially, NO encounterAt
    *  (proving the TTL bypass). Requires combatFrames; ignores encounterSecondsAgo. */
   combatSticky?: boolean;
+  /** Fight caption present: the scene's top frame row is a "Bug fight in …!" line
+   *  the shell may fold onto the combined-status header row. Writes combatCaption:1. */
+  combatCaption?: boolean;
   /** Combined-status mode: model/context/usage/reset metrics, written into
    *  config.json (useCombinedStatus) and fed as the Claude Code stdin JSON. */
   useCombinedStatus?: boolean;
@@ -152,6 +155,7 @@ function renderStatus(overrides: StatusOverrides): string {
     status.combatFrames = overrides.combatFrames;
     status.combatSequence = overrides.combatSequence ?? [0];
     status.artWidth = overrides.artWidth ?? 28;
+    if (overrides.combatCaption) status.combatCaption = 1;
     if (overrides.combatSticky) {
       // Pending standoff: sticky bit, no encounterAt — the TTL is bypassed.
       status.combatSticky = 1;
@@ -1298,5 +1302,90 @@ describe("buddy-status.sh combined-status metrics header", () => {
     expect(out.split("\n")[0]).toContain("claude opus 4.8");
     expect(out).toContain("Waffle"); // the buddy still renders below
     expect(out).not.toContain("DBG"); // …with no stats column
+  });
+});
+
+describe("fight caption inline with the combined-status header", () => {
+  const CC = JSON.stringify({
+    model: { display_name: "Claude Opus 4.8" },
+    context_window: { context_window_size: 200000, used_percentage: 45 },
+    rate_limits: {
+      five_hour: { used_percentage: 30, resets_at: 1_700_000_000 + 8100 },
+    },
+  });
+  const W = 24;
+  const CAPTION = "Bug fight in demo!";
+  // Frame row 0 is the centered caption (as the server prepends it); rows 1-4 are
+  // the two-sprite scene, each padded to a constant width.
+  const cap = " ".repeat((W - CAPTION.length) >> 1) + CAPTION;
+  const mkLine = (l: string, r: string): string =>
+    (l.padEnd(10) + "  " + r.padEnd(10)).padEnd(W);
+  const scene = ["LC0", "LC1", "LC2", "LC3"].map((l, i) => mkLine(l, `RC${i}`));
+  const FRAME = [cap, ...scene].join("\n");
+
+  const renderCaptioned = (o: Partial<StatusOverrides> = {}): string =>
+    stripAnsi(
+      renderStatus({
+        gameFeel: "full",
+        combatFrames: [FRAME],
+        combatSequence: [0],
+        artWidth: W,
+        combatCaption: true,
+        combatSticky: true,
+        ...o,
+      }),
+    );
+
+  test("folds the caption onto the metrics header row when combined mode is on", () => {
+    const lines = renderCaptioned({
+      showStats: true,
+      useCombinedStatus: true,
+      ccInput: CC,
+    }).split("\n");
+    // The caption now shares the metrics row (line 0) — both on one line.
+    expect(lines[0]).toContain("claude opus 4.8");
+    expect(lines[0]).toContain(CAPTION);
+    // …and it appears exactly once in the whole render (not also in the block).
+    const hits = lines.filter((l) => l.includes(CAPTION)).length;
+    expect(hits).toBe(1);
+    // The scene itself still renders below.
+    expect(lines.slice(1).join("\n")).toContain("LC0");
+  });
+
+  test("keeps the caption as its own block row when combined mode is off", () => {
+    const lines = renderCaptioned({ showStats: true }).split("\n");
+    // No metrics row exists, so the caption stays where the server put it: as the
+    // top row of the scene block, never merged into a non-existent header.
+    expect(lines[0]).not.toContain("claude opus 4.8");
+    expect(lines.some((l) => l.includes(CAPTION))).toBe(true);
+    expect(lines.filter((l) => l.includes(CAPTION)).length).toBe(1);
+    expect(lines.some((l) => l.includes("LC0"))).toBe(true);
+  });
+
+  test("reclaims the caption's block row so the header costs no net line", () => {
+    // Stats off ⇒ the scene is the tallest column, so pulling the caption row out
+    // of the block actually shrinks it: the added header row is offset by the
+    // reclaimed caption row ⇒ combined-on has the SAME total line count as off.
+    const off = renderCaptioned({ showStats: false }).split("\n").length;
+    const on = renderCaptioned({
+      showStats: false,
+      useCombinedStatus: true,
+      ccInput: CC,
+    }).split("\n").length;
+    expect(on).toBe(off);
+  });
+
+  test("stays in-window when the caption rides the header row", () => {
+    for (const columns of [125, 100]) {
+      const lines = renderCaptioned({
+        showStats: true,
+        useCombinedStatus: true,
+        ccInput: CC,
+        columns,
+      }).split("\n");
+      for (const line of lines) {
+        expect([...line].length).toBeLessThanOrEqual(columns);
+      }
+    }
   });
 });
