@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join } from "path";
 
-import type { BuddyBones } from "./engine";
+import { mulberry32, type BuddyBones } from "./engine";
 import { displayWidth, getArtFrame, mirrorFrame } from "./art";
 import type { Equipment } from "./items";
 import type { Bug } from "./bugs";
@@ -209,12 +209,13 @@ describe("two-sprite combat scene (Phase 5)", () => {
   });
 
   test("clash lands on the eye row for a 6-line player (wyvern), not center", () => {
-    // wyvern art is 6 lines with eyes on row index 2 — Math.floor(6/2)=3 would
-    // drop the clash a row below the eyes. The fix derives the row from the art.
+    // wyvern art is 6 lines with eyes on row index 2 — center-based math would
+    // drop the clash below the eyes. The fix derives the row from the art.
+    // Row 0 is the damage-pop overlay, so the eye row sits at index 3.
     const r = resolveCombat(bones(50, { species: "wyvern" }), t4, {}, 3);
     const strike = r.frames[2].split("\n");
-    expect(strike[2]).toContain("/\\"); // blades clash on the actual eye row
-    expect(strike[Math.floor(strike.length / 2)]).not.toContain("/\\"); // center is row 3
+    const clashRows = strike.flatMap((l, i) => (l.includes("/\\") ? [i] : []));
+    expect(clashRows).toEqual([3]); // blades clash only on the actual eye row
   });
 
   test("determinism extends to the multi-line scene frames", () => {
@@ -225,10 +226,20 @@ describe("two-sprite combat scene (Phase 5)", () => {
 });
 
 describe("pending standoff scene (Phase 1: bakePendingScene)", () => {
-  test("bakes exactly two poses on the [0,0,0,1] loop", () => {
+  test("bakes ready/glare plus two 3-frame bouts (8 frames)", () => {
     const scene = bakePendingScene("cactus", "·", "dragon", "·");
-    expect(scene.frames.length).toBe(2);
-    expect(scene.sequence).toEqual([0, 0, 0, 1]);
+    expect(scene.frames.length).toBe(8);
+    // Every sequence tick indexes a real frame.
+    for (const i of scene.sequence) {
+      expect(i).toBeGreaterThanOrEqual(0);
+      expect(i).toBeLessThan(scene.frames.length);
+    }
+    // Both bouts play in order (walk, impact ×2, float ×2) with calm rhythm
+    // between them.
+    const seq = scene.sequence.join(",");
+    expect(seq).toContain("2,3,3,4,4");
+    expect(seq).toContain("5,6,6,7,7");
+    expect(scene.sequence[0]).toBe(0); // loop opens on the calm ready pose
   });
 
   test("every line of every frame is the same display width (no jitter)", () => {
@@ -276,6 +287,129 @@ describe("pending standoff scene (Phase 1: bakePendingScene)", () => {
     const b = bakePendingScene("wyvern", "·", "octopus", "×");
     expect(a.frames).toEqual(b.frames);
     expect(a.sequence).toEqual(b.sequence);
+  });
+});
+
+describe("skirmish bouts + damage pops (design-attack-animation)", () => {
+  const strip = (s: string): string => s.replace(/\x1b\[[^m]*m/g, "");
+  const overlayOf = (frame: string): string => frame.split("\n")[0];
+  // The seeded draw order is part of the bake contract (§4.4): the first
+  // rng() call picks the opening attacker.
+  const firstAttacker = (seed: number): "player" | "enemy" =>
+    mulberry32(seed)() < 0.5 ? "player" : "enemy";
+
+  test("constant display width AND height across all frames (no jitter)", () => {
+    const scene = bakePendingScene("cactus", "·", "dragon", "·", 42, 3);
+    const widths = new Set<number>();
+    const heights = new Set<number>();
+    for (const frame of scene.frames) {
+      const lines = frame.split("\n");
+      heights.add(lines.length);
+      for (const line of lines) widths.add(displayWidth(line));
+    }
+    expect(widths.size).toBe(1);
+    expect(heights.size).toBe(1);
+  });
+
+  test("base frames carry a blank overlay row; impacts pop a red ✗ -N", () => {
+    const scene = bakePendingScene("cactus", "·", "dragon", "·", 42, 3);
+    for (const i of [0, 1]) {
+      expect(overlayOf(scene.frames[i]).trim()).toBe("");
+    }
+    // Impact frames (2nd of each bout): red SGR + marker + number.
+    for (const i of [3, 6]) {
+      expect(overlayOf(scene.frames[i])).toContain("\x1b[31m");
+      expect(strip(overlayOf(scene.frames[i]))).toMatch(/✗ -\d+/);
+    }
+    // Float frames: the marker is gone, the number lingers.
+    for (const i of [4, 7]) {
+      expect(overlayOf(scene.frames[i])).not.toContain("✗");
+      expect(strip(overlayOf(scene.frames[i]))).toMatch(/-\d+/);
+    }
+    // Walk-in frames have no pop yet.
+    for (const i of [2, 5]) {
+      expect(overlayOf(scene.frames[i]).trim()).toBe("");
+    }
+  });
+
+  test("attackers alternate: the two bouts pop over different sprites", () => {
+    const scene = bakePendingScene("cactus", "·", "dragon", "·", 42, 3);
+    const popCol = (i: number): number =>
+      strip(overlayOf(scene.frames[i])).indexOf("✗");
+    expect(popCol(3)).toBeGreaterThanOrEqual(0);
+    expect(popCol(6)).toBeGreaterThanOrEqual(0);
+    expect(popCol(3)).not.toBe(popCol(6));
+  });
+
+  test("the walk translates the attacker inside the fixed canvas", () => {
+    const seed = 42;
+    const scene = bakePendingScene("cactus", "·", "dragon", "·", seed, 3);
+    // Compare a bottom art row (no eyes) of each bout's walk-in frame against
+    // the ready frame: the attacker's block shifts 2 cells into the gap while
+    // the defender's stays put and total width is constant.
+    const lastRow = (i: number): string => {
+      const lines = scene.frames[i].split("\n");
+      return lines[lines.length - 1];
+    };
+    const ready = lastRow(0);
+    const walks: Record<"player" | "enemy", string> = {
+      [firstAttacker(seed)]: lastRow(2),
+      [firstAttacker(seed) === "player" ? "enemy" : "player"]: lastRow(5),
+    } as Record<"player" | "enemy", string>;
+    // Player attacks: its leftmost ink moves 2 cells right.
+    expect(walks.player.search(/\S/)).toBe(ready.search(/\S/) + 2);
+    // Enemy attacks: its rightmost ink moves 2 cells left.
+    expect(walks.enemy.trimEnd().length).toBe(ready.trimEnd().length - 2);
+  });
+
+  test("damage rolls stay in range (buddy 1..9, bug 1..3·tier)", () => {
+    const tier = 4;
+    for (const seed of [1, 2, 3, 4, 5]) {
+      const scene = bakePendingScene("cactus", "·", "dragon", "·", seed, tier);
+      const first = firstAttacker(seed);
+      const second = first === "player" ? "enemy" : "player";
+      const cap = (attacker: "player" | "enemy"): number =>
+        attacker === "player" ? 9 : 3 * tier;
+      const popN = (i: number): number =>
+        Number(strip(overlayOf(scene.frames[i])).match(/-(\d+)/)![1]);
+      for (const [i, attacker] of [[3, first], [6, second]] as const) {
+        expect(popN(i)).toBeGreaterThanOrEqual(1);
+        expect(popN(i)).toBeLessThanOrEqual(cap(attacker));
+      }
+    }
+  });
+
+  test("seeded variation: a different seed re-rolls the loop", () => {
+    const a = bakePendingScene("cactus", "·", "dragon", "·", 7, 2);
+    const b = bakePendingScene("cactus", "·", "dragon", "·", 7, 2);
+    expect(a).toEqual(b);
+    // Gap draws can collide across seeds (8 values each); the frames carry the
+    // attacker order + damage rolls, so the flipbook as a whole must differ.
+    const c = bakePendingScene("cactus", "·", "dragon", "·", 8, 2);
+    expect([c.frames, c.sequence]).not.toEqual([a.frames, a.sequence]);
+  });
+
+  test("resolved scene (OQ4): win strikes pop over the enemy, flee stays blank", () => {
+    let win: ReturnType<typeof resolveCombat> | undefined;
+    let flee: ReturnType<typeof resolveCombat> | undefined;
+    for (let s = 0; s < 200 && (!win || !flee); s++) {
+      const r = resolveCombat(bones(50), t4, {}, s);
+      if (r.outcome === "win") win = win ?? r;
+      else flee = flee ?? r;
+    }
+    // strike frames show the pop, the triumph frame floats the number away
+    expect(strip(overlayOf(win!.frames[2]))).toMatch(/✗ -\d+/);
+    expect(strip(overlayOf(win!.frames[3]))).toMatch(/-\d+/);
+    expect(overlayOf(win!.frames[3])).not.toContain("✗");
+    // ...and it lands over the enemy (right of the player block)
+    const playerW = Math.max(
+      ...getArtFrame("cactus", "·", 0).map((l) => displayWidth(l)),
+    );
+    expect(strip(overlayOf(win!.frames[2])).indexOf("✗")).toBeGreaterThan(playerW);
+    // a flee never shows damage — the swing whiffed
+    for (const frame of flee!.frames) {
+      expect(overlayOf(frame).trim()).toBe("");
+    }
   });
 });
 

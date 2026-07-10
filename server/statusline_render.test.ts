@@ -12,6 +12,9 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 
+import { displayWidth } from "./art";
+import { bakePendingScene } from "./combat";
+
 const SCRIPT = resolve(import.meta.dir, "..", "statusline", "buddy-status.sh");
 
 /** Strip ANSI SGR escape codes so assertions can match rendered text. */
@@ -1199,6 +1202,45 @@ describe("pending standoff render (design-pending-encounter Phase 3)", () => {
     const out = stripAnsi(renderStatus({ gameFeel: "full" }));
     expect(out).not.toContain("SA0");
     expect(out).toContain("("); // the default idle fixture
+  });
+});
+
+describe("skirmish-bout render (design-attack-animation)", () => {
+  // Real baked frames, not a fixture: the guard for the taller (+overlay row)
+  // and ANSI-bearing flipbook through the real jq + layout path. frames[3] is
+  // the first bout's impact pose — attacker adjacent, red ✗ -N pop on top.
+  const scene = bakePendingScene("cactus", "·", "dragon", "·", 42, 3);
+  const W = displayWidth(scene.frames[0].split("\n")[0]);
+
+  const renderBout = (o: Partial<StatusOverrides> = {}): string =>
+    renderStatus({
+      gameFeel: "full",
+      combatFrames: scene.frames,
+      combatSequence: [3], // pin the impact frame
+      artWidth: W,
+      combatSticky: true,
+      ...o,
+    });
+
+  test("the impact frame's damage pop renders through the real shell", () => {
+    const out = renderBout();
+    expect(stripAnsi(out)).toMatch(/✗ -\d+/); // the pop is visible
+    expect(out).toContain("\x1b[31m"); // ...and still red (frames skip the sanitizer)
+  });
+
+  test("a base standoff frame renders with a blank overlay (no pop)", () => {
+    const out = renderBout({ combatSequence: [0] });
+    expect(stripAnsi(out)).not.toContain("✗");
+  });
+
+  test("strict no-clip at hostile widths (BUDDY_FAKE_COLS)", () => {
+    for (const columns of [125, 100, 80]) {
+      const lines = stripAnsi(renderBout({ columns })).split("\n");
+      for (const line of lines) {
+        // Stripped scene is ASCII + the 1-cell ✗ ⇒ code points == width.
+        expect([...line].length).toBeLessThanOrEqual(columns);
+      }
+    }
   });
 });
 

@@ -356,6 +356,10 @@ export function sightBug(slot?: string): void {
     companion.bones.eye,
     bug.species,
     bug.eye,
+    // Skirmish bouts (design-attack-animation §4.4): the same per-(session,
+    // tier) seed drives attacker order, damage rolls, and loop spacing.
+    pendingSeed(startedAt, tier),
+    tier,
   );
   writePendingEncounter({
     bugId: bug.id,

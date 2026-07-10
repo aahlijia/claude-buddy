@@ -162,19 +162,70 @@ function swingGlyph(weaponArt: string): string {
 }
 
 /** Build the GAP column for one scene row: blank, except the eye row on a strike
- *  frame, where the two blades clash (player's leans right, enemy's mirrors). */
-function gapRow(strike: boolean, isEyeRow: boolean, sword: string): string {
-  if (!strike || !isEyeRow) return " ".repeat(SCENE_GAP);
+ *  frame, where the two blades clash (player's leans right, enemy's mirrors).
+ *  `width` shrinks below SCENE_GAP while a bout attacker occupies part of the
+ *  gap (design-attack-animation §4.1); strike frames always use the full gap. */
+function gapRow(
+  strike: boolean,
+  isEyeRow: boolean,
+  sword: string,
+  width: number = SCENE_GAP,
+): string {
+  if (!strike || !isEyeRow) return " ".repeat(width);
   const swordP = sword;
   const swordE = mirrorFrame([sword])[0]; // "/" → "\", etc.
   // Center the clash in the gap: " " + P + E + " " (SCENE_GAP === 4).
-  return ` ${swordP}${swordE} `.slice(0, SCENE_GAP).padEnd(SCENE_GAP);
+  return ` ${swordP}${swordE} `.slice(0, width).padEnd(width);
 }
 
 interface Pose {
   pEye: Eye;
   eEye: Eye;
   strike: boolean;
+}
+
+// ─── Skirmish-bout extras (design-attack-animation §4) ───────────────────────
+
+const RED = "\x1b[31m";
+const NC = "\x1b[0m";
+
+/** The red damage pop (OQ1): `✗ -N` on impact, a bare `-N` as it floats away.
+ *  ANSI is safe here — `displayWidth` strips SGR before measuring, and the
+ *  overlay row is composed after the enemy mirror, so `mirrorFrame` never sees
+ *  the escape bytes. */
+function damagePop(n: number, floating: boolean): string {
+  return floating ? `${RED}-${n}${NC}` : `${RED}✗ -${n}${NC}`;
+}
+
+/** Extra per-frame scene features for the skirmish bouts. Absent ⇒ the
+ *  composed frame is byte-identical to the classic pose. */
+interface PoseExtras {
+  /** Attacker translation into the gap, in display cells (0..SCENE_GAP). The
+   *  vacated gap is space-padded on the far side, so total width is constant. */
+  shift?: { side: "player" | "enemy"; cells: number };
+  /** Damage-pop row rendered above the scene, centered over one sprite. When a
+   *  flipbook uses overlays at all, EVERY frame must pass one (`text: null` ⇒
+   *  an all-space row) so the frame height stays constant across the loop. */
+  overlay?: { text: string | null; over: "player" | "enemy" };
+}
+
+/** The overlay row: `text` centered over the chosen sprite's column span,
+ *  padded to the full scene width (rows stay rectangular). The defender never
+ *  shifts during a bout, so its span is stable regardless of `shift`. */
+function overlayRow(
+  overlay: { text: string | null; over: "player" | "enemy" },
+  playerW: number,
+  enemyW: number,
+): string {
+  const total = playerW + SCENE_GAP + enemyW;
+  if (!overlay.text) return " ".repeat(total);
+  const w = displayWidth(overlay.text);
+  const centered =
+    overlay.over === "player"
+      ? Math.floor((playerW - w) / 2)
+      : playerW + SCENE_GAP + Math.floor((enemyW - w) / 2);
+  const col = Math.max(0, Math.min(centered, total - w));
+  return " ".repeat(col) + overlay.text + " ".repeat(Math.max(0, total - col - w));
 }
 
 /** The four fight poses: ready → wind-up → strike → resolve. Body art is fixed
@@ -204,6 +255,7 @@ function composePose(
   enemySpecies: Species,
   pose: Pose,
   sword: string,
+  extras?: PoseExtras,
 ): string {
   const player = rectFrame(getArtFrame(playerSpecies, pose.pEye, 0));
   const enemy = mirrorFrame(getArtFrame(enemySpecies, pose.eEye, 0));
@@ -213,9 +265,23 @@ function composePose(
   // the sword lands at eye level for off-center species (goose/snail/mushroom)
   // and the 6-line wyvern alike.
   const eyeRow = eyeRowIndex(playerSpecies) + (pA.length - player.length);
-  return pA
-    .map((line, i) => line + gapRow(pose.strike, i === eyeRow, sword) + eA[i])
-    .join("\n");
+  // A bout attacker walks `cells` into the gap; the vacated space moves to the
+  // attacker's outer side, keeping every row's total width constant.
+  const cells = Math.min(extras?.shift?.cells ?? 0, SCENE_GAP);
+  const side = cells > 0 ? extras?.shift?.side : undefined;
+  const pad = " ".repeat(cells);
+  const rows = pA.map((line, i) => {
+    const gap = gapRow(pose.strike, i === eyeRow, sword, SCENE_GAP - cells);
+    if (side === "player") return pad + line + gap + eA[i];
+    if (side === "enemy") return line + gap + eA[i] + pad;
+    return line + gap + eA[i];
+  });
+  if (extras?.overlay) {
+    rows.unshift(
+      overlayRow(extras.overlay, displayWidth(pA[0]), displayWidth(eA[0])),
+    );
+  }
+  return rows.join("\n");
 }
 
 /**
@@ -233,10 +299,22 @@ function bakeScene(
   enemyEye: Eye,
   weaponArt: string,
   outcome: Outcome,
+  damage: number,
 ): { frames: string[]; sequence: number[] } {
   const sword = swingGlyph(weaponArt);
-  const frames = scenePoses(playerEye, enemyEye, outcome).map((pose) =>
-    composePose(playerSpecies, enemySpecies, pose, sword),
+  // OQ4: on a win the strike shows the red pop over the enemy and the triumph
+  // frame lets the number float away; a flee keeps the overlay blank (the
+  // swing whiffed). Every frame carries the row so height stays constant.
+  const popFor = (i: number): string | null => {
+    if (outcome !== "win") return null;
+    if (i === 2) return damagePop(damage, false); // strike
+    if (i === 3) return damagePop(damage, true); // triumph
+    return null;
+  };
+  const frames = scenePoses(playerEye, enemyEye, outcome).map((pose, i) =>
+    composePose(playerSpecies, enemySpecies, pose, sword, {
+      overlay: { text: popFor(i), over: "enemy" },
+    }),
   );
   // Gentle oscillation: ready, wind-up, strike, strike, resolve, resolve.
   const sequence = [0, 1, 2, 2, 3, 3];
@@ -254,26 +332,98 @@ function pendingPoses(restingP: Eye, restingE: Eye): Pose[] {
   ];
 }
 
+/** One skirmish bout (design-attack-animation §4.2): the attacker walks across
+ *  the gap, lands a hit (red `✗ -N` pop over the defender), then backs off
+ *  while the number floats away. Three distinct frames; the sequence returns
+ *  to the base ready pose for the walk-home beat. The defender never moves. */
+function bakeBoutFrames(
+  playerSpecies: Species,
+  enemySpecies: Species,
+  restingP: Eye,
+  restingE: Eye,
+  attacker: "player" | "enemy",
+  damage: number,
+): string[] {
+  const defender = attacker === "player" ? "enemy" : "player";
+  const walk: Pose =
+    attacker === "player"
+      ? { pEye: asEye(">"), eEye: restingE, strike: false }
+      : { pEye: restingP, eEye: asEye(">"), strike: false };
+  const impact: Pose =
+    attacker === "player"
+      ? { pEye: asEye(">"), eEye: asEye("x"), strike: false }
+      : { pEye: asEye("x"), eEye: asEye(">"), strike: false };
+  const at = (pose: Pose, cells: number, text: string | null): string =>
+    // strike is always false ⇒ the sword arg is inert (gap stays blank).
+    composePose(playerSpecies, enemySpecies, pose, DEFAULT_SWORD, {
+      shift: { side: attacker, cells },
+      overlay: { text, over: defender },
+    });
+  return [
+    at(walk, 2, null), // walk-in: halfway across the gap
+    at(impact, SCENE_GAP, damagePop(damage, false)), // impact: adjacent, ✗ -N
+    at(impact, 2, damagePop(damage, true)), // back off: -N floats away
+  ];
+}
+
 /**
- * Bake the persistent standoff flipbook (design-pending-encounter §4.2): the
- * same two-sprite composition as `bakeScene`, but only ready/glare poses and no
- * strike — the enemy that appears when the first error lands and stares the
- * buddy down until a commit resolves it. Pure & deterministic, constant display
- * width across both frames (body fixed to art frame 0), bottom-aligned.
+ * Bake the persistent standoff flipbook (design-pending-encounter §4.2,
+ * extended by design-attack-animation): the same two-sprite composition as
+ * `bakeScene` — ready/glare poses plus two seeded skirmish bouts (§4.2/OQ2:
+ * attackers alternate, damage and loop gaps rolled from `seed`). Pure &
+ * deterministic; constant display width AND height across all frames (body
+ * fixed to art frame 0, every frame carries the overlay row), bottom-aligned.
  */
 export function bakePendingScene(
   playerSpecies: Species,
   playerEye: Eye,
   enemySpecies: Species,
   enemyEye: Eye = DEFAULT_ENEMY_EYE,
+  seed: number = 0,
+  tier: number = 1,
 ): { frames: string[]; sequence: number[] } {
-  const frames = pendingPoses(playerEye, enemyEye).map((pose) =>
+  const base = pendingPoses(playerEye, enemyEye).map((pose) =>
     // strike is always false ⇒ the sword arg is inert (gap stays blank).
-    composePose(playerSpecies, enemySpecies, pose, DEFAULT_SWORD),
+    composePose(playerSpecies, enemySpecies, pose, DEFAULT_SWORD, {
+      overlay: { text: null, over: "enemy" },
+    }),
   );
-  // A calm loop with a periodic glare (design-pending-encounter §4.2). Data —
-  // cheap to tune later.
-  const sequence = [0, 0, 0, 1];
+  // Seeded draws in a fixed order (determinism): first attacker, damage per
+  // bout (§4.3: the bug hits 1..3·tier, the buddy hits 1..9), three gaps.
+  const rng = mulberry32(seed);
+  const first: "player" | "enemy" = rng() < 0.5 ? "player" : "enemy";
+  const second: "player" | "enemy" = first === "player" ? "enemy" : "player";
+  const roll = (attacker: "player" | "enemy"): number =>
+    1 + Math.floor(rng() * (attacker === "player" ? 9 : 3 * tier));
+  const dmgA = roll(first);
+  const dmgB = roll(second);
+  const gap = (): number => 8 + Math.floor(rng() * 8);
+  const [g1, g2, g3] = [gap(), gap(), gap()];
+
+  const bout = (attacker: "player" | "enemy", damage: number): string[] =>
+    bakeBoutFrames(
+      playerSpecies,
+      enemySpecies,
+      playerEye,
+      enemyEye,
+      attacker,
+      damage,
+    );
+  const frames = [...base, ...bout(first, dmgA), ...bout(second, dmgB)];
+
+  // The calm rhythm keeps the classic mostly-ready/periodic-glare beat; each
+  // bout plays walk → impact ×2 → float ×2, then falls back to ready. The
+  // whole loop repeats every `sequence.length` seconds (§4.4).
+  const calm = (n: number): number[] =>
+    Array.from({ length: n }, (_, i) => [0, 0, 0, 1][i % 4]);
+  const boutTicks = (f: number): number[] => [f, f + 1, f + 1, f + 2, f + 2];
+  const sequence = [
+    ...calm(g1),
+    ...boutTicks(2),
+    ...calm(g2),
+    ...boutTicks(5),
+    ...calm(g3),
+  ];
   return { frames, sequence };
 }
 
@@ -334,6 +484,10 @@ export function resolveCombat(
   const p = winChance(effDebug, weaponEquipped, bug.tier);
 
   const outcome: Outcome = rng() < p ? "win" : "flee";
+  // Cosmetic damage pop (design-attack-animation §4.3/OQ4). Rolled from a
+  // derived seed so the main rng stream (outcome → jitter → item) is
+  // unchanged for existing seeds. 0x2717 = ✗.
+  const damage = 1 + Math.floor(mulberry32(seed ^ 0x2717)() * 9);
   const { frames, sequence } = bakeScene(
     bones.species,
     bones.eye,
@@ -341,6 +495,7 @@ export function resolveCombat(
     bug.eye ?? DEFAULT_ENEMY_EYE,
     appearance.weaponArt,
     outcome,
+    damage,
   );
 
   let drop: DropSpec;

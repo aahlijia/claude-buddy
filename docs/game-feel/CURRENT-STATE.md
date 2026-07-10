@@ -4,15 +4,14 @@ A single top-level snapshot of the **whole** game-feel system as it stands today
 tying together the arcs that each have their own design/status docs. For the
 per-arc detail, follow the links in [Doc map](#doc-map).
 
-_Last updated: 2026-07-08 · branch `feature/interactive-fight-scene`_
-_Baseline: **755 tests pass** · `tsc --noEmit` clean · `bash -n` clean_
-_Status: the idle-RPG arc through P5 plus the rewards/derive-on-read passes are
-**committed** on `feature/interactive-fight-scene` (through `711103d`/`39d44da`,
-2026-07-07/08). Newest work, **uncommitted** on top: the
-[Combat spawn signal broadened](#combat-spawn-signal-broadened--classifier-fixes-2026-07-08)
-fix and the fully-landed
-[Pending encounter](#pending-encounter--the-standoff-2026-07-08) arc
-(Phases 1–4). No PR opened yet._
+_Last updated: 2026-07-10 · branch `feature/interactive-fight-scene`_
+_Baseline: **767 tests pass** · `tsc --noEmit` clean · `bash -n` clean_
+_Status: everything through the
+[Pending encounter](#pending-encounter--the-standoff-2026-07-08) arc, the
+auto-quiet standoff fix, and the fight caption is **committed and pushed**
+(through `ec40524`, 2026-07-09). Newest work, **uncommitted** on top:
+[Skirmish bouts](#skirmish-bouts--walk-over-attacks--damage-pops-2026-07-10)
+(walk-over attacks + damage pops). No PR opened yet._
 
 > **What "game-feel" is.** A layer of optional juice on top of the buddy
 > companion: celebratory feedback, an expressive idle status line, light RPG
@@ -451,6 +450,42 @@ changes** — art height/width already derive from the frames. Records written
 before the field render caption-less (back-compat). e2e-verified through the
 real `react.sh` chain for both scenes; **757 pass**, `tsc` clean.
 
+### Skirmish bouts — walk-over attacks + damage pops (2026-07-10)
+
+Design: [idle-rpg/design-attack-animation.md](idle-rpg/design-attack-animation.md)
+(OQ1–OQ5 user-resolved same day). The standoff is no longer static theater:
+twice per loop one sprite **walks across the gap and swings** at the other — a
+red ANSI `✗ -N` damage pop appears over the victim (hurt `x` eyes) and floats
+away, then the attacker walks back. The resolved 10s fight gets the same pop
+over the bug on a win (strike + triumph frames); a flee keeps the row blank.
+
+Entirely `combat.ts` (+ tests) — **zero `state.ts`/shell changes**, the whole
+animation is a longer baked flipbook played by the existing
+`$seq[$now % $slen]` cycler:
+
+- `composePose` gains optional `PoseExtras` — `shift` (attacker translation
+  into the gap, vacated space padded on the far side ⇒ constant width by
+  construction) and `overlay` (a pop row above the scene; when a flipbook uses
+  overlays every frame carries one, blank or not ⇒ constant height). Defaults
+  are byte-identical to the old output.
+- `bakeBoutFrames`: walk-in (half gap) → impact (adjacent, `✗ -N`) → back-off
+  (`-N` floats); defender never moves. `bakePendingScene` grows to 8 frames +
+  a seeded ~34–55-entry sequence: attacker order, damage (bug 1..3·tier,
+  buddy 1..9) and calm-gap lengths all rolled from the existing per-(session,
+  tier) `pendingSeed` — "random" lives at bake time, the loop repeats.
+- `resolveCombat` rolls the resolved-scene pop from a derived seed
+  (`seed ^ 0x2717`) so the existing outcome/jitter/item rng stream is
+  untouched for old seeds.
+- ANSI safety: `displayWidth` strips SGR before measuring, the overlay is
+  composed *after* `mirrorFrame` (never mirrored), and frame art is exempt
+  from the jq sanitizer (wyvern precedent). Verified end-to-end: the red
+  escape survives the real renderer.
+
+Tests: +10 (constant width AND height across all frames, pop placement/range,
+attacker alternation, seeded variation, resolved win-vs-flee, real-shell
+render of a pinned impact frame incl. strict no-clip). **767 pass**, `tsc` +
+`bash -n` clean.
+
 ---
 
 ## Going live
@@ -504,6 +539,7 @@ bun run install-buddy   # copies the repo script into place
 | [idle-rpg/phase-{1..5}-*.md](idle-rpg/) | per-phase idle-RPG specs |
 | [idle-rpg/design-derive-upgrades.md](idle-rpg/design-derive-upgrades.md) | derive-on-read for upgrades (bones-mutation fix) |
 | [idle-rpg/design-pending-encounter.md](idle-rpg/design-pending-encounter.md) | persistent standoff until commit (**implemented** 2026-07-08, P1–4) |
+| [idle-rpg/design-attack-animation.md](idle-rpg/design-attack-animation.md) | skirmish bouts + damage pops (**implemented** 2026-07-10) |
 | [idle-rpg/testing-guide.md](idle-rpg/testing-guide.md) | hands-on verification harnesses |
 | [menu/](menu/) | interactive menu + nav channel |
 | [anaylsis.md](anaylsis.md) | earlier analysis notes |

@@ -188,6 +188,21 @@ Your buddy on the left, the mirrored enemy on the right, the gap **blank** (no
 `/\` clash — that's the resolved fight only), and the buddy **doesn't wander**
 while it renders. The buddy's normal chatter still shows during the standoff.
 
+**Skirmish bouts** (design-attack-animation): twice per loop one sprite walks
+across the gap and swings — a red `✗ -N` pop over the victim, then it floats
+away. The loop is seeded per (session, tier) and ~34–55s long, so to catch a
+bout deterministically sweep the sequence instead of waiting:
+```bash
+# Find the bout ticks (frame indices 2-7 are bout poses; 3 and 6 are impacts):
+jq -r '.combatSequence | join("")' ~/.claude/buddy-state/status.json
+# Render tick k of the loop (k = a position showing 3 or 6 above):
+BUDDY_FAKE_NOW=$k bash statusline/buddy-status.sh < /dev/null
+```
+**Expect:** the attacker shifted into the gap, hurt eyes (`x`) on the victim,
+the red pop above the scene, and every rendered line still inside the window.
+The commit-time fight shows the same pop over the bug on a **win** (strike +
+triumph frames); on a flee the overlay row stays blank.
+
 **Commit dismisses it** (the nudge semantics — G5/D6). Fixing the error does
 **not** clear the standoff; only a commit does, which also fights the pinned bug:
 ```bash
