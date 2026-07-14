@@ -973,6 +973,87 @@ describe("buddy-status.sh idle wander (free-roam in-window clamp)", () => {
   });
 });
 
+// ─── Dynamic bubble — the box changes SIZE and SHAPE to fit the width ─────────
+// Instead of a fixed-width box that's dropped whole the moment it doesn't fit,
+// the bubble shrinks (narrower ⇒ more, shorter rows), grows to contain an
+// over-long word, and only drops when even the narrowest usable box won't fit —
+// recomputed every tick, so it re-grows as the terminal (or the buddy's window)
+// widens. All geometry uses the no-stats path (STATS_BLOCK=0, RIGHT_SAFETY=8,
+// ART_W=14 ⇒ FIT_INNER = COLS - 29; default INNER_W 28 ⇒ box border 32).
+describe("buddy-status.sh dynamic bubble (fit-to-width)", () => {
+  const MSG = "this is a fairly long reaction that needs several rows";
+  const render = (columns: number, reaction = MSG): string =>
+    stripAnsi(
+      renderStatus({ reaction, name: "Waffle", gameFeel: "full", columns }),
+    );
+  // A border row is a run of dashes fenced by corner dots; the token length is
+  // BOX_W. (Don't trim the whole line — the leading Braille-Blank spacer isn't
+  // ASCII whitespace, so trim() wouldn't drop it.)
+  const borderW = (out: string): number => {
+    const m = out.match(/\.-+\./);
+    return m ? m[0].length : 0;
+  };
+  // A text row carries "| … |" (the last one also trails the connector/sprite).
+  const textRows = (out: string): number =>
+    out.split("\n").filter((l) => /\|.+\|/.test(l)).length;
+  const maxW = (out: string): number =>
+    Math.max(...out.split("\n").map((l) => [...l].length));
+
+  test("uses the full configured width when there's room", () => {
+    expect(borderW(render(125))).toBe(32); // INNER_W 28 + 4 chrome
+  });
+
+  test("shrinks the box (narrower + taller) when the default won't fit", () => {
+    const wide = render(125);
+    const narrow = render(45); // FIT_INNER = 16 < 28 ⇒ shrink
+    expect(borderW(narrow)).toBeGreaterThan(0); // still shown…
+    expect(borderW(narrow)).toBeLessThan(borderW(wide)); // …but narrower…
+    expect(textRows(narrow)).toBeGreaterThan(textRows(wide)); // …and taller
+    expect(maxW(narrow)).toBeLessThanOrEqual(45); // never clips
+  });
+
+  test("re-grows monotonically as the terminal widens", () => {
+    expect(borderW(render(45))).toBeLessThanOrEqual(borderW(render(55)));
+    expect(borderW(render(55))).toBeLessThanOrEqual(borderW(render(125)));
+    expect(borderW(render(125))).toBe(32); // capped at the configured width
+  });
+
+  test("drops the bubble only when even the narrowest box can't fit", () => {
+    // The script floors detected width at 40, so squeeze the room with a large
+    // right-edge reserve instead: FIT_INNER = 60 - 35 - 14 - 3 - 4 = 4 < floor 8.
+    const out = stripAnsi(
+      renderStatus({
+        reaction: MSG,
+        name: "Waffle",
+        gameFeel: "full",
+        columns: 60,
+        bubbleMargin: 35,
+      }),
+    );
+    expect(/\.-+\./.test(out)).toBe(false); // no bubble border
+    expect(out).toContain("Waffle"); // sprite/name still visible
+    expect(maxW(out)).toBeLessThanOrEqual(60);
+  });
+
+  test("grows the box to contain a word wider than the configured width", () => {
+    // A 40-col lone word exceeds the default 28 box; with room it widens to fit.
+    const word = "x".repeat(40);
+    const out = render(125, `hi ${word} ok`);
+    expect(out).toContain(word); // rendered whole, on its own row
+    expect(borderW(out)).toBeGreaterThan(32); // box grew past the default
+    expect(maxW(out)).toBeLessThanOrEqual(125); // still in-window
+  });
+
+  test("never clips an over-long word — grows if it fits, else drops", () => {
+    const word = "x".repeat(40); // ~40-col unbreakable token
+    for (const columns of [125, 90, 70, 55, 45]) {
+      const out = render(columns, `hi ${word} ok`);
+      expect(maxW(out)).toBeLessThanOrEqual(columns); // invariant either way
+      expect(out).toContain("Waffle");
+    }
+  });
+});
+
 // ─── Idle-RPG encounter render (design-rpg Phase 4) ──────────────────────────
 describe("idle-RPG encounter glyph", () => {
   const GLYPH = "\u{1F409}"; // 🐉

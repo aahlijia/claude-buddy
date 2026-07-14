@@ -4,14 +4,16 @@ A single top-level snapshot of the **whole** game-feel system as it stands today
 tying together the arcs that each have their own design/status docs. For the
 per-arc detail, follow the links in [Doc map](#doc-map).
 
-_Last updated: 2026-07-10 · branch `feature/interactive-fight-scene`_
-_Baseline: **767 tests pass** · `tsc --noEmit` clean · `bash -n` clean_
+_Last updated: 2026-07-13 · branch `feature/interactive-fight-scene`_
+_Baseline: **777 tests pass** · `tsc --noEmit` clean · `bash -n` clean_
 _Status: everything through the
 [Pending encounter](#pending-encounter--the-standoff-2026-07-08) arc, the
-auto-quiet standoff fix, and the fight caption is **committed and pushed**
-(through `ec40524`, 2026-07-09). Newest work, **uncommitted** on top:
+auto-quiet standoff fix, the fight caption, the
 [Skirmish bouts](#skirmish-bouts--walk-over-attacks--damage-pops-2026-07-10)
-(walk-over attacks + damage pops). No PR opened yet._
+(walk-over attacks + damage pops), and the inline fight caption is **committed
+and pushed** (through `78cc206`, 2026-07-10). Newest work, **uncommitted** on
+top: [Dynamic chat bubble](#dynamic-chat-bubble--fit-to-width-2026-07-13)
+(fit-to-width bubble sizing). No PR opened yet._
 
 > **What "game-feel" is.** A layer of optional juice on top of the buddy
 > companion: celebratory feedback, an expressive idle status line, light RPG
@@ -485,6 +487,33 @@ Tests: +10 (constant width AND height across all frames, pop placement/range,
 attacker alternation, seeded variation, resolved win-vs-flee, real-shell
 render of a pinned impact frame incl. strict no-clip). **767 pass**, `tsc` +
 `bash -n` clean.
+
+### Dynamic chat bubble — fit-to-width (2026-07-13)
+
+The speech bubble adapts its **size and shape** to the room the cluster has in
+the current terminal instead of being a fixed `bubbleWidth` box the in-window
+clamp dropped whole the moment it didn't fit. Full design:
+[design-movement.md §11.1](design-movement.md#111--dynamic-bubble-sizing-fit-to-width-2026-07-13).
+Entirely `buddy-status.sh` — the sizing is computed once per tick just before the
+word-wrap, sharing the layout clamp's cluster-geometry terms
+(`FIT_INNER = COLS − STATS_BLOCK − RIGHT_SAFETY − ART_W − CONNECTOR_W − 4`), so a
+kept bubble is guaranteed in-window:
+
+- **Shrink** — when the configured width won't fit, `INNER_W` narrows so the same
+  text wraps to more, shorter rows (the box gets taller).
+- **Grow** — when a lone word is wider than the configured box, `INNER_W` widens
+  to that word (a word can't wrap inside itself; floor is `max(8, widest word)`).
+- **Drop** — only when even the narrowest usable box won't fit; the sprite stays
+  visible (the old binary drop, now the last resort + a defensive backstop).
+
+Recomputed every tick, so a resize — or the same global buddy appearing in a
+wider window — re-grows the bubble toward `bubbleWidth` when the room returns.
+Also fixed a latent `dwidth()` bug: `od -An -tu4` collapses runs of ≥16 identical
+codepoints into a `*` line, under-measuring text with long repeats (`!!!!!!`, a
+long token) and mis-wrapping the box; added `od -v`. Verified end-to-end
+(shrink/grow/drop rendered through the real script at multiple widths). Tests:
+**777 pass** (+6 dynamic-bubble render cases), `tsc` + `bash -n` clean.
+Uncommitted.
 
 ---
 

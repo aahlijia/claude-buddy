@@ -585,3 +585,34 @@ sections below are historical.
 
 **Still out of scope:** per-session position file for eased resize; write-back
 coupling; free *2-D* path-following beyond the hop arc.
+
+### 11.1 — Dynamic bubble sizing (fit-to-width, 2026-07-13)
+
+The speech bubble now adapts its **size and shape** to the room the cluster has
+in the current terminal, rather than being a fixed `bubbleWidth` box that the
+in-window clamp dropped whole the moment it didn't fit. Purely bash-side (only
+bash knows `COLS`), computed once per tick just before the word-wrap, sharing the
+same cluster-geometry terms as the layout clamp so a kept bubble is guaranteed
+in-window. `INNER_W` is chosen against `FIT_INNER = COLS − STATS_BLOCK −
+RIGHT_SAFETY − ART_W − CONNECTOR_W − 4` (box chrome is 4 cols):
+
+- **Shrink** — when the configured width won't fit, narrow `INNER_W` to
+  `FIT_INNER` so the same text wraps to more, shorter rows (the box gets taller).
+- **Grow** — when a single word is wider than the configured box, widen `INNER_W`
+  to that word (up to `FIT_INNER`) so it never spills past the border. A word
+  can't wrap inside itself, so the box's floor is `max(8, widest word)`.
+- **Drop** — only when even that narrowest usable box won't fit; the sprite (the
+  rightmost, most important element) stays visible. This is the same
+  sprite-visibility-wins rule the old binary drop enforced, now the last resort.
+
+Recomputed every tick, so a resize — or the same global buddy showing up in a
+wider window — re-grows the bubble back toward `bubbleWidth` when the room
+returns (§7.C resize robustness, extended to the bubble's own dimensions). The
+layout section's drop check is kept as a defensive backstop but no longer the
+primary path.
+
+**Incidental fix:** `dwidth()` measured text via `od -An -tu4`, which collapses
+runs of ≥16 identical codepoints into a `*` line — so any bubble text with a long
+repeat (e.g. `!!!!!!`, `hmmmmmm`, a long token) was under-measured, mis-wrapping
+and mis-padding the box. Added `od -v` to disable the collapsing; the fix matters
+more now that a lone word's measured width drives the grow/drop decision.

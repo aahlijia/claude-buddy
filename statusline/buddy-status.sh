@@ -718,7 +718,7 @@ if [ -n "$BUBBLE_TEXT" ]; then
 fi
 
 dwidth() {
-    printf '%s' "$1" | iconv -f UTF-8 -t UTF-32LE 2>/dev/null | od -An -tu4 | awk -v pres="$EMOJI_PRES_2600" '
+    printf '%s' "$1" | iconv -f UTF-8 -t UTF-32LE 2>/dev/null | od -An -v -tu4 | awk -v pres="$EMOJI_PRES_2600" '
     BEGIN {
         n = split(pres, arr)
         for (k = 1; k <= n; k++) wide[arr[k]] = 1
@@ -747,17 +747,85 @@ dwidth() {
     END { print w+0 }'
 }
 
-# ─── Word-wrap bubble text ────────────────────────────────────────────────────
-TEXT_LINES=()
+# ─── Cluster geometry (shared by dynamic bubble sizing + the layout below) ───
+# These describe the fixed chrome around the roaming cluster. The dynamic bubble
+# sizing (next) and the free-roam layout (further down) both measure against
+# them, so they're defined once here — before either consumer — rather than
+# duplicated. STATS_COUNT/STATS_W/ART_W are all finalized above this point.
+STATS_GAP=2
+STATS_LEFT_MARGIN=1
+# Right-edge reserve. This is NOT dead margin: Claude Code renders the status
+# line inside its own viewport with a small LEFT gutter (a few cols of indent on
+# every row), so a cluster pinned at COLS-1 gets shifted off the right edge and
+# the buddy clips. RIGHT_SAFETY must clear that gutter (plus a little breathing
+# room). It's driven by the configurable bubbleMargin (MARGIN, default 8) so the
+# cushion is tunable per terminal without editing the script. Clamp ≥1 so a
+# config of 0 still reserves a col.
+RIGHT_SAFETY=$MARGIN
+[ "$RIGHT_SAFETY" -lt 1 ] 2>/dev/null && RIGHT_SAFETY=1
+# The bubble→art connector gap is rendered as 3 cols ("-- " / "   "), so the
+# cluster width must count 3 here (not STATS_GAP) or the home position overflows.
+CONNECTOR_W=3
+STATS_BLOCK=0
+[ "$STATS_COUNT" -gt 0 ] && STATS_BLOCK=$(( STATS_LEFT_MARGIN + STATS_W + STATS_GAP ))
+
+# ─── Dynamic bubble sizing (fit the box to the current width) ────────────────
+# The speech bubble adapts its size AND shape to the room available in the
+# current terminal instead of being a fixed-width box that's dropped whole the
+# moment it doesn't fit:
+#   • shrink  — when the DEFAULT width (config bubbleWidth) won't fit the cluster,
+#     narrow INNER_W so the same text wraps to more, shorter rows;
+#   • grow    — when a single word is wider than the configured box, widen it (up
+#     to what fits) so the word never spills past the border;
+#   • drop    — only when even the narrowest usable box can't fit, so the sprite
+#     (the most important element) stays visible.
+# Recomputed every tick, so a resize — or the buddy roaming into a wider window —
+# re-grows the bubble back toward the configured width when the room returns.
+# FIT_INNER mirrors the layout drop check's terms exactly, so a KEPT bubble is
+# guaranteed fully in-window.
+BUBBLE_MIN_INNER=8   # visual floor: never show a box narrower than this
+WORD_W=()            # per-word display widths, reused by the wrap loop below
 if [ -n "$BUBBLE_TEXT" ]; then
     # read -ra: IFS word-split WITHOUT pathname expansion — reactions canonically
     # contain asterisks (*narrows eyes*), and a bare unquoted expansion would
     # glob them against the CWD.
     read -ra WORDS <<< "$BUBBLE_TEXT"
+    _max_word_w=0
+    for word in "${WORDS[@]}"; do
+        _w=$(dwidth "$word")
+        WORD_W+=("$_w")
+        [ "$_w" -gt "$_max_word_w" ] && _max_word_w=$_w
+    done
+    # A box can't be thinner than its widest single word (a word can't wrap
+    # inside itself; a thinner box pushes it past the border and clips the
+    # cluster). The narrowest USABLE box is that floor, but at least the visual
+    # floor for readability.
+    _min_inner=$BUBBLE_MIN_INNER
+    [ "$_max_word_w" -gt "$_min_inner" ] && _min_inner=$_max_word_w
+    # Ideal box = the configured width, grown if a lone word demands more.
+    _ideal=$INNER_W
+    [ "$_max_word_w" -gt "$_ideal" ] && _ideal=$_max_word_w
+    # Largest INNER_W the cluster tolerates at this width; box chrome is 4 cols
+    # ("| " + " |"). Same terms as the layout drop check below.
+    FIT_INNER=$(( COLS - STATS_BLOCK - RIGHT_SAFETY - ART_W - CONNECTOR_W - 4 ))
+    if [ "$_ideal" -le "$FIT_INNER" ]; then
+        INNER_W=$_ideal                 # fits (grown for a long word if needed)
+    elif [ "$FIT_INNER" -ge "$_min_inner" ]; then
+        INNER_W=$FIT_INNER              # shrink the box to fit
+    else
+        BUBBLE_TEXT=""; WORD_W=()       # even the narrowest box won't fit → drop
+    fi
+fi
+
+# ─── Word-wrap bubble text ────────────────────────────────────────────────────
+TEXT_LINES=()
+if [ -n "$BUBBLE_TEXT" ]; then
     CUR_LINE=""
     CUR_W=0
+    _wi=0
     for word in "${WORDS[@]}"; do
-        word_w=$(dwidth "$word")
+        word_w=${WORD_W[$_wi]}
+        _wi=$(( _wi + 1 ))
         if [ -z "$CUR_LINE" ]; then
             CUR_LINE="$word"; CUR_W=$word_w
         elif [ $(( CUR_W + 1 + word_w )) -le $INNER_W ]; then
@@ -804,29 +872,16 @@ BUBBLE_COUNT=${#BUBBLE_LINES[@]}
 # clamped to stay fully in-window — so the buddy never clips when stats+cluster
 # fit in COLS (the old right-align with a fixed MARGIN reserve could overflow at
 # narrow widths). ART_W is the live sprite width (14 idle, the wide scene during
-# a fight).
-STATS_GAP=2
-STATS_LEFT_MARGIN=1
-# Right-edge reserve. This is NOT dead margin: Claude Code renders the status
-# line inside its own viewport with a small LEFT gutter (a few cols of indent on
-# every row), so a cluster pinned at COLS-1 gets shifted off the right edge and
-# the buddy clips. RIGHT_SAFETY must clear that gutter (plus a little breathing
-# room). It's driven by the configurable bubbleMargin (MARGIN, default 8) so the
-# cushion is tunable per terminal without editing the script — reviving the knob
-# the free-roam rewrite had orphaned. Clamp ≥1 so a config of 0 still reserves a col.
-RIGHT_SAFETY=$MARGIN
-[ "$RIGHT_SAFETY" -lt 1 ] 2>/dev/null && RIGHT_SAFETY=1
-# The bubble→art connector gap is rendered as 3 cols ("-- " / "   "), so the
-# cluster width must count 3 here (not GAP) or the home position overflows by 1.
-CONNECTOR_W=3
-STATS_BLOCK=0
-[ $STATS_COUNT -gt 0 ] && STATS_BLOCK=$(( STATS_LEFT_MARGIN + STATS_W + STATS_GAP ))
+# a fight). STATS_GAP/STATS_LEFT_MARGIN/RIGHT_SAFETY/CONNECTOR_W/STATS_BLOCK are
+# defined once up in the cluster-geometry block (dynamic bubble sizing shares them).
 CLUSTER_W=$ART_W
 [ $BUBBLE_COUNT -gt 0 ] && CLUSTER_W=$(( BOX_W + CONNECTOR_W + CLUSTER_W ))
-# Degradation (design-movement §11 / OQ-P5.2): when stats + the full cluster
-# can't fit in COLS, DROP THE BUBBLE so the buddy sprite (the rightmost, most
-# important element) stays in-window. Sprite visibility always wins over the
-# speech bubble at narrow widths.
+# Degradation backstop (design-movement §11 / OQ-P5.2): when stats + the full
+# cluster can't fit in COLS, DROP THE BUBBLE so the buddy sprite (the rightmost,
+# most important element) stays in-window. Sprite visibility always wins over the
+# speech bubble at narrow widths. With dynamic sizing above, a kept bubble is
+# already sized to fit (FIT_INNER shares these exact terms), so this is now a
+# defensive guard rather than the primary drop path.
 if [ $BUBBLE_COUNT -gt 0 ] && [ $(( COLS - STATS_BLOCK - CLUSTER_W - RIGHT_SAFETY )) -lt 0 ]; then
     BUBBLE_COUNT=0
     BUBBLE_LINES=()
