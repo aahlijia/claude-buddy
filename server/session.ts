@@ -52,7 +52,10 @@ import {
   readPendingEncounter,
   clearPendingEncounter,
   currentProject,
+  type PlayerLook,
 } from "./combat.ts";
+import { gearArtOf, resolveAppearance } from "./equipment.ts";
+import { ITEMS } from "./items.ts";
 import { ownedItems } from "./shop.ts";
 import {
   STAT_NAMES,
@@ -351,6 +354,23 @@ export function sightBug(slot?: string): void {
   const companion = slot ? loadCompanionSlot(slot) : loadCompanion();
   if (!companion) return;
 
+  // The standoff shows the buddy in its full look (worn hat + gear overlay
+  // glyphs), same as the resolved fight. Best-effort: a failed xp read just
+  // means a bare sprite, never a lost standoff.
+  let look: PlayerLook | undefined;
+  try {
+    const xp = getXpState();
+    const appearance = resolveAppearance(
+      companion.bones,
+      xp.equipment,
+      xp.cosmeticFlags,
+      ITEMS,
+      ownedUpgradeEffects(xp),
+    );
+    look = { hat: appearance.hat, gear: gearArtOf(appearance) };
+  } catch {
+    // Cosmetics only — the standoff itself must still spawn.
+  }
   const scene = bakePendingScene(
     companion.bones.species,
     companion.bones.eye,
@@ -360,6 +380,7 @@ export function sightBug(slot?: string): void {
     // tier) seed drives attacker order, damage rolls, and loop spacing.
     pendingSeed(startedAt, tier),
     tier,
+    look,
   );
   writePendingEncounter({
     bugId: bug.id,

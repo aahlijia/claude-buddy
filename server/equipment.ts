@@ -126,6 +126,8 @@ export interface ResolvedAppearance {
   hat: Hat;
   /** Equipped weapon's art glyph, or "" when no weapon. */
   weaponArt: string;
+  /** Equipped trinket's art glyph, or "" when no trinket (or an art-less one). */
+  trinketArt: string;
   /** innate shiny ∨ any item shiny effect. */
   shiny: boolean;
   /** innate cosmeticFlags ∪ item flag effects (deduped). */
@@ -153,6 +155,7 @@ export function resolveAppearance(
 ): ResolvedAppearance {
   let hat: Hat = bones.hat;
   let weaponArt = "";
+  let trinketArt = "";
   let shiny = bones.shiny;
   const flags = new Set<string>(cosmeticFlags);
   const stats: BuddyStats = { ...bones.stats };
@@ -186,10 +189,11 @@ export function resolveAppearance(
     const item = findItem(id, catalog);
     if (!item) continue;
     if (item.art && slot === "weapon") weaponArt = item.art;
+    if (item.art && slot === "trinket") trinketArt = item.art;
     if (item.effect) applyEffect(item.effect);
   }
 
-  return { hat, weaponArt, shiny, flags: [...flags], stats };
+  return { hat, weaponArt, trinketArt, shiny, flags: [...flags], stats };
 }
 
 /**
@@ -212,6 +216,19 @@ export function gearedBones(
     upgradeEffects,
   );
   return { ...bones, hat: a.hat, shiny: a.shiny, stats: a.stats };
+}
+
+/**
+ * The weapon/trinket overlay glyphs of a resolved appearance in the shape the
+ * art renderer takes (`GearArt`), or undefined when nothing would render —
+ * callers can pass the result straight through without falsiness checks.
+ */
+export function gearArtOf(
+  a: ResolvedAppearance,
+): { weapon?: string; trinket?: string } | undefined {
+  const weapon = a.weaponArt || undefined;
+  const trinket = a.trinketArt || undefined;
+  return weapon || trinket ? { weapon, trinket } : undefined;
 }
 
 // ─── Loadout card ─────────────────────────────────────────────────────────────

@@ -243,3 +243,51 @@ writeStatusState({
     rmSync(cfgDir, { recursive: true, force: true });
   });
 });
+
+describe("writeStatusState — equipped gear renders on the sprite", () => {
+  test("weapon + trinket glyphs land in status.json frames (derive-on-read)", () => {
+    const cfgDir = mkdtempSync(join(tmpdir(), "buddy-wander-"));
+    const stateDir = join(cfgDir, "buddy-state");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+      join(stateDir, "xp.json"),
+      JSON.stringify({
+        totalXp: 0,
+        equipment: { weapon: "foam_sword", trinket: "rubber_duck" },
+        upgradeEffectsDerived: true,
+      }),
+    );
+
+    const childSrc = `
+import { writeStatusState } from ${STATE_TS};
+import { generateBones } from ${ENGINE_TS};
+const bones = generateBones("smoke", "salt");
+bones.hat = "none"; // a random tinyduck hat would fake the ",>" containment
+writeStatusState({
+  bones,
+  name: "Waffle",
+  personality: "x",
+  hatchedAt: Date.now(),
+  userId: "smoke",
+});
+`;
+    const childPath = join(cfgDir, "child.mjs");
+    writeFileSync(childPath, childSrc);
+    const res = spawnSync("bun", [childPath], {
+      env: { ...process.env, CLAUDE_CONFIG_DIR: cfgDir },
+      encoding: "utf8",
+    });
+    expect(res.status).toBe(0);
+
+    const status = JSON.parse(
+      readFileSync(join(stateDir, "status.json"), "utf8"),
+    ) as { frames: string[] };
+    // foam_sword's art is "†", rubber_duck's is ",>" — neither occurs in any
+    // species' innate art, so containment proves the overlay rendered.
+    for (const frame of status.frames) {
+      expect(frame).toContain("†");
+      expect(frame).toContain(",>");
+    }
+    rmSync(cfgDir, { recursive: true, force: true });
+  });
+});

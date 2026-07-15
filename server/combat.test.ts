@@ -4,8 +4,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join } from "path";
 
-import { mulberry32, type BuddyBones } from "./engine";
-import { displayWidth, getArtFrame, mirrorFrame } from "./art";
+import { mulberry32, type BuddyBones, type Species } from "./engine";
+import { displayWidth, eyeRowIndex, getArtFrame, mirrorFrame } from "./art";
 import type { Equipment } from "./items";
 import type { Bug } from "./bugs";
 import { buddyStateDir } from "./path";
@@ -193,29 +193,39 @@ describe("two-sprite combat scene (Phase 5)", () => {
     const enemyMirror = mirrorFrame(getArtFrame("dragon", "·", 0));
     const ready = r.frames[0].split("\n");
     // Each scene line ends with the mirrored enemy block (rightmost element).
-    for (let i = 0; i < enemyMirror.length; i++) {
-      const sceneLine = ready[ready.length - enemyMirror.length + i];
-      expect(sceneLine.endsWith(enemyMirror[i])).toBe(true);
+    // Walk from the BOTTOM: the sprites are bottom-aligned, and the bake drops
+    // optional top rows no frame uses (here the enemy's own blank hat row), so
+    // the scene can be shorter than the raw art it was built from.
+    const shared = Math.min(ready.length, enemyMirror.length);
+    for (let i = 1; i <= shared; i++) {
+      const sceneLine = ready[ready.length - i];
+      expect(sceneLine.endsWith(enemyMirror[enemyMirror.length - i])).toBe(true);
     }
   });
+
+  /** The player's eye row within a scene. The sprite is bottom-aligned and only
+   *  unused TOP rows are ever dropped, so counting up from the bottom pins the
+   *  eye row no matter which optional rows (hat, damage pop) the bake kept. */
+  const sceneEyeRow = (rows: string[], species: Species): number =>
+    rows.length - (getArtFrame(species, "·", 0).length - eyeRowIndex(species));
 
   test("the strike frame clashes blades on the eye row", () => {
     const r = resolveCombat(bones(50), t4, {}, 3);
     // sequence is [0,1,2,2,3,3]; frame index 2 is the strike.
     const strike = r.frames[2].split("\n");
-    const eyeRow = strike[Math.floor(strike.length / 2)];
     // Default blade "/" leans right; its mirror "\\" leans left — they meet.
-    expect(eyeRow).toContain("/\\");
+    expect(strike[sceneEyeRow(strike, "cactus")]).toContain("/\\");
   });
 
   test("clash lands on the eye row for a 6-line player (wyvern), not center", () => {
     // wyvern art is 6 lines with eyes on row index 2 — center-based math would
     // drop the clash below the eyes. The fix derives the row from the art.
-    // Row 0 is the damage-pop overlay, so the eye row sits at index 3.
     const r = resolveCombat(bones(50, { species: "wyvern" }), t4, {}, 3);
     const strike = r.frames[2].split("\n");
     const clashRows = strike.flatMap((l, i) => (l.includes("/\\") ? [i] : []));
-    expect(clashRows).toEqual([3]); // blades clash only on the actual eye row
+    const eyeRow = sceneEyeRow(strike, "wyvern");
+    expect(clashRows).toEqual([eyeRow]); // blades clash only on the eye row…
+    expect(eyeRow).not.toBe(Math.floor(strike.length / 2)); // …which isn't center
   });
 
   test("determinism extends to the multi-line scene frames", () => {
@@ -406,9 +416,63 @@ describe("skirmish bouts + damage pops (design-attack-animation)", () => {
       ...getArtFrame("cactus", "·", 0).map((l) => displayWidth(l)),
     );
     expect(strip(overlayOf(win!.frames[2])).indexOf("✗")).toBeGreaterThan(playerW);
-    // a flee never shows damage — the swing whiffed
+    // A flee never shows damage — the swing whiffed. With no pop anywhere in
+    // the loop the bake drops the overlay row outright, so assert on the whole
+    // frame rather than a row that no longer exists.
     for (const frame of flee!.frames) {
-      expect(overlayOf(frame).trim()).toBe("");
+      expect(frame).not.toContain("\x1b[31m");
+      expect(strip(frame)).not.toMatch(/✗|-\d+/);
+    }
+  });
+});
+
+describe("scene top-row trim (no dead rows above the sprites)", () => {
+  const strip = (s: string): string => s.replace(/\x1b\[[^m]*m/g, "");
+  const rowsOf = (frame: string): string[] => strip(frame).split("\n");
+
+  test("a bare-headed standoff spends no row on the empty hat row", () => {
+    const scene = bakePendingScene("cactus", "·", "dragon", "·", 42, 3);
+    const rows = rowsOf(scene.frames[0]);
+    // Row 0 is the pop row (the bouts use it). The sprites must start directly
+    // below it — with no hat worn, the art's reserved hat row is dead space.
+    expect(rows[0].trim()).toBe("");
+    expect(rows[1].trim()).not.toBe("");
+  });
+
+  test("keeps the hat row when a hat is actually worn", () => {
+    const bare = bakePendingScene("cactus", "·", "dragon", "·", 42, 3);
+    const hatted = bakePendingScene("cactus", "·", "dragon", "·", 42, 3, {
+      hat: "wizard",
+    });
+    // The row is earned back, not merely preserved by luck: exactly one taller.
+    expect(rowsOf(hatted.frames[0]).length).toBe(rowsOf(bare.frames[0]).length + 1);
+    expect(rowsOf(hatted.frames[0])[1]).toContain("/^\\");
+  });
+
+  test("keeps the pop row — some bout frame needs it", () => {
+    const scene = bakePendingScene("cactus", "·", "dragon", "·", 42, 3);
+    // Blank on the calm frames, but kept for the whole loop because impacts use
+    // it. A row any frame uses is never trimmed.
+    expect(rowsOf(scene.frames[0])[0].trim()).toBe("");
+    expect(scene.frames.some((f) => /✗ -\d+/.test(rowsOf(f)[0]))).toBe(true);
+  });
+
+  test("a pop-less resolved scene (flee) drops the pop row too", () => {
+    let flee: ReturnType<typeof resolveCombat> | undefined;
+    for (let s = 0; s < 200 && !flee; s++) {
+      const r = resolveCombat(bones(50), t4, {}, s);
+      if (r.outcome === "flee") flee = r;
+    }
+    // No frame pops and no hat is worn ⇒ both optional top rows are dead, so
+    // the scene opens straight onto the sprites.
+    expect(rowsOf(flee!.frames[0])[0].trim()).not.toBe("");
+  });
+
+  test("the trim is uniform — height stays constant across the flipbook", () => {
+    for (const look of [undefined, { hat: "wizard" as const }]) {
+      const scene = bakePendingScene("cactus", "·", "dragon", "·", 42, 3, look);
+      const heights = new Set(scene.frames.map((f) => f.split("\n").length));
+      expect(heights.size).toBe(1);
     }
   });
 });
@@ -574,6 +638,73 @@ describe("sightBug under auto-quiet error spike (fresh process)", () => {
       expect(out.subtleNoop).toBe(true);
     } finally {
       rmSync(cfgDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── Gear renders in fight scenes (weapon/trinket/hat on the player sprite) ──
+
+describe("gear in combat scenes (PlayerLook)", () => {
+  // "†" and ",>" occur in no species art, so containment proves the overlay.
+  const LOOK = { hat: "crown" as const, gear: { weapon: "†", trinket: ",>" } };
+
+  test("the standoff shows the geared, hatted buddy in every frame", () => {
+    const scene = bakePendingScene("cactus", "·", "dragon", "·", 42, 3, LOOK);
+    for (const frame of scene.frames) {
+      expect(frame).toContain("†");
+      expect(frame).toContain(",>");
+      expect(frame).toContain("\\^^^/"); // crown art
+    }
+  });
+
+  test("gear keeps the constant width/height guarantee (no jitter)", () => {
+    const scene = bakePendingScene("cactus", "·", "dragon", "·", 42, 3, LOOK);
+    const widths = new Set<number>();
+    const heights = new Set<number>();
+    for (const frame of scene.frames) {
+      const lines = frame.split("\n");
+      heights.add(lines.length);
+      for (const line of lines) widths.add(displayWidth(line));
+    }
+    expect(widths.size).toBe(1);
+    expect(heights.size).toBe(1);
+  });
+
+  test("no look ⇒ the bare scene, free of overlay glyphs (back-compat)", () => {
+    const scene = bakePendingScene("cactus", "·", "dragon", "·", 42, 3);
+    for (const frame of scene.frames) {
+      expect(frame).not.toContain("†");
+      expect(frame).not.toContain(",>");
+    }
+  });
+
+  test("gear rides the bout shift — the walking attacker keeps holding it", () => {
+    const scene = bakePendingScene("cactus", "·", "dragon", "·", 42, 3, LOOK);
+    // Frames 2..7 are the two bouts (walk/impact/float × 2 attackers).
+    for (let i = 2; i < 8; i++) expect(scene.frames[i]).toContain("†");
+  });
+
+  test("resolveCombat: an equipped trinket shows in every fight frame", () => {
+    const r = resolveCombat(bones(50), t1, { trinket: "rubber_duck" }, 7);
+    for (const frame of r.frames) expect(frame).toContain(",>");
+  });
+
+  test("resolveCombat: the held weapon shows even on the calm ready pose", () => {
+    // Pre-gear, the weapon glyph appeared only as the strike-frame clash.
+    const r = resolveCombat(bones(50), t1, { weapon: "foam_sword" }, 7);
+    expect(r.frames[0]).toContain("†"); // ready — no clash here
+  });
+
+  test("resolveCombat: the innate hat is worn into the fight", () => {
+    const r = resolveCombat(bones(50, { hat: "crown" }), t1, {}, 7);
+    for (const frame of r.frames) expect(frame).toContain("\\^^^/");
+  });
+
+  test("resolveCombat: bare loadout + no hat stays glyph-free", () => {
+    const r = resolveCombat(bones(50), t1, {}, 7);
+    for (const frame of r.frames) {
+      expect(frame).not.toContain("†");
+      expect(frame).not.toContain(",>");
     }
   });
 });

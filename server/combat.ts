@@ -20,6 +20,7 @@ import {
   type BuddyBones,
   type Species,
   type Eye,
+  type Hat,
 } from "./engine";
 import {
   getArtFrame,
@@ -27,9 +28,12 @@ import {
   rectFrame,
   displayWidth,
   eyeRowIndex,
+  applyGear,
+  applyHat,
+  type GearArt,
 } from "./art";
 import { buddyStateDir } from "./path";
-import { resolveAppearance } from "./equipment";
+import { gearArtOf, resolveAppearance } from "./equipment";
 import { ITEMS, findItem, type Equipment, type ItemId } from "./items";
 import { grantBonusPoints, grantItem, type UpgradeEffect } from "./xp";
 import type { Bug, BugId, BugTier } from "./bugs";
@@ -184,6 +188,18 @@ interface Pose {
   strike: boolean;
 }
 
+/**
+ * The player's resolved cosmetics for a scene: worn hat + equipped-gear
+ * overlay glyphs. Constant per flipbook (applied identically to every frame),
+ * so the constant-width/height guarantees hold. Absent ⇒ the bare sprite,
+ * byte-identical to the pre-gear scenes. The enemy is always a wild bug and
+ * never gets one.
+ */
+export interface PlayerLook {
+  hat?: Hat;
+  gear?: GearArt;
+}
+
 // ─── Skirmish-bout extras (design-attack-animation §4) ───────────────────────
 
 const RED = "\x1b[31m";
@@ -256,8 +272,14 @@ function composePose(
   pose: Pose,
   sword: string,
   extras?: PoseExtras,
+  look?: PlayerLook,
 ): string {
-  const player = rectFrame(getArtFrame(playerSpecies, pose.pEye, 0));
+  const playerRaw = getArtFrame(playerSpecies, pose.pEye, 0);
+  if (look?.hat && look.hat !== "none") {
+    applyHat(playerSpecies, look.hat, playerRaw);
+  }
+  applyGear(playerSpecies, playerRaw, look?.gear);
+  const player = rectFrame(playerRaw);
   const enemy = mirrorFrame(getArtFrame(enemySpecies, pose.eEye, 0));
   const [pA, eA] = alignHeights(player, enemy);
   // Clash on the PLAYER's actual eye row (not the block center), shifted by any
@@ -284,6 +306,36 @@ function composePose(
   return rows.join("\n");
 }
 
+/** Drop rows above the sprites that NO frame of a flipbook uses. Two optional
+ *  rows sit up there: the species art reserves its row 0 for the hat
+ *  (`applyHat` fills it only when one is worn) and `composePose` unshifts the
+ *  damage-pop row above that. Bare-headed, or in a loop that never pops, those
+ *  rows render as dead space — pure waste in a status line where vertical room
+ *  is the scarcest thing there is, and a visible hole between the fight caption
+ *  and the sprites.
+ *
+ *  Two properties keep this safe. Only rows blank in *every* frame go, so a row
+ *  any frame needs (a hat, a bout's `✗ -N`) is kept for the whole flipbook —
+ *  and since the same rows are dropped from every frame, the constant-height /
+ *  no-jitter guarantee the cycler depends on still holds. And the scan stops at
+ *  the first row every frame uses — the top of the sprite bodies, which are
+ *  fixed to art frame 0 — so an intentional blank row *inside* a sprite is
+ *  never reachable, no matter what art is added later. "Blank" means blank of
+ *  content: the pop's ANSI bytes survive `.trim()`, so a pop row is never
+ *  mistaken for an empty one. */
+function trimBlankTopRows(frames: string[]): string[] {
+  const rows = frames.map((f) => f.split("\n"));
+  const height = rows[0]?.length ?? 0;
+  const drop = new Set<number>();
+  // Stop short of the last row: a scene always keeps at least one.
+  for (let i = 0; i < height - 1; i++) {
+    if (!rows.some((r) => r[i]?.trim())) drop.add(i); // used by no frame ⇒ dead
+    else if (rows.every((r) => r[i]?.trim())) break; // sprite bodies start here
+  }
+  if (drop.size === 0) return frames;
+  return rows.map((r) => r.filter((_, i) => !drop.has(i)).join("\n"));
+}
+
 /**
  * Bake the two-sprite fight scene: the player buddy and the mirrored enemy
  * creature side by side, with a short sword-swing flipbook. Every frame is the
@@ -300,6 +352,7 @@ function bakeScene(
   weaponArt: string,
   outcome: Outcome,
   damage: number,
+  look?: PlayerLook,
 ): { frames: string[]; sequence: number[] } {
   const sword = swingGlyph(weaponArt);
   // OQ4: on a win the strike shows the red pop over the enemy and the triumph
@@ -312,13 +365,18 @@ function bakeScene(
     return null;
   };
   const frames = scenePoses(playerEye, enemyEye, outcome).map((pose, i) =>
-    composePose(playerSpecies, enemySpecies, pose, sword, {
-      overlay: { text: popFor(i), over: "enemy" },
-    }),
+    composePose(
+      playerSpecies,
+      enemySpecies,
+      pose,
+      sword,
+      { overlay: { text: popFor(i), over: "enemy" } },
+      look,
+    ),
   );
   // Gentle oscillation: ready, wind-up, strike, strike, resolve, resolve.
   const sequence = [0, 1, 2, 2, 3, 3];
-  return { frames, sequence };
+  return { frames: trimBlankTopRows(frames), sequence };
 }
 
 /** The two standoff poses: a calm ready and a periodic glare — no strike, no
@@ -343,6 +401,7 @@ function bakeBoutFrames(
   restingE: Eye,
   attacker: "player" | "enemy",
   damage: number,
+  look?: PlayerLook,
 ): string[] {
   const defender = attacker === "player" ? "enemy" : "player";
   const walk: Pose =
@@ -355,10 +414,17 @@ function bakeBoutFrames(
       : { pEye: asEye("x"), eEye: asEye(">"), strike: false };
   const at = (pose: Pose, cells: number, text: string | null): string =>
     // strike is always false ⇒ the sword arg is inert (gap stays blank).
-    composePose(playerSpecies, enemySpecies, pose, DEFAULT_SWORD, {
-      shift: { side: attacker, cells },
-      overlay: { text, over: defender },
-    });
+    composePose(
+      playerSpecies,
+      enemySpecies,
+      pose,
+      DEFAULT_SWORD,
+      {
+        shift: { side: attacker, cells },
+        overlay: { text, over: defender },
+      },
+      look,
+    );
   return [
     at(walk, 2, null), // walk-in: halfway across the gap
     at(impact, SCENE_GAP, damagePop(damage, false)), // impact: adjacent, ✗ -N
@@ -381,12 +447,18 @@ export function bakePendingScene(
   enemyEye: Eye = DEFAULT_ENEMY_EYE,
   seed: number = 0,
   tier: number = 1,
+  look?: PlayerLook,
 ): { frames: string[]; sequence: number[] } {
   const base = pendingPoses(playerEye, enemyEye).map((pose) =>
     // strike is always false ⇒ the sword arg is inert (gap stays blank).
-    composePose(playerSpecies, enemySpecies, pose, DEFAULT_SWORD, {
-      overlay: { text: null, over: "enemy" },
-    }),
+    composePose(
+      playerSpecies,
+      enemySpecies,
+      pose,
+      DEFAULT_SWORD,
+      { overlay: { text: null, over: "enemy" } },
+      look,
+    ),
   );
   // Seeded draws in a fixed order (determinism): first attacker, damage per
   // bout (§4.3: the bug hits 1..3·tier, the buddy hits 1..9), three gaps.
@@ -408,6 +480,7 @@ export function bakePendingScene(
       enemyEye,
       attacker,
       damage,
+      look,
     );
   const frames = [...base, ...bout(first, dmgA), ...bout(second, dmgB)];
 
@@ -424,7 +497,7 @@ export function bakePendingScene(
     ...boutTicks(5),
     ...calm(g3),
   ];
-  return { frames, sequence };
+  return { frames: trimBlankTopRows(frames), sequence };
 }
 
 // ─── Item-drop roll (rarity-weighted) ─────────────────────────────────────────
@@ -488,6 +561,8 @@ export function resolveCombat(
   // derived seed so the main rng stream (outcome → jitter → item) is
   // unchanged for existing seeds. 0x2717 = ✗.
   const damage = 1 + Math.floor(mulberry32(seed ^ 0x2717)() * 9);
+  // The player fights in its full look (gear renders on the sprite): worn hat
+  // plus the equipped weapon/trinket overlay glyphs, all derive-on-read.
   const { frames, sequence } = bakeScene(
     bones.species,
     bones.eye,
@@ -496,6 +571,7 @@ export function resolveCombat(
     appearance.weaponArt,
     outcome,
     damage,
+    { hat: appearance.hat, gear: gearArtOf(appearance) },
   );
 
   let drop: DropSpec;

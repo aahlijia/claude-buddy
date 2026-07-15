@@ -49,7 +49,12 @@ export interface Item {
    * `flag`/`shiny`; gear may add a small `stat` bonus (flavor, not power creep).
    */
   effect?: UpgradeEffect;
-  /** Weapon-only glyph composited beside the face in geared renders. */
+  /**
+   * Narrow glyph composited onto the sprite in geared renders: weapons read as
+   * held beside the body, trinkets rest at the buddy's feet (anchor cells are
+   * per-species, see art.ts `GEAR_ANCHORS`). Headgear renders via its `hat`
+   * effect instead.
+   */
   art?: string;
   /** Flavor line for the loadout card. */
   blurb?: string;
@@ -70,6 +75,7 @@ export const ITEMS: readonly Item[] = [
     icon: "\u{1F986}", // 🦆
     rarity: "common",
     cost: 1,
+    art: ",>",
     effect: { type: "flag", flag: "trinket_duck" },
     blurb: "A loyal debugging companion. Quacks at race conditions.",
   },

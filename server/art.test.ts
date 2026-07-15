@@ -15,6 +15,9 @@ import {
   mirrorFrame,
   rectFrame,
   getArtFrame,
+  applyGear,
+  renderCompanionCard,
+  renderCompanionCardMarkdown,
   STATUS_FRAME_SEQUENCE,
   ageTell,
   activeSeasonal,
@@ -330,5 +333,120 @@ describe("statusline/emoji-widths.data", () => {
       if (re.test(String.fromCodePoint(cp))) expected.push(cp);
     }
     expect(fileList).toEqual(expected);
+  });
+});
+
+// ─── Gear overlays (equipped weapon / trinket on the sprite) ─────────────────
+
+describe("applyGear (gear overlays)", () => {
+  const bones = (overrides: Partial<BuddyBones> = {}): BuddyBones => ({
+    rarity: "common",
+    species: "cactus",
+    eye: "°",
+    hat: "none",
+    shiny: false,
+    stats: { DEBUGGING: 50, PATIENCE: 50, CHAOS: 50, WISDOM: 50, SNARK: 50 },
+    peak: "DEBUGGING",
+    dump: "PATIENCE",
+    ...overrides,
+  });
+  // Distinctive glyphs: neither "†" nor ",>" occurs in any species art, so a
+  // containment check proves the overlay actually landed (a collision skips it).
+  const GEAR = { weapon: "†", trinket: ",>" };
+
+  test("every species' anchors are clear in all three idle frames", () => {
+    for (const species of SPECIES) {
+      for (let f = 0; f < 3; f++) {
+        const art = getArtFrame(species, "°", f);
+        applyGear(species, art, GEAR);
+        const joined = art.join("\n");
+        expect(joined).toContain(GEAR.weapon);
+        expect(joined).toContain(GEAR.trinket);
+      }
+    }
+  });
+
+  test("overlays only ever fill blank cells — body pixels are never clobbered", () => {
+    for (const species of SPECIES) {
+      for (let f = 0; f < 3; f++) {
+        const base = getArtFrame(species, "°", f);
+        const geared = getArtFrame(species, "°", f);
+        applyGear(species, geared, GEAR);
+        for (let r = 0; r < geared.length; r++) {
+          const b = [...(base[r] ?? "")];
+          const g = [...geared[r]];
+          for (let c = 0; c < g.length; c++) {
+            if ((b[c] ?? " ") !== g[c]) {
+              // Changed cell ⇒ it must have been blank (or past end) before.
+              expect(b[c] ?? " ").toBe(" ");
+            }
+          }
+        }
+      }
+    }
+  });
+
+  test("no gear (undefined or empty) leaves the frame untouched", () => {
+    const base = getArtFrame("cactus", "°", 0);
+    const noGear = getArtFrame("cactus", "°", 0);
+    applyGear("cactus", noGear);
+    expect(noGear).toEqual(base);
+    const emptyGear = getArtFrame("cactus", "°", 0);
+    applyGear("cactus", emptyGear, {});
+    expect(emptyGear).toEqual(base);
+  });
+
+  test("getStatusFrames threads gear into every idle frame, incl. blink", () => {
+    const { frames } = getStatusFrames(bones(), "neutral", undefined, GEAR);
+    expect(frames).toHaveLength(4);
+    for (const body of frames) {
+      expect(body).toContain(GEAR.weapon);
+      expect(body).toContain(GEAR.trinket);
+    }
+  });
+
+  test("emotion micro-cycles keep the gear on", () => {
+    const { frames } = getStatusFrames(bones(), "happy", undefined, GEAR);
+    for (const body of frames) {
+      expect(body).toContain(GEAR.weapon);
+      expect(body).toContain(GEAR.trinket);
+    }
+  });
+
+  test("gear coexists with a hat overlay (different rows)", () => {
+    const { frames } = getStatusFrames(
+      bones({ species: "duck", hat: "crown" }),
+      "neutral",
+      undefined,
+      GEAR,
+    );
+    expect(frames[0]).toContain("\\^^^/");
+    expect(frames[0]).toContain(GEAR.weapon);
+    expect(frames[0]).toContain(GEAR.trinket);
+  });
+
+  test("omitting gear is byte-identical to the pre-gear render", () => {
+    const before = getStatusFrames(bones());
+    const after = getStatusFrames(bones(), "neutral", undefined, undefined);
+    expect(after).toEqual(before);
+  });
+
+  test("wyvern: gear lands and the ANSI fire frame stays intact", () => {
+    const { frames } = getStatusFrames(bones({ species: "wyvern" }), "neutral", undefined, GEAR);
+    for (const body of frames) {
+      expect(body).toContain(GEAR.weapon);
+      expect(body).toContain(GEAR.trinket);
+    }
+    // Frame index 1 carries the colored fire on its last line — untouched.
+    expect(frames[1]).toContain("\x1b[38;2;255;120;0m//|\\\\\x1b[0m");
+  });
+
+  test("companion cards composite gear onto the art block", () => {
+    const md = renderCompanionCardMarkdown(bones(), "Waffle", "spiky", undefined, 0, GEAR);
+    expect(md).toContain(GEAR.weapon);
+    expect(md).toContain(GEAR.trinket);
+    const ansi = renderCompanionCard(bones(), "Waffle", "spiky", undefined, 0, 40, GEAR);
+    expect(ansi).toContain(GEAR.weapon);
+    expect(ansi).toContain(GEAR.trinket);
   });
 });

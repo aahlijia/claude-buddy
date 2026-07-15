@@ -91,7 +91,7 @@ import {
   PRESTIGE_MAX,
   computeLevel,
 } from "./xp";
-import { gearedBones, renderLoadoutCard } from "./equipment";
+import { gearArtOf, resolveAppearance, renderLoadoutCard } from "./equipment";
 import { ITEMS, SLOTS, findItem, type Slot } from "./items";
 import {
   shopListing,
@@ -277,20 +277,29 @@ registerTool(
     // Use markdown rendering for the MCP tool response — Claude Code's UI
     // doesn't render raw ANSI escape codes, so we return pure markdown with
     // unicode rarity dots instead of RGB-colored borders.
-    // Render with equipment folded in (derive-on-read): equipped headgear and
-    // stat-bearing gear show on the card without mutating the innate bones.
+    // Render with equipment folded in (derive-on-read): equipped headgear,
+    // stat-bearing gear, and the weapon/trinket sprite overlays all show on
+    // the card without mutating the innate bones.
     const xp = getXpState();
+    const appearance = resolveAppearance(
+      companion.bones,
+      xp.equipment,
+      xp.cosmeticFlags,
+      ITEMS,
+      ownedUpgradeEffects(xp),
+    );
     const card = renderCompanionCardMarkdown(
-      gearedBones(
-        companion.bones,
-        xp.equipment,
-        xp.cosmeticFlags,
-        ITEMS,
-        ownedUpgradeEffects(xp),
-      ),
+      {
+        ...companion.bones,
+        hat: appearance.hat,
+        shiny: appearance.shiny,
+        stats: appearance.stats,
+      },
       companion.name,
       companion.personality,
       reactionText,
+      0,
+      gearArtOf(appearance),
     );
 
     writeStatusState(companion, { reaction: reaction?.reaction });

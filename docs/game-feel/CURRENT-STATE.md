@@ -4,16 +4,21 @@ A single top-level snapshot of the **whole** game-feel system as it stands today
 tying together the arcs that each have their own design/status docs. For the
 per-arc detail, follow the links in [Doc map](#doc-map).
 
-_Last updated: 2026-07-13 · branch `feature/interactive-fight-scene`_
-_Baseline: **777 tests pass** · `tsc --noEmit` clean · `bash -n` clean_
+_Last updated: 2026-07-15 · branch `feature/interactive-fight-scene`_
+_Baseline: **798 tests** · `tsc --noEmit` clean · `bash -n` clean. 797 pass; the
+one failure is a known test-isolation bug, not a regression — see
+[Open follow-ups](#open-follow-ups)._
 _Status: everything through the
 [Pending encounter](#pending-encounter--the-standoff-2026-07-08) arc, the
 auto-quiet standoff fix, the fight caption, the
 [Skirmish bouts](#skirmish-bouts--walk-over-attacks--damage-pops-2026-07-10)
-(walk-over attacks + damage pops), and the inline fight caption is **committed
-and pushed** (through `78cc206`, 2026-07-10). Newest work, **uncommitted** on
-top: [Dynamic chat bubble](#dynamic-chat-bubble--fit-to-width-2026-07-13)
-(fit-to-width bubble sizing). No PR opened yet._
+(walk-over attacks + damage pops), and the
+[Dynamic chat bubble](#dynamic-chat-bubble--fit-to-width-2026-07-13)
+(fit-to-width bubble sizing) is **committed and pushed** (through `e18196e`,
+2026-07-13). Newest work, **uncommitted** on top:
+[Gear renders on the sprite](#gear-renders-on-the-sprite-2026-07-15), the
+[caption revert](#revert-the-fight-caption-is-its-own-row-again-2026-07-15), and
+the [scene top-row trim](#scene-top-row-trim-2026-07-15). No PR opened yet._
 
 > **What "game-feel" is.** A layer of optional juice on top of the buddy
 > companion: celebratory feedback, an expressive idle status line, light RPG
@@ -517,6 +522,100 @@ Uncommitted.
 
 ---
 
+### Gear renders on the sprite (2026-07-15)
+
+Equipped items now show on the buddy itself, everywhere the sprite renders —
+status-line idle/emotion/blink frames and both companion cards (`buddy_show`'s
+markdown card + the ANSI card). Before this, only headgear rendered (as the
+hat); a weapon's `art` glyph appeared solely mid-combat-swing, and trinkets
+never rendered at all. Now all three slots are visible:
+
+- **Weapon** — its `art` glyph composited beside the body at hand height, so it
+  reads as held (debug_wand `/`, foam_sword `†`).
+- **Trinket** — a new `art` glyph resting on the ground at the buddy's feet
+  (rubber_duck `,>` — a tiny duck by consistency with the `tinyduck` hat).
+- **Headgear** — unchanged (hat effect via `applyHat`).
+
+Mechanics: `GEAR_ANCHORS` in `art.ts` is a hand-tuned per-species table of
+`[row, col]` anchor cells (all 20 species; every anchor verified blank in all
+three idle frames by test, so gear never flickers as the cycle plays). The
+`applyGear` compositor only ever fills blank cells — a shifted animation frame
+skips the overlay rather than clobbering body pixels — and refuses to splice
+into ANSI lines (the wyvern's fire tail; its anchors avoid that row).
+Derive-on-read throughout: `resolveAppearance` gains `trinketArt`, and the new
+`gearArtOf` helper maps an appearance to the renderer's `GearArt` shape.
+Plumbed through `writeStatusState` (status frames) and `buddy_show`. Flourish
+frames (ascension) intentionally stay bare.
+
+**Bug fights too:** the combat scenes render the player's full look. A new
+`PlayerLook` (`{ hat, gear }`) threads through `composePose` →
+`bakeScene`/`bakeBoutFrames`/`bakePendingScene`, applied identically to every
+frame so the constant-width/height (no-jitter) guarantees hold — `applyGear`
+runs before `rectFrame`, and gear rides the bout shift as the attacker walks
+the gap. `resolveCombat` builds the look from the appearance it already
+resolves; `sightBug` resolves it best-effort (a failed xp read ⇒ bare sprite,
+never a lost standoff). This also fixes hats never rendering in fights — the
+worn hat (equipped, upgrade, or innate) now shows in both the standoff and the
+resolved scene. The enemy bug never gets a look. `applyHat` is now exported
+from art.ts.
+
+Files: `art.ts`, `items.ts`, `equipment.ts`, `state.ts`, `index.ts`,
+`combat.ts`, `session.ts` + tests. Verified end-to-end through the real
+`buddy-status.sh` (geared cactus rendered with `†` at the arm, `,>` at the
+feet) and by rendering the full geared standoff flipbook. Tests: **797 pass**
+(+20), `tsc` clean. Uncommitted.
+
+### Revert: the fight caption is its own row again (2026-07-15)
+
+`78cc206` had folded the "Bug fight in \<project\>!" caption onto the
+combined-status metrics header row to save a scene row. Reverted by user
+request: the caption reads better **centered on its own row directly above the
+two sprites**, which is where the server already puts it (frame row 0, per the
+[Caption](#caption-bug-fight-in-project-2026-07-09) entry) — the fold was the
+only thing moving it.
+
+The revert is a clean reverse-apply of `78cc206` and touches nothing else: the
+`combatCaption` signal field (`state.ts`), the `$combat_caption` jq field +
+`_COMBAT_CAPTION` read + `MERGED_HEADER` fold block (`buddy-status.sh`), and the
+4 inline-caption render tests all go away. The caption itself (`captionFrames`
+in `writeStatusState`) is untouched, so **zero behavior change to how the
+caption is produced** — only where the shell draws it. With no metrics header
+the render was already byte-identical, so only combined-status mode changes:
+row 0 is metrics alone and the caption returns to the top of the scene block.
+
+Verified through the real `buddy-status.sh` in both modes (combined on/off).
+Tests: **793** (−4), `tsc` + `bash -n` clean. Uncommitted.
+
+### Scene top-row trim (2026-07-15)
+
+With the caption back on its own row, the gap under it was obvious: **two**
+mostly-dead rows sat between the caption and the sprites. Both are optional and
+neither was being paid for — the species art reserves its row 0 for the hat
+(`applyHat` fills it only when one is worn) and `composePose` unshifts the
+damage-pop row above that. Bare-headed, the hat row is pure waste; the pop row
+is blank on every calm frame but earns its keep on impacts.
+
+`trimBlankTopRows` (combat.ts) drops, from the top, every row **no frame in the
+flipbook uses**, applied at the end of `bakeScene` and `bakePendingScene`. Two
+properties make it safe: only rows blank in *every* frame go (a hat, a bout's
+`✗ -N` ⇒ the row is kept for the whole loop), and the same rows are dropped from
+every frame, so the constant-height/no-jitter guarantee still holds. The scan
+stops at the first row every frame uses — the top of the bottom-aligned sprite
+bodies — so an intentional blank row *inside* a sprite is unreachable no matter
+what art is added later. Blank means blank of content: the pop's ANSI bytes
+survive `.trim()`.
+
+Net effect: a bare standoff loses one row (hat), a hatted one keeps it, and a
+pop-less resolved scene (a flee never pops) loses both. Four `bakeScene` tests
+that hardcoded the old row offsets now derive the eye row **from the bottom**
+(sprites are bottom-aligned and only unused top rows are ever dropped), which is
+what they always meant; the wyvern case additionally asserts the clash row isn't
+the block center. Verified e2e through the real `buddy-status.sh` (bare, impact,
+and wizard-hat frames). Tests: **798** (+5), `tsc` + `bash -n` clean.
+Uncommitted.
+
+---
+
 ## Going live
 
 The installed status-line script lags the repo until reinstalled. To see the
@@ -538,6 +637,17 @@ bun run install-buddy   # copies the repo script into place
   next step.
 - Commit the rewards/leveling fix pass **and** the derive-on-read upgrades work
   (both above) — currently uncommitted on the same branch.
+- **Test-isolation bug in `migrate.test.ts`** (found 2026-07-15, not fixed). The
+  case _"strips the aura_shiny marker when no loot cosmetic protects it"_ asserts
+  on a "no loot store" premise its own process can't guarantee:
+  `migrateUpgradeEffects` → `loadOwnedLootAppearance()` → `loadLoot()` reads the
+  **real** loot store from the ambient config dir. On a machine whose real store
+  owns a shiny-granting cosmetic, `lootShiny` is true ⇒ the marker is correctly
+  kept ⇒ the test fails. It passes only where no loot store exists (CI, fresh
+  checkouts) — so it's environment-dependent, not a code regression. Fix by
+  pointing the test at a temp `CLAUDE_CONFIG_DIR` (fresh-process, like the
+  companion-store cases lower in the same file) rather than trusting the ambient
+  one.
 - Leftward-roam magnitude tune (`moodWalkOpts` ranges) — intentionally conservative.
 - Idle-RPG niceties: sell/refund gear (buy-only today), inventory cap, gear-bonus
   delta in `buddy_xp`, post-TTL encounter inspection command.

@@ -6,6 +6,7 @@ import type { Equipment, ItemId } from "./items";
 import {
   equipError,
   equipItem,
+  gearArtOf,
   gearedBones,
   renderLoadoutCard,
   resolveAppearance,
@@ -145,6 +146,31 @@ describe("resolveAppearance (derive-on-read)", () => {
     });
     expect(a.weaponArt).toBe("/");
     expect(a.flags).toContain("trinket_duck");
+  });
+
+  test("trinket art surfaces in the resolved view; empty slots yield \"\"", () => {
+    const a = resolveAppearance(bones(), { trinket: "rubber_duck" });
+    expect(a.trinketArt).toBe(",>");
+    expect(a.weaponArt).toBe("");
+    const bare = resolveAppearance(bones(), {});
+    expect(bare.trinketArt).toBe("");
+  });
+
+  test("gearArtOf maps art glyphs to GearArt and collapses a bare loadout", () => {
+    const geared = resolveAppearance(bones(), {
+      weapon: "foam_sword",
+      trinket: "rubber_duck",
+    });
+    expect(gearArtOf(geared)).toEqual({ weapon: "†", trinket: ",>" });
+    // Weapon-only: the empty trinket becomes undefined, not "".
+    const swordOnly = resolveAppearance(bones(), { weapon: "foam_sword" });
+    expect(gearArtOf(swordOnly)).toEqual({ weapon: "†", trinket: undefined });
+    // Nothing renders ⇒ undefined so callers can pass it straight through.
+    expect(gearArtOf(resolveAppearance(bones(), {}))).toBeUndefined();
+    // Headgear alone has no overlay glyph (it renders via the hat effect).
+    expect(
+      gearArtOf(resolveAppearance(bones(), { headgear: "lucky_hat" })),
+    ).toBeUndefined();
   });
 
   test("innate cosmetic flags are preserved and merged", () => {

@@ -739,11 +739,6 @@ export interface StatusState {
    *  frame-source decision (the standoff has no `encounterAt`). Resolved scenes
    *  never carry it, so the two phases never mix fields. */
   combatSticky?: 1;
-  /** "Bug fight in <project>!" caption (present=1) when the scene's top frame row
-   *  is a prepended caption line. Lets the shell fold that row onto the
-   *  combined-status metrics header row (when one is shown) instead of spending a
-   *  whole scene row on it. Absent ⇒ no caption row to relocate. */
-  combatCaption?: 1;
 }
 
 // ─── Celebration channel (game-feel §2 — one transient slot, many producers) ──
@@ -956,7 +951,6 @@ export function writeStatusState(
   let combatSequence: number[] | undefined;
   let artWidth: number | undefined;
   let combatSticky: 1 | undefined;
-  let combatCaption: 1 | undefined;
   if (gate !== "off") {
     try {
       const { readEncounter, readPendingEncounter } =
@@ -985,9 +979,6 @@ export function writeStatusState(
           Math.floor((sceneWidth(frs) - displayWidth(caption)) / 2),
         );
         const line = " ".repeat(pad) + caption;
-        // Signal the shell that frame row 0 is a caption it may relocate to the
-        // combined-status header row (design: inline caption).
-        combatCaption = 1;
         return frs.map((frame) => line + "\n" + frame);
       };
       const enc = readEncounter();
@@ -1055,20 +1046,28 @@ export function writeStatusState(
     // XP state is optional during first install / version skew.
   }
   let displayBones = companion.bones;
+  let gearArt: import("./art.ts").GearArt | undefined;
   if (xpStateForStatus) {
     try {
-      const { gearedBones } =
+      const { resolveAppearance, gearArtOf } =
         require("./equipment.ts") as typeof import("./equipment.ts");
       const { ITEMS } = require("./items.ts") as typeof import("./items.ts");
       const { ownedUpgradeEffects } =
         require("./xp.ts") as typeof import("./xp.ts");
-      displayBones = gearedBones(
+      const appearance = resolveAppearance(
         companion.bones,
         xpStateForStatus.equipment,
         xpStateForStatus.cosmeticFlags,
         ITEMS,
         ownedUpgradeEffects(xpStateForStatus),
       );
+      displayBones = {
+        ...companion.bones,
+        hat: appearance.hat,
+        shiny: appearance.shiny,
+        stats: appearance.stats,
+      };
+      gearArt = gearArtOf(appearance);
     } catch {
       // Equipment is optional during first install / version skew.
     }
@@ -1077,6 +1076,7 @@ export function writeStatusState(
     displayBones,
     emotion,
     seasonalHat,
+    gearArt,
   );
   let xpLevel = level ?? 1;
   let xpTotal = xp ?? 0;
@@ -1200,7 +1200,6 @@ export function writeStatusState(
       ? { combatFrames, combatSequence, artWidth }
       : {}),
     ...(combatSticky ? { combatSticky } : {}),
-    ...(combatCaption ? { combatCaption } : {}),
   };
   // Atomic write (game-feel §2.6): the MCP server, the award-xp.ts process, and
   // react.sh's jq patch all touch status.json — tmp+rename avoids torn reads.

@@ -40,9 +40,10 @@ describe("item catalog integrity", () => {
     }
   });
 
-  test("only weapons carry render art", () => {
+  test("render art appears only on overlay slots (weapon/trinket)", () => {
+    // Headgear renders via its hat effect, never a sprite-overlay glyph.
     for (const item of ITEMS) {
-      if (item.art) expect(item.slot).toBe("weapon");
+      if (item.art) expect(["weapon", "trinket"]).toContain(item.slot);
     }
   });
 
