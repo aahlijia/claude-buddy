@@ -1,7 +1,7 @@
 # Testing claude-buddy
 
-This document lists exactly what the test suite covers. For a walk-through of
-the contribution workflow (DCO, CI, commit style), see
+This document lists what the test suite covers. For a walk-through of the
+contribution workflow (DCO, CI, commit style), see
 [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## Running tests
@@ -11,8 +11,9 @@ bun test           # run the suite
 bun run typecheck  # run tsc --noEmit
 ```
 
-Both are run on every PR by `.github/workflows/ci.yml` and must be green
-before merge (enforced by branch protection).
+Both are run on every push/PR to `main` by `.github/workflows/ci.yml`
+(`bun install --frozen-lockfile` → `bun run typecheck` → `bun test`) and must
+be green before merge (enforced by branch protection).
 
 ## Where tests live
 
@@ -23,147 +24,108 @@ server/
   engine.ts     ↔ engine.test.ts
   state.ts      ↔ state.test.ts
   reactions.ts  ↔ reactions.test.ts
+  combat.ts     ↔ combat.test.ts
+  menu.ts       ↔ menu.test.ts
+  ...
 ```
 
-Current totals: **56 tests** across **3 files**, ~4,200 `expect()` calls,
-~65 ms local runtime.
+Current totals: **679 tests** across **28 files**, ~33,800 `expect()` calls.
 
 ---
 
-## `server/engine.test.ts` — 30 tests
+## Test files, by area
 
-Covers the deterministic companion-generation engine. Every test in this file
-exercises a pure function — no I/O, no mocks.
+### Companion identity & rendering
 
-### `hashString` — 3 tests
+- **`engine.test.ts`** — the deterministic generation engine: `hashString`,
+  `mulberry32`, `generateBones` (species/rarity/stats invariants across
+  sample user IDs), `renderFace`, `renderCompact`. **This is the only file
+  with golden snapshot tests** — see below.
+- **`art.test.ts`** — `displayWidth` and the shared ASCII-art rendering
+  helpers (mirroring, rectangularizing frames for the two-sprite combat
+  scene).
+- **`reactions.test.ts`** — `getReaction` (species/rarity/reason
+  combinations), `generateFallbackName`, `generatePersonalityPrompt`.
+- **`state.test.ts`** — the pure `slugify` helper and other `state.ts`
+  string utilities.
+- **`path.test.ts`** — `CLAUDE_CONFIG_DIR` resolution across profiles.
+- **`paths_sh.test.ts`** — `scripts/paths.sh` shell path-resolution
+  behavior (invoked as a subprocess).
+- **`manifest.test.ts`** — shipped plugin manifest integrity.
 
-- Deterministic: same input always produces the same hash.
-- Return value is a 32-bit unsigned integer (`0 ≤ h ≤ 0xFFFFFFFF`).
-- Basic collision sanity: 7 different inputs produce 7 different hashes.
+### Leveling, stats, and rewards
 
-### `mulberry32` — 3 tests
+- **`xp.test.ts`** — `pointsForLevel` and XP/level math.
+- **`session.test.ts`** — `computeSessionBonus` (session-completion XP).
+- **`streak.test.ts`** — `streakBonus` (session-streak milestones).
+- **`sets.test.ts`** — `memberMet` / `setProgress` (cosmetic-set tracking).
+- **`achievements.test.ts`** — `ACHIEVEMENTS` catalog integrity.
+- **`loot.test.ts`** — `LOOT_COSMETICS` loot-box table integrity.
+- **`quests.test.ts`** — `whimForDate` (daily whim/flavor text).
+- **`discovery.test.ts`** — `announceOnce` (the once-ever discovery
+  announcement, and its interaction with other celebrations).
 
-- Deterministic: same seed yields identical output sequences (first 20 values).
-- Output range: all values are in `[0, 1)` (100 samples).
-- Divergence: two different seeds disagree within 10 draws.
+### Idle-RPG (equipment, merchant, combat)
 
-### `generateBones` — 17 tests
+- **`items.test.ts`** — item catalog integrity (`ITEMS`, slots, level
+  gates).
+- **`catalog.test.ts`** — combined item/upgrade catalog coverage.
+- **`equipment.test.ts`** — `equipItem` / `unequipSlot` (derive-on-read
+  appearance, bones never mutated).
+- **`shop.test.ts`** — `ownedItems` / merchant buy-eligibility logic.
+- **`bugs.test.ts`** — the `BUGS` catalog (tiers, species mapping)
+  integrity.
+- **`combat.test.ts`** — `winChance` and the pure, seeded `resolveCombat`
+  math (determinism, drop rolls).
 
-This is the core contract of the project: same `userId` must always
-produce the same companion.
+### Interactive menu
 
-**Invariants, checked against 5 sample user IDs:**
+- **`menu.test.ts`** — the `MENU` tree invariants (bounds, reachability,
+  id/label uniqueness, `buddy_*` naming), the security denylist (no
+  tool-leaf reaches `buddy_uninstall`), `advance()`'s branch coverage, and
+  `askFor`/`navMarker`/`resolveSelect`/`renderMenuCard` round-trips.
 
-- Same `userId` yields identical bones (determinism).
-- Custom salt yields a different but still deterministic result.
-- `rarity` is always one of `RARITIES`.
-- `species` is always one of `SPECIES`.
-- `eye` is always one of `EYES`.
-- `hat` is always one of `HATS`.
-- `common` rarity always has `hat === "none"` (checked by brute-forcing user
-  IDs until at least 5 commons are found).
-- `peak !== dump`.
-- All stats are integers.
-- Peak stat respects `min(100, floor + 50..79)`.
-- Dump stat respects `max(1, floor - 10..4)`.
-- Neutral stats fall within `[floor, floor + 39]`.
-- 20 different user IDs produce more than one distinct signature
-  (sanity check against a stuck RNG).
+### Cross-session memory & pair-programming
 
-**Golden snapshots — the most important tests in the suite:**
+- **`memory-callbacks.test.ts`** — the `historyCallback` used by
+  `buddy_memory` (project/bug tracking across sessions).
 
-These pin the exact bones output for three fixed user IDs. If any of these
-fail, the generation algorithm has changed in a way that would give every
-existing user a different buddy — which is the one thing claude-buddy
-promises never to do. Stop and ask "did I mean to do that?" before
-updating the snapshots.
+### Status line & rendering pipeline
+
+- **`statusline.test.ts`** — status-line settings patch logic.
+- **`statusline_render.test.ts`** — `buddy-status.sh` render invariants:
+  prestige-title rendering, the free-roam in-window clamp, and the
+  combat-scene frame source (idle/flourish/combat priority, dynamic
+  width, no-clip).
+- **`state_wander.test.ts`** — `writeStatusState`'s wander gate
+  (game-feel-gated, opt-out respected).
+- **`wander.test.ts`** — `buildWanderSequence` (pure, seeded idle-walk
+  generation).
+
+### Uninstall & lifecycle
+
+- **`uninstall.test.ts`** — `cleanupPluginState` (clean removal, leaves
+  companion data intact).
+
+---
+
+## Golden snapshots
+
+`engine.test.ts` pins the exact `generateBones` output for three fixed user
+IDs. If any of these fail, the generation algorithm has changed in a way
+that would give every existing user a different buddy — which is the one
+thing claude-buddy promises never to do. Stop and ask "did I mean to do
+that?" before updating the snapshots.
 
 | User ID | Rarity | Species |
-|---------|--------|---------|
-| `golden-user-alpha` | common | ghost |
-| `golden-user-beta` | common | rabbit |
-| `legendary-seed-1` | uncommon | axolotl |
+|---------|----------|----------|
+| `golden-user-alpha` | common | capybara |
+| `golden-user-beta` | common | chonk |
+| `legendary-seed-1` | uncommon | capybara |
 
 Plus: a custom-salt variant of `golden-user-alpha` is checked for both
 stability (same custom salt → same bones) and isolation (custom salt ≠
 default salt).
-
-### `renderFace` — 3 tests
-
-- Substitutes `{E}` with the eye glyph (2 concrete examples).
-- Picks the right template per species (3 examples).
-- Never leaks a literal `{E}` for any species × eye combination
-  (18 species × 6 eyes = 108 combos).
-
-### `renderCompact` — 4 tests
-
-- Output contains the buddy name and face.
-- Appends the reaction bubble when `reaction` is provided.
-- No bubble when `reaction` is omitted.
-- Shows sparkles (`✨`) for shiny buddies; no sparkles otherwise.
-
----
-
-## `server/state.test.ts` — 8 tests
-
-Covers the pure string helper `slugify`. File-I/O parts of `state.ts`
-(manifest, config, reactions) are not tested here — see
-"What is NOT tested" below.
-
-- Lowercases input.
-- Replaces invalid characters with `-`.
-- Collapses consecutive dashes.
-- Trims leading and trailing dashes.
-- Truncates to 14 characters.
-- Falls back to `"buddy"` for empty or all-invalid input.
-- Preserves digits and internal dashes.
-- Unicode / emoji input falls back to `"buddy"`.
-
----
-
-## `server/reactions.test.ts` — 18 tests
-
-Covers the three exports of `reactions.ts`. These functions use `Math.random()`,
-so tests assert **invariants** run over many iterations, not deterministic
-equality.
-
-### `getReaction` — 6 tests
-
-- Returns a non-empty string for every `(reason × species × rarity)` combination
-  (7 × 18 × 5 = **630 combinations** in a single test).
-- `{line}` placeholder in `error` reactions is substituted when
-  `context.line` is provided (500 iterations to guarantee template is picked).
-- `{count}` placeholder in `test-fail` reactions is substituted when
-  `context.count` is provided (500 iterations).
-- `{lines}` placeholder in `large-diff` reactions is substituted when
-  `context.lines` is provided (500 iterations).
-- Works without a `context` argument (50 iterations, no crash).
-- Species with no custom pool (`chonk`) still returns valid general reactions
-  for every reason.
-
-Unresolved placeholders (`{line}`, `{count}`, `{lines}`) are asserted to
-**never leak** through the return value when the corresponding context field
-is provided.
-
-### `generateFallbackName` — 3 tests
-
-- Returns a non-empty string.
-- Names match `/^[A-Z][a-z]+$/` and are 3–12 characters long (100 iterations).
-- 200 draws produce more than one distinct name.
-
-### `generatePersonalityPrompt` — 9 tests
-
-- Contains `Species: <species>` and `Rarity: <RARITY_UPPERCASE>`.
-- Contains every stat name and value in `STAT_NAME:VALUE` form.
-- Contains the `SHINY` marker when `shiny === true`, not when `false`.
-- Contains the JSON output instruction (mentions `"name"` and `"personality"`).
-- Contains exactly 4 inspiration vibe words (20 iterations), each matching
-  `/^[a-z]+$/`.
-- Line order is stable: `Stats:` line comes before `Inspiration words:` line,
-  the header line is present.
-- Does not crash for any of the 18 species × 5 rarities = 90 combinations.
-- Accepts arbitrary stat keys beyond the 5 canonical ones.
-- All 5 canonical `STAT_NAMES` flow through unchanged in the output.
 
 ---
 
@@ -171,18 +133,20 @@ is provided.
 
 The following are intentionally excluded from the current suite:
 
-- **File I/O in `state.ts`** — `loadManifest`, `saveManifest`, `loadReaction`,
-  `saveReaction`, `migrateIfNeeded`, `resolveUserId`, status-line state, config.
-  These need a temp-directory integration harness.
+- **MCP protocol handlers in `server/index.ts`** — the `registerTool`
+  wiring and tool-call surface itself. Integration territory; would need
+  an MCP client mock. (Individual handlers' *pure* logic is tested via
+  their own modules — e.g. `combat.ts`, `equipment.ts`, `menu.ts`'s
+  `runTool` dispatch.)
 - **`searchBuddy` in `engine.ts`** — brute-force search, CPU-heavy, hard to
   assert on without fixing a seed for `crypto.randomBytes`.
-- **MCP protocol handlers in `server/index.ts`** — the tool and resource
-  handlers. Integration territory; would need an MCP client mock.
 - **CLI scripts under `cli/`** — I/O and subprocess heavy; best covered by
-  end-to-end tests against a real install.
-- **Shell scripts** in `hooks/`, `statusline/`, and `popup/` — bash, not run
-  under `bun test`. Currently verified by manual checks listed in
-  `CONTRIBUTING.md` under "Manual testing".
+  end-to-end tests against a real install (`bun run doctor` is the
+  closest thing to a smoke test today).
+- Most of **`hooks/`** and **`statusline/`** are bash, not run under
+  `bun test` — `scripts/paths.sh` is the one exception
+  (`paths_sh.test.ts` invokes it as a subprocess). The rest is verified
+  by manual checks listed in `CONTRIBUTING.md` under "Manual testing".
 
 Contributions that add tests for any of these are welcome.
 

@@ -32,24 +32,38 @@ DOW=$(date +%u)
 
 INPUT=$(cat)
 
+RESULT=$(echo "$INPUT" | jq -r '.tool_response // ""' 2>/dev/null)
+[ -z "$RESULT" ] && exit 0
+
+# Lifecycle exemption (design-pending-encounter G5): a commit closes the
+# session — it awards the session bonus, resolves the fight, and dismisses the
+# pending standoff. The cooldown and mute gates below must not swallow it, or
+# a commit landing within 30s of an unrelated reaction (the classic
+# error→fix→commit flow) silently skips all three and the "commit nudge"
+# survives the very commit that should clear it. Same pattern the classifier's
+# commit branch matches below.
+IS_COMMIT=0
+if echo "$RESULT" | grep -qiE '[0-9]+ files? changed|\[[a-zA-Z_-]+ [a-f0-9]{7,}\]'; then
+    IS_COMMIT=1
+fi
+
 COOLDOWN=30
 if [ -f "$CONFIG_FILE" ]; then
   _cd=$(jq -r '.commentCooldown // 30' "$CONFIG_FILE" 2>/dev/null || echo 30)
   [[ "$_cd" =~ ^[0-9]+$ ]] && COOLDOWN=$_cd
 fi
 
-if [ -f "$COOLDOWN_FILE" ]; then
+if [ -f "$COOLDOWN_FILE" ] && [ "$IS_COMMIT" -eq 0 ]; then
     LAST=$(cat "$COOLDOWN_FILE" 2>/dev/null)
     NOW=$(date +%s)
     DIFF=$(( NOW - ${LAST:-0} ))
     [ "$DIFF" -lt "$COOLDOWN" ] && exit 0
 fi
 
-RESULT=$(echo "$INPUT" | jq -r '.tool_response // ""' 2>/dev/null)
-[ -z "$RESULT" ] && exit 0
-
+# Mute silences the visible reaction (the bubble writes are gated on $MUTED at
+# the dispatch tail) but must not drop a commit's lifecycle work.
 MUTED=$(jq -r '.muted // false' "$STATUS_FILE" 2>/dev/null)
-[ "$MUTED" = "true" ] && exit 0
+[ "$MUTED" = "true" ] && [ "$IS_COMMIT" -eq 0 ] && exit 0
 
 SPECIES=$(jq -r '.species // "blob"' "$STATUS_FILE" 2>/dev/null)
 NAME=$(jq -r '.name // "buddy"' "$STATUS_FILE" 2>/dev/null)
@@ -1073,7 +1087,11 @@ elif echo "$RESULT" | grep -qiE 'TS[0-9]{4}:|Type .+ is not assignable|Argument 
     REASON="type-error"
     pick_reaction "type-error"
 
-elif echo "$RESULT" | grep -qiE '✖|[0-9]+ problems? \([0-9]+ error|error:|warning:.+ ESLint|Ruff|flake8.*error|pylint.*error'; then
+# NOTE: no bare `error:` here — it would swallow every generic error (and bun
+# test failures, which print `error: expect(...)`) before the test-fail/error
+# branches below ever ran, starving errors_seen/tests_failed and the combat
+# spawn that feeds on them. Lint detection keys on lint-shaped output only.
+elif echo "$RESULT" | grep -qiE '✖|[0-9]+ problems? \([0-9]+ error|warning:.+ ESLint|Ruff|flake8.*error|pylint.*error'; then
     REASON="lint-fail"
     pick_reaction "lint-fail"
 
@@ -1081,7 +1099,9 @@ elif echo "$RESULT" | grep -qiE 'deprecat|will be removed in|is deprecated|DEPRE
     REASON="deprecation"
     pick_reaction "deprecation"
 
-elif echo "$RESULT" | grep -qiE 'all [0-9]+ tests passed|0 failures|100% passed|all [0-9]+ passed'; then
+# `\b0 fail(s|ed|ures)?\b` covers bun's summary ("724 pass / 0 fail"); the
+# leading \b keeps "20 fail" from matching on its trailing zero.
+elif echo "$RESULT" | grep -qiE 'all [0-9]+ tests passed|\b0 fail(s|ed|ures)?\b|100% passed|all [0-9]+ passed'; then
     REASON="all-green"
     pick_reaction "all-green"
 
@@ -1097,7 +1117,9 @@ elif echo "$RESULT" | grep -qiE 'Coverage:.*[0-9]+%|All files.*\|.*[0-9]+%'; the
     REASON="coverage"
     pick_reaction "coverage"
 
-elif echo "$RESULT" | grep -qiE '\b[1-9][0-9]* (failed|failing)\b|tests? failed|^FAIL(ED)?|✗|✘'; then
+# `[1-9][0-9]* fail` covers bun's failing summary ("14 fail"); the leading
+# non-zero digit keeps a green run's "0 fail" out (that's all-green, above).
+elif echo "$RESULT" | grep -qiE '\b[1-9][0-9]* (fail|failed|failing)\b|tests? failed|^FAIL(ED)?|✗|✘'; then
     REASON="test-fail"
     pick_reaction "test-fail"
 
@@ -1337,12 +1359,24 @@ if [ -n "$REASON" ] && [ -n "$REACTION" ]; then
     mkdir -p "$STATE_DIR"
     date +%s > "$COOLDOWN_FILE"
 
-    jq -n --arg r "$REACTION" --arg ts "$(date +%s)000" --arg reason "$REASON" \
-      '{reaction: $r, timestamp: ($ts | tonumber), reason: $reason}' \
-      > "$REACTION_FILE"
+    # The visible reaction (bubble) is suppressed while muted — only a commit
+    # reaches this point muted (lifecycle exemption above), and it should do
+    # its session work silently.
+    if [ "$MUTED" != "true" ]; then
+        # Atomic (tmp + same-dir mv): the statusline reads this file every tick
+        # when the live reaction field is empty (sticky-bubble fallback), so a
+        # bare > redirect risked a torn read. Same idiom as the TS saveReaction.
+        jq -n --arg r "$REACTION" --arg ts "$(date +%s)000" --arg reason "$REASON" \
+          '{reaction: $r, timestamp: ($ts | tonumber), reason: $reason}' \
+          > "$REACTION_FILE.tmp.$$" && mv "$REACTION_FILE.tmp.$$" "$REACTION_FILE"
 
-    TMP=$(mktemp)
-    jq --arg r "$REACTION" '.reaction = $r' "$STATUS_FILE" > "$TMP" 2>/dev/null && mv "$TMP" "$STATUS_FILE"
+        # mktemp INSIDE the state dir: /tmp may be another filesystem, where mv
+        # degrades to copy+unlink and a concurrent statusline tick can see a
+        # torn status.json.
+        TMP=$(mktemp "$STATE_DIR/.status.patch.XXXXXX")
+        jq --arg r "$REACTION" '.reaction = $r' "$STATUS_FILE" > "$TMP" 2>/dev/null \
+            && mv "$TMP" "$STATUS_FILE" || rm -f "$TMP"
+    fi
 
     if command -v jq >/dev/null 2>&1; then
         XP_EVENT=""
@@ -1373,8 +1407,10 @@ if [ -n "$REASON" ] && [ -n "$REACTION" ]; then
             *)                KEY="" ;;
         esac
         if [ -n "$KEY" ]; then
-            TMP=$(mktemp)
-            jq --arg k "$KEY" 'if .[$k] then .[$k] += 1 else .[$k] = 1 end' "$EVENTS_FILE" > "$TMP" 2>/dev/null && mv "$TMP" "$EVENTS_FILE"
+            # Same-dir mktemp for an atomic rename (see the status patch above).
+            TMP=$(mktemp "$STATE_DIR/.events.patch.XXXXXX")
+            jq --arg k "$KEY" 'if .[$k] then .[$k] += 1 else .[$k] = 1 end' "$EVENTS_FILE" > "$TMP" 2>/dev/null \
+                && mv "$TMP" "$EVENTS_FILE" || rm -f "$TMP"
         fi
         # Award XP for core coding events.
         if [ -n "$XP_EVENT" ] && [ -x "$(command -v bun)" ]; then
@@ -1393,6 +1429,19 @@ if [ -n "$REASON" ] && [ -n "$REACTION" ]; then
             esac
             [ -n "$MOOD_TRIGGER" ] && bun run "$PLUGIN_ROOT/server/shift-mood.ts" "$MOOD_TRIGGER" >/dev/null 2>&1 &
         fi
+        # Pending encounter (design-pending-encounter): an error-ish reaction
+        # sights a bug that stands its ground on the status line until the next
+        # commit resolves it (the "commit nudge"). Fire-and-forget, same idiom as
+        # errors_spotted; the server gates it to gameFeel=full and no-ops fast on
+        # same-tier repeats, so this stays cheap.
+        case "$REASON" in
+            error|test-fail|type-error|lint-fail|build-fail)
+                if [ -x "$(command -v bun)" ]; then
+                    PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+                    bun run "$PLUGIN_ROOT/server/award-xp.ts" bug_sighted >/dev/null 2>&1 &
+                fi
+                ;;
+        esac
         # Session-completion bonus: a commit closes out the session. The 30s
         # reaction cooldown above naturally rate-limits this to at most once per
         # window, guarding against rapid back-to-back commits (risk R1).

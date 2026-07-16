@@ -10,7 +10,9 @@ import { describe, test, expect } from "bun:test";
 import {
   computeSessionBonus,
   counterDelta,
+  combatErrorCount,
   computeStatGains,
+  pendingAction,
   SESSION_BASE_BONUS,
   SESSION_BONUS_CAP,
   type SessionCounters,
@@ -21,6 +23,10 @@ const ZERO: SessionCounters = {
   large_diffs: 0,
   errors_seen: 0,
   commits_made: 0,
+  tests_failed: 0,
+  type_errors: 0,
+  lint_fails: 0,
+  build_fails: 0,
 };
 
 describe("computeSessionBonus", () => {
@@ -31,6 +37,7 @@ describe("computeSessionBonus", () => {
   test("matches the documented worked example", () => {
     // 3 green runs, 1 big diff, 2 errors → 30 + 24 + 5 + 8 = 67
     const delta: SessionCounters = {
+      ...ZERO,
       all_green: 3,
       large_diffs: 1,
       errors_seen: 2,
@@ -47,6 +54,7 @@ describe("computeSessionBonus", () => {
   test("applies per-event diminishing caps", () => {
     // Each term saturates: 8·6 + 5·4 + 4·5 = 48 + 20 + 20 = 88, +30 base = 118
     const flooded: SessionCounters = {
+      ...ZERO,
       all_green: 100,
       large_diffs: 100,
       errors_seen: 100,
@@ -57,6 +65,7 @@ describe("computeSessionBonus", () => {
 
   test("never exceeds the hard cap", () => {
     const flooded: SessionCounters = {
+      ...ZERO,
       all_green: 9999,
       large_diffs: 9999,
       errors_seen: 9999,
@@ -75,23 +84,45 @@ describe("computeSessionBonus", () => {
 describe("counterDelta", () => {
   test("subtracts the baseline from the current counters", () => {
     const current: SessionCounters = {
+      ...ZERO,
       all_green: 5,
       large_diffs: 3,
       errors_seen: 4,
       commits_made: 2,
+      tests_failed: 6,
     };
     const baseline: SessionCounters = {
+      ...ZERO,
       all_green: 2,
       large_diffs: 1,
       errors_seen: 4,
       commits_made: 1,
+      tests_failed: 2,
     };
     expect(counterDelta(current, baseline)).toEqual({
+      ...ZERO,
       all_green: 3,
       large_diffs: 2,
       errors_seen: 0,
       commits_made: 1,
+      tests_failed: 4,
     });
+  });
+
+  test("a baseline missing the newer counters diffs them to zero", () => {
+    // On-disk snapshots written before tests_failed/type_errors/lint_fails/
+    // build_fails existed must not credit the whole lifetime count to the
+    // first session after the upgrade.
+    const current: SessionCounters = { ...ZERO, lint_fails: 30, errors_seen: 2 };
+    const legacy = {
+      all_green: 0,
+      large_diffs: 0,
+      errors_seen: 1,
+      commits_made: 0,
+    } as SessionCounters;
+    const delta = counterDelta(current, legacy);
+    expect(delta.lint_fails).toBe(0);
+    expect(delta.errors_seen).toBe(1);
   });
 
   test("clamps to zero when a baseline somehow exceeds current", () => {
@@ -102,12 +133,75 @@ describe("counterDelta", () => {
 
   test("an unchanged session yields an all-zero delta", () => {
     const snap: SessionCounters = {
+      ...ZERO,
       all_green: 7,
       large_diffs: 2,
       errors_seen: 1,
       commits_made: 3,
+      build_fails: 2,
     };
     expect(counterDelta(snap, snap)).toEqual(ZERO);
+  });
+});
+
+describe("combatErrorCount", () => {
+  test("a clean session spawns nothing", () => {
+    expect(combatErrorCount(ZERO)).toBe(0);
+  });
+
+  test("sums every error-ish bucket", () => {
+    const delta: SessionCounters = {
+      ...ZERO,
+      errors_seen: 1,
+      tests_failed: 2,
+      type_errors: 3,
+      lint_fails: 4,
+      build_fails: 5,
+    };
+    expect(combatErrorCount(delta)).toBe(15);
+  });
+
+  test("green runs, diffs, and commits do not feed the spawn", () => {
+    const delta: SessionCounters = {
+      ...ZERO,
+      all_green: 9,
+      large_diffs: 9,
+      commits_made: 9,
+    };
+    expect(combatErrorCount(delta)).toBe(0);
+  });
+
+  test("a single failed test run is enough to spawn a tier-1 bug", () => {
+    // The real-world regression: bun test failures print `error:` and land in
+    // tests_failed/lint_fails, never errors_seen — the spawn must see them.
+    expect(combatErrorCount({ ...ZERO, tests_failed: 1 })).toBe(1);
+  });
+});
+
+describe("pendingAction (design-pending-encounter §4.1)", () => {
+  test("no existing standoff → spawn", () => {
+    expect(pendingAction(1, null)).toBe("spawn");
+    expect(pendingAction(4, null)).toBe("spawn");
+  });
+
+  test("a strictly higher tier → escalate", () => {
+    expect(pendingAction(2, { tier: 1 })).toBe("escalate");
+    expect(pendingAction(4, { tier: 2 })).toBe("escalate");
+  });
+
+  test("the same tier → no-op (no re-bake on repeated same-tier errors)", () => {
+    expect(pendingAction(1, { tier: 1 })).toBe("noop");
+    expect(pendingAction(3, { tier: 3 })).toBe("noop");
+  });
+
+  test("a lower tier never downgrades an existing standoff", () => {
+    expect(pendingAction(1, { tier: 3 })).toBe("noop");
+    expect(pendingAction(2, { tier: 4 })).toBe("noop");
+  });
+
+  test("tier 0 (no spawn) is always a no-op, even with no existing file", () => {
+    expect(pendingAction(0, null)).toBe("noop");
+    expect(pendingAction(0, { tier: 2 })).toBe("noop");
   });
 });
 
@@ -149,6 +243,7 @@ describe("computeStatGains", () => {
 
   test("SNARK has no behavioral source", () => {
     const flooded: SessionCounters = {
+      ...ZERO,
       all_green: 99,
       large_diffs: 99,
       errors_seen: 99,

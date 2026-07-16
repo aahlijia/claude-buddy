@@ -1,5 +1,13 @@
 # Design — Buddy Movement (idle wander on the status line)
 
+> **⚠️ Partly superseded (2026-06-30).** The right-margin **corridor** model and
+> its **`wanderWide` / `wanderBubble`** modes described below are **retired** —
+> the buddy free-roams the whole line and the bubble always travels with it. The
+> two flags + `WANDER_RANGE_WIDE` were deleted from the code. See the §11
+> free-roam addendum near the end of this doc, and
+> [`CURRENT-STATE.md`](CURRENT-STATE.md) for the live picture. The §2–§6 base
+> wander, §7.A hop, §7.C resize, and §7.D mood expressiveness still hold.
+
 Status: Design (output of `/sc:design`). A new game-feel item: the buddy ambles
 **back and forth on the status line at random intervals** while the speech
 bubble, stats panel, name/title/badge, and every other element stay exactly
@@ -357,7 +365,10 @@ already exceeds the status line's height budget (degrade).
 
 **Tunables.** `hopHeight` default 1 (a polite bunny-hop); 2 for a springier feel.
 
-### 7.B — Wide two-sided corridor  (`wanderWide`, default off)
+### 7.B — Wide two-sided corridor  (`wanderWide`, default off) — RETIRED (§11)
+
+> Historical. The `wanderWide` flag and `WANDER_RANGE_WIDE` were removed
+> 2026-06-30; free-roam (§11) makes the whole line the lane.
 
 **What.** A longer amble than the right margin alone affords, so the buddy ranges
 both well right *and* back past its resting point — a fuller "back and forth."
@@ -529,3 +540,79 @@ Integration / render (snapshot via `BUDDY_FAKE_NOW`, like existing tests):
   roam the whole line) — violates the lane invariant / NFR6 real-estate.
 - Any *write-back* coupling where movement changes XP, stats, or mood — forbidden
   by NFR1; §7.D is strictly read-only.
+
+---
+
+## 11. Addendum — Free-roam supersedes the corridor (idle-RPG Phase 5)
+
+> Added 2026-06-26 on `feature/free-roam-combat`. The
+> [Phase 5 design](idle-rpg/phase-5-combat-scene.md) §3 re-architects this
+> module. The right-margin **corridor** model below (§2.2, §7.B wide mode) is
+> **retired**; the buddy now roams the **full span** between the stats panel and
+> the window edge. This entry records what changed and why so the corridor
+> sections aren't read as current.
+
+**What changed**
+- §2.2's reclaimed right-margin corridor (≤6, or ≤10 in wide mode) becomes the
+  **whole span**: `SPAN = COLS − STATS_BLOCK − CLUSTER_W − RIGHT_SAFETY`. The
+  fixed `MARGIN=8` right reserve shrinks to a small `RIGHT_SAFETY`.
+- The **cluster travels as one block by default** — bubble + connector + sprite
+  shift together (the former opt-in `wanderBubble` mode, now the default). The
+  pinned-bubble / retracting-connector default is retired.
+- The §10 "out of scope" line **"the buddy leaving its lane to roam the whole
+  line"** is now **in scope** — the lane *is* the whole line. The NFR6
+  real-estate concern is met by the in-window clamp (the cluster never grows the
+  block past `COLS`), not by confining motion to a margin.
+- The baked walk (§4) is now **normalized** (`0..WANDER_NORM`, percent-of-span);
+  bash scales it to the live `SPAN` each tick (the server can't see `COLS`).
+  `moodWalkOpts` still maps mood→restlessness; the spatial amplitude is the span.
+
+**What carries over unchanged**
+- §7.A vertical hop (`wanderRowSequence` / `HOP_RESERVE`).
+- §7.C resize robustness — recomputing `SPAN` every tick is the same idea, now
+  guaranteeing in-window rather than just clamping a corridor offset.
+- §7.D mood/level expressiveness — strictly read-only (NFR1).
+- "Server bakes, bash cycles" and the pre-baked-sequence pattern.
+
+**Config flags removed (2026-06-30).** Because the corridor is retired, the
+`wanderWide` and `wanderBubble` config flags — and the `WANDER_RANGE_WIDE`
+constant and the `wide`/`bubble` args on the `buddy_wander` MCP tool — have been
+**deleted** from the code. They no longer matched behavior: `wanderBubble` was a
+no-op (the bubble always travels now) and `wanderWide` only widened the baked
+range while reporting a "corridor" that no longer exists. Roam distance is now
+governed solely by `moodWalkOpts` (§7.D) clamped to `SPAN`. The §7.B / §5e
+sections below are historical.
+
+**Still out of scope:** per-session position file for eased resize; write-back
+coupling; free *2-D* path-following beyond the hop arc.
+
+### 11.1 — Dynamic bubble sizing (fit-to-width, 2026-07-13)
+
+The speech bubble now adapts its **size and shape** to the room the cluster has
+in the current terminal, rather than being a fixed `bubbleWidth` box that the
+in-window clamp dropped whole the moment it didn't fit. Purely bash-side (only
+bash knows `COLS`), computed once per tick just before the word-wrap, sharing the
+same cluster-geometry terms as the layout clamp so a kept bubble is guaranteed
+in-window. `INNER_W` is chosen against `FIT_INNER = COLS − STATS_BLOCK −
+RIGHT_SAFETY − ART_W − CONNECTOR_W − 4` (box chrome is 4 cols):
+
+- **Shrink** — when the configured width won't fit, narrow `INNER_W` to
+  `FIT_INNER` so the same text wraps to more, shorter rows (the box gets taller).
+- **Grow** — when a single word is wider than the configured box, widen `INNER_W`
+  to that word (up to `FIT_INNER`) so it never spills past the border. A word
+  can't wrap inside itself, so the box's floor is `max(8, widest word)`.
+- **Drop** — only when even that narrowest usable box won't fit; the sprite (the
+  rightmost, most important element) stays visible. This is the same
+  sprite-visibility-wins rule the old binary drop enforced, now the last resort.
+
+Recomputed every tick, so a resize — or the same global buddy showing up in a
+wider window — re-grows the bubble back toward `bubbleWidth` when the room
+returns (§7.C resize robustness, extended to the bubble's own dimensions). The
+layout section's drop check is kept as a defensive backstop but no longer the
+primary path.
+
+**Incidental fix:** `dwidth()` measured text via `od -An -tu4`, which collapses
+runs of ≥16 identical codepoints into a `*` line — so any bubble text with a long
+repeat (e.g. `!!!!!!`, `hmmmmmm`, a long token) was under-measured, mis-wrapping
+and mis-padding the box. Added `od -v` to disable the collapsing; the fix matters
+more now that a lone word's measured width drives the grow/drop decision.

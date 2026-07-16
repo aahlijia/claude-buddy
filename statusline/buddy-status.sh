@@ -38,10 +38,8 @@ GAME_FEEL="subtle"
 _CFG_THEME="auto"
 _RAINBOW_CSV=""
 REACTION_TTL=0
-INNER_W=44
+INNER_W=28
 MARGIN=8
-WANDER_WIDE="false"
-WANDER_BUBBLE="false"
 SHOW_STATS="false"
 SHOW_PRESTIGE_BADGE="false"
 USE_COMBINED="false"
@@ -52,17 +50,14 @@ if [ -f "$CONFIG_FILE" ]; then
     IFS=$'\x1f' read -r \
         GAME_FEEL _CFG_THEME _RAINBOW_CSV \
         REACTION_TTL INNER_W MARGIN \
-        WANDER_WIDE WANDER_BUBBLE \
         SHOW_STATS SHOW_PRESTIGE_BADGE USE_COMBINED \
     <<< "$(jq -r '[
         (.gameFeel // "subtle"),
         (.theme // "auto"),
         ((.rainbowColors // []) | join(",")),
         ((.reactionTTL // 0) | tostring),
-        ((.bubbleWidth // 44) | tostring),
+        ((.bubbleWidth // 28) | tostring),
         ((.bubbleMargin // 8) | tostring),
-        ((.wanderWide // false) | tostring),
-        ((.wanderBubble // false) | tostring),
         ((.showStats // false) | tostring),
         ((.showPrestigeBadge // false) | tostring),
         ((.useCombinedStatus // false) | tostring)
@@ -73,10 +68,8 @@ fi
 # back to the documented default.
 case "$GAME_FEEL" in off|subtle|full) ;; *) GAME_FEEL="subtle" ;; esac
 case "$REACTION_TTL" in ''|*[!0-9]*) REACTION_TTL=0 ;; esac
-case "$INNER_W" in ''|*[!0-9]*) INNER_W=44 ;; esac
+case "$INNER_W" in ''|*[!0-9]*) INNER_W=28 ;; esac
 case "$MARGIN" in ''|*[!0-9]*) MARGIN=8 ;; esac
-[ "$WANDER_WIDE" = "true" ] || WANDER_WIDE="false"
-[ "$WANDER_BUBBLE" = "true" ] || WANDER_BUBBLE="false"
 [ "$SHOW_STATS" = "true" ] || SHOW_STATS="false"
 [ "$SHOW_PRESTIGE_BADGE" = "true" ] || SHOW_PRESTIGE_BADGE="false"
 [ "$USE_COMBINED" = "true" ] || USE_COMBINED="false"
@@ -88,8 +81,10 @@ case "$MARGIN" in ''|*[!0-9]*) MARGIN=8 ;; esac
 # same idiom as the combined-metrics read below) so the inner @tsv blobs
 # (stats / xp / celebration) keep their own tabs and split downstream exactly as
 # before. The multi-line frame art is base64'd to survive the single-line read,
-# then decoded after the early-exit checks. Free-text fields are tab/newline-
-# sanitized so a stray control char can't shift the columns.
+# then decoded after the early-exit checks. Free-text fields are control-char-
+# sanitized (\x01-\x1f + DEL → space) so a stray tab/newline can't shift the
+# columns and a stray ESC can't inject terminal escapes into the render. The
+# frame art is exempt (base64'd raw) — wyvern's flame legitimately carries ANSI.
 _STATUS=$(jq -r --argjson now "$NOW" --arg gf "$GAME_FEEL" '
     # Celebration freshness — mirrors the old bash TTL/age math, gameFeel-gated.
     (if $gf == "off" then 0
@@ -103,64 +98,87 @@ _STATUS=$(jq -r --argjson now "$NOW" --arg gf "$GAME_FEEL" '
             | (if $age >= 0 and $age <= $ttl then 1 else 0 end)
           else 0 end)
      end) as $celeb_fresh
-    # Frame source: animate the flourish set only while a celebration is fresh.
-    | (if ((.flourishFrames | type) == "array")
-          and ((.flourishFrames | length) > 0) then 1 else 0 end) as $has_fl
-    | (if $celeb_fresh == 1 and $has_fl == 1
-       then .flourishSequence else .frameSequence end) as $seq
-    | (if $celeb_fresh == 1 and $has_fl == 1
-       then .flourishFrames else .frames end) as $frms
-    | ($seq | length) as $slen
-    | (if $slen > 0 then ($seq[$now % $slen] // 0) else 0 end) as $idx
-    | ($frms[$idx] // "") as $frame
-    # Wander offsets — only at gameFeel=full with no fresh celebration; all three
-    # stay 0 otherwise (parity with the old gf==full && !celeb_fresh gate, incl.
-    # WANDER_ROW_MAX, which must not reserve hop headroom when wander is idle).
-    | (if $gf == "full" and $celeb_fresh != 1
-       then ((.wanderSequence // []) as $w
-             | if ($w | length) > 0 then ($w[$now % ($w | length)] // 0) else 0 end)
-       else 0 end) as $woff
-    | (if $gf == "full" and $celeb_fresh != 1
-       then ((.wanderRowSequence // []) as $w
-             | if ($w | length) > 0 then ($w[$now % ($w | length)] // 0) else 0 end)
-       else 0 end) as $wrow
-    | (if $gf == "full" and $celeb_fresh != 1
-       then (((.wanderRowSequence // []) | max) // 0)
-       else 0 end) as $wrmax
-    # Encounter freshness (idle-RPG Phase 4) — same TTL/age idiom as $celeb_fresh,
-    # gated to full (the fight animation is full-only). Off never wrote the file.
+    # Encounter freshness (idle-RPG Phase 4/5) — same TTL/age idiom as
+    # $celeb_fresh, gated to full (the fight render is full-only). Glyph-
+    # independent: Phase 5 keys the scene off encounterAt, the glyph is only the
+    # degraded-skew fallback. Off never wrote the file.
     | (if $gf == "full"
        then ((.encounterAt // 0) as $ea
-             | (.enemyGlyph // "") as $eg
-             | if ($eg | type) == "string" and $eg != "" and $eg != "null"
-                   and ($ea | type) == "number" and $ea > 0
+             | if ($ea | type) == "number" and $ea > 0
                    and ($now - ($ea / 1000 | floor)) >= 0
                    and ($now - ($ea / 1000 | floor)) <= 10
                then 1 else 0 end)
        else 0 end) as $enc_fresh
+    # Pending standoff (design-pending-encounter §5.2): the server sets
+    # combatSticky=1 only on the persistent PRE-fight standoff, which has no
+    # encounterAt/TTL — never alongside a resolved scene. Full-only, mirroring the
+    # enc_fresh gate, so a status.json written at full stops rendering the standoff
+    # after a flip to subtle/off (belt-and-suspenders; the server also emits the
+    # field only at full). NB: no apostrophes in this block — the whole jq program
+    # is single-quoted in bash, so a stray quote would truncate it.
+    | (if $gf == "full" and (.combatSticky // 0) == 1 then 1 else 0 end) as $sticky
+    # Combat scene active (Phase 5 + pending): a fresh resolved encounter OR a
+    # sticky standoff, WITH a baked two-sprite scene. Priority over flourish/idle.
+    | (if (($enc_fresh == 1) or ($sticky == 1))
+          and ((.combatFrames | type) == "array")
+          and ((.combatFrames | length) > 0) then 1 else 0 end) as $combat_on
+    # Frame source: combat scene > flourish (while a celebration is fresh) > idle.
+    | (if ((.flourishFrames | type) == "array")
+          and ((.flourishFrames | length) > 0) then 1 else 0 end) as $has_fl
+    | (if $combat_on == 1 then .combatSequence
+       elif $celeb_fresh == 1 and $has_fl == 1 then .flourishSequence
+       else .frameSequence end) as $seq
+    | (if $combat_on == 1 then .combatFrames
+       elif $celeb_fresh == 1 and $has_fl == 1 then .flourishFrames
+       else .frames end) as $frms
+    | ($seq | length) as $slen
+    | (if $slen > 0 then ($seq[$now % $slen] // 0) else 0 end) as $idx
+    | ($frms[$idx] // "") as $frame
+    # Active art display width: the combat scene widens the art column; 0 ⇒ the
+    # shell keeps its default single-sprite ART_W.
+    | (if $combat_on == 1 then (.artWidth // 0) else 0 end) as $awidth
+    # Wander offsets — only at gameFeel=full with no fresh celebration AND no
+    # combat scene (design-pending-encounter D3: a standoff/fight that ambles
+    # around undercuts the tension, and pinning it maximizes the roam-math
+    # headroom for the wide scene during a now-potentially-hours-long render).
+    # All three stay 0 otherwise (parity with the old gate incl. WANDER_ROW_MAX,
+    # which must not reserve hop headroom when wander is idle).
+    | (if $gf == "full" and $celeb_fresh != 1 and $combat_on != 1
+       then ((.wanderSequence // []) as $w
+             | if ($w | length) > 0 then ($w[$now % ($w | length)] // 0) else 0 end)
+       else 0 end) as $woff
+    | (if $gf == "full" and $celeb_fresh != 1 and $combat_on != 1
+       then ((.wanderRowSequence // []) as $w
+             | if ($w | length) > 0 then ($w[$now % ($w | length)] // 0) else 0 end)
+       else 0 end) as $wrow
+    | (if $gf == "full" and $celeb_fresh != 1 and $combat_on != 1
+       then (((.wanderRowSequence // []) | max) // 0)
+       else 0 end) as $wrmax
     | [
         ((.muted // false) | tostring),
-        ((.name // "") | gsub("[\t\n\r]"; " ")),
-        ((.rarity // "common") | gsub("[\t\n\r]"; " ")),
+        ((.name // "") | gsub("[\\x01-\\x1f\\x7f]"; " ")),
+        ((.rarity // "common") | gsub("[\\x01-\\x1f\\x7f]"; " ")),
         ((.shiny // false) | tostring),
-        ((.reaction // "") | gsub("[\t\n\r]"; " ")),
-        ((.achievement // "") | gsub("[\t\n\r]"; " ")),
+        ((.reaction // "") | gsub("[\\x01-\\x1f\\x7f]"; " ")),
+        ((.achievement // "") | gsub("[\\x01-\\x1f\\x7f]"; " ")),
         ((.level // 1) | tostring),
-        ((.mood // "focused") | gsub("[\t\n\r]"; " ")),
-        ((.title // "") | gsub("[\t\n\r]"; " ")),
+        ((.mood // "focused") | gsub("[\\x01-\\x1f\\x7f]"; " ")),
+        ((.title // "") | gsub("[\\x01-\\x1f\\x7f]"; " ")),
         ((.prestigeLevel // 0) | tostring),
         ((.streak // 0) | tostring),
         ([.stats.DEBUGGING, .stats.PATIENCE, .stats.CHAOS, .stats.WISDOM, .stats.SNARK, .peak, .dump] | @tsv),
         ((.xpPct // 0) | tostring),
         ([(.lastXpGain.amount // 0), (.lastXpGain.at // 0)] | @tsv),
-        ([(.celebration.text // ""), (.celebration.at // 0)] | @tsv),
+        ([((.celebration.text // "") | gsub("[\\x01-\\x1f\\x7f]"; " ")), (.celebration.at // 0)] | @tsv),
         ($has_fl | tostring),
         ($celeb_fresh | tostring),
         ($woff | tostring),
         ($wrow | tostring),
         ($wrmax | tostring),
         ($enc_fresh | tostring),
-        ((.enemyGlyph // "") | gsub("[\t\n\r]"; " ")),
+        ($combat_on | tostring),
+        ($awidth | tostring),
+        ((.enemyGlyph // "") | gsub("[\\x01-\\x1f\\x7f]"; " ")),
         ($frame | @base64)
       ] | join("")
 ' "$STATE" 2>/dev/null)
@@ -170,7 +188,7 @@ IFS=$'\x1f' read -r \
     LEVEL MOOD TITLE PRESTIGE STREAK \
     STATS_TSV XP_PCT XP_GAIN_TSV CELEB_TSV \
     _HAS_FLOURISH _CELEB_FRESH WANDER_OFF WANDER_ROW WANDER_ROW_MAX \
-    _ENC_FRESH ENEMY_GLYPH \
+    _ENC_FRESH _COMBAT_ON ART_WIDTH ENEMY_GLYPH \
     _FRAME_B64 <<< "$_STATUS"
 
 [ "$MUTED" = "true" ] && exit 0
@@ -191,6 +209,10 @@ IFS=$'\t' read -r _CELEB_TEXT _CELEB_AT <<< "$CELEB_TSV"
 case "$WANDER_OFF" in ''|*[!0-9]*) WANDER_OFF=0 ;; esac
 case "$WANDER_ROW" in ''|*[!0-9]*) WANDER_ROW=0 ;; esac
 case "$WANDER_ROW_MAX" in ''|*[!0-9]*) WANDER_ROW_MAX=0 ;; esac
+# Combat-scene width (idle-RPG Phase 5): the server-emitted display width of the
+# active two-sprite scene; 0 unless a fresh fight is being rendered.
+case "$_COMBAT_ON" in 1) ;; *) _COMBAT_ON=0 ;; esac
+case "$ART_WIDTH" in ''|*[!0-9]*) ART_WIDTH=0 ;; esac
 
 # Fallback when status.json lacks .frames — e.g. server/bash version skew
 # during install or while the MCP server hasn't rewritten the file yet. Keep
@@ -204,12 +226,13 @@ while IFS= read -r line; do
     ART_LINES+=("$line")
 done <<< "$FRAME_BODY"
 
-# Idle-RPG encounter (Phase 4): hover the enemy glyph in the buddy's right margin
-# during a fresh fight. Appended RIGHTMOST on the eye row so its (often double-
-# width) glyph can't shift any aligned column to its left — it only consumes the
-# margin the wander corridor isn't using this tick (wander is suppressed while the
-# fight's celebration is fresh). $_ENC_FRESH is already gated to gameFeel=full.
-if [ "$_ENC_FRESH" = 1 ] && [ -n "$ENEMY_GLYPH" ] && [ "$ENEMY_GLYPH" != "null" ]; then
+# Idle-RPG encounter (Phase 4 fallback): hover the enemy glyph in the buddy's
+# right margin during a fresh fight. This is now the DEGRADED-SKEW path only —
+# when the server baked a Phase 5 two-sprite scene ($_COMBAT_ON), that scene is
+# the frame body and we must NOT also draw the glyph (no doubled enemy).
+# Appended RIGHTMOST on the eye row so its (often double-width) glyph can't shift
+# any aligned column to its left. $_ENC_FRESH is already gated to gameFeel=full.
+if [ "$_COMBAT_ON" != 1 ] && [ "$_ENC_FRESH" = 1 ] && [ -n "$ENEMY_GLYPH" ] && [ "$ENEMY_GLYPH" != "null" ]; then
     # The eye row is the vertical middle of the frame (row 0 is the hat slot,
     # the eyes sit on the centre line across all species art). For the standard
     # 5-row frame this is row 2; integer-halving degrades sanely for shorter art.
@@ -239,6 +262,53 @@ esac
 
 B=$'\xe2\xa0\x80'  # Braille Blank U+2800
 
+# ─── Display width (emojis count as 2 cols) ──────────────────────────────────
+# iconv turns the input into a stream of UTF-32LE codepoints, then awk sums
+# widths. Rules mirror server/art.ts:displayWidth — the U+2600-U+27BF range
+# is split by Emoji_Presentation (2) vs text-presentation (1), and VS16
+# (U+FE0F) upgrades the previous narrow symbol to 2 cols (e.g. ❤ + VS16).
+# The ambiguous codepoint list comes from emoji-widths.data, loaded lazily by
+# the bubble path below (empty until then — only the U+2600 block is affected).
+#
+# dwidth_batch measures EVERY argument in ONE iconv|od|awk pipeline, printing
+# one width per line: the bubble's per-word measurement would otherwise fork
+# the whole chain once per word, every tick the bubble is visible. Words never
+# contain a newline (they come from IFS splitting), so codepoint 10 delimits.
+# A total pipeline failure prints nothing — callers guard for that.
+EMOJI_PRES_2600=""
+
+dwidth_batch() {
+    printf '%s\n' "$@" | iconv -f UTF-8 -t UTF-32LE 2>/dev/null | od -An -v -tu4 | awk -v pres="$EMOJI_PRES_2600" '
+    BEGIN {
+        n = split(pres, arr)
+        for (k = 1; k <= n; k++) wide[arr[k]] = 1
+    }
+    # Precondition: cp is neither a variation selector (65024-65039) nor ZWJ
+    # (8205); the main loop filters those before calling in.
+    function char_width(cp) {
+        if (cp >= 126976) return 2
+        if (cp >= 9728 && cp <= 10175) return (cp in wide) ? 2 : 1
+        if (cp >= 9472 && cp <= 9631) return 1
+        if (cp >= 12288 && cp <= 40959) return 2
+        if (cp >= 65281 && cp <= 65376) return 2
+        return 1
+    }
+    { for (i = 1; i <= NF; i++) {
+        cp = $i + 0
+        if (cp == 10) { print w+0; w = 0; upgradable = 0; continue }
+        if (cp == 65039) {
+            if (upgradable) { w += 1; upgradable = 0 }
+            continue
+        }
+        if ((cp >= 65024 && cp <= 65038) || cp == 8205) { upgradable = 0; continue }
+        cw = char_width(cp)
+        w += cw
+        upgradable = (cw == 1 && cp >= 9728 && cp <= 10175) ? 1 : 0
+    } }'
+}
+
+dwidth() { dwidth_batch "$1"; }
+
 # ─── Rainbow colors for shiny buddies ────────────────────────────────────────
 # Default ROYGBIV palette; overridden by rainbowColors in config.json
 _hex_to_ansi() {
@@ -257,12 +327,20 @@ RAINBOW=(
 )
 
 # _RAINBOW_CSV (comma-joined rainbowColors) comes from the single config read.
+# Entries must be 6 hex digits (optionally #-prefixed): _hex_to_ansi feeds them
+# to 16# arithmetic, and a garbled value would spam an arithmetic error to
+# stderr every tick. Invalid entries are skipped; if none survive, the default
+# palette above stays in place.
 if [ -n "$_RAINBOW_CSV" ]; then
-    RAINBOW=()
+    _CUSTOM_RAINBOW=()
     IFS=',' read -ra _RAINBOW_HEXES <<< "$_RAINBOW_CSV"
     for _hex in "${_RAINBOW_HEXES[@]}"; do
-        RAINBOW+=("$(_hex_to_ansi "$_hex")")
+        case "${_hex#\#}" in
+            [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F])
+                _CUSTOM_RAINBOW+=("$(_hex_to_ansi "$_hex")") ;;
+        esac
     done
+    [ ${#_CUSTOM_RAINBOW[@]} -gt 0 ] && RAINBOW=("${_CUSTOM_RAINBOW[@]}")
 fi
 
 RAINBOW_LEN=${#RAINBOW[@]}
@@ -278,10 +356,36 @@ RAINBOW_OFFSET=$(( NOW % RAINBOW_LEN ))
 # breaks on the first PTY that reports a sane width — validated identical across
 # a real PTY and the no-TTY fallback.
 COLS=0
+# Test seam (like BUDDY_FAKE_NOW): force the terminal width so snapshot/layout
+# tests are deterministic regardless of the controlling PTY. Unset in production.
+if [ -n "$BUDDY_FAKE_COLS" ]; then
+    case "$BUDDY_FAKE_COLS" in ''|*[!0-9]*) ;; *) COLS=$BUDDY_FAKE_COLS ;; esac
+fi
+# Cached controlling-PTY device: the walk below forks ps up to ten times per
+# tick, but a session's terminal DEVICE never changes — only its size does, and
+# stty re-reads that every tick, so resize robustness is preserved. The cache
+# stores "<ppid> <device>"; the PPID guard keeps a second same-SID instance
+# (two non-tmux windows both keyed "default") from adopting the other window's
+# terminal. Any miss or failure falls through to the walk, which re-caches.
+TTY_CACHE_FILE="$BUDDY_STATE_DIR/.tty.$SID"
+_CACHED_DEV=""
+if [ "${COLS:-0}" -lt 40 ] 2>/dev/null && [ -f "$TTY_CACHE_FILE" ]; then
+    read -r _C_PPID _C_DEV < "$TTY_CACHE_FILE" 2>/dev/null
+    if [ "$_C_PPID" = "$PPID" ] && [ -c "$_C_DEV" ] 2>/dev/null; then
+        read -r _ COLS < <(stty size < "$_C_DEV" 2>/dev/null)
+        if [ "${COLS:-0}" -gt 40 ] 2>/dev/null; then
+            _CACHED_DEV=$_C_DEV
+        else
+            COLS=0
+        fi
+    fi
+fi
 _HAS_PROC=0
 [ -d /proc ] && _HAS_PROC=1
 PID=$$
+_FOUND_DEV=""
 for _ in 1 2 3 4 5; do
+    [ "${COLS:-0}" -ge 40 ] 2>/dev/null && break  # forced/cached width ⇒ skip walk
     read -r PID < <(ps -o ppid= -p "$PID" 2>/dev/null)
     [ -z "$PID" ] || [ "$PID" = "1" ] && break
 
@@ -290,7 +394,7 @@ for _ in 1 2 3 4 5; do
         PTY=$(readlink "/proc/${PID}/fd/0" 2>/dev/null)
         if [ -c "$PTY" ] 2>/dev/null; then
             read -r _ COLS < <(stty size < "$PTY" 2>/dev/null)
-            [ "${COLS:-0}" -gt 40 ] 2>/dev/null && break
+            if [ "${COLS:-0}" -gt 40 ] 2>/dev/null; then _FOUND_DEV=$PTY; break; fi
         fi
     fi
 
@@ -300,10 +404,15 @@ for _ in 1 2 3 4 5; do
         TTY_DEV="/dev/$TTY_NAME"
         if [ -c "$TTY_DEV" ] 2>/dev/null; then
             read -r _ COLS < <(stty size < "$TTY_DEV" 2>/dev/null)
-            [ "${COLS:-0}" -gt 40 ] 2>/dev/null && break
+            if [ "${COLS:-0}" -gt 40 ] 2>/dev/null; then _FOUND_DEV=$TTY_DEV; break; fi
         fi
     fi
 done
+# Re-cache after a successful walk (cache hits skip the walk, so this only
+# writes on a genuine miss — no per-tick churn on the steady path).
+if [ -n "$_FOUND_DEV" ]; then
+    printf '%s %s\n' "$PPID" "$_FOUND_DEV" > "$TTY_CACHE_FILE" 2>/dev/null
+fi
 [ "${COLS:-0}" -lt 40 ] 2>/dev/null && COLS=${COLUMNS:-0}
 # Windows: /proc and TTY device detection don't exist; use PowerShell as fallback
 if [ "${COLS:-0}" -lt 40 ] 2>/dev/null; then
@@ -320,47 +429,20 @@ fi
 REACTION_FILE="$BUDDY_STATE_DIR/reaction.$SID.json"
 # REACTION_TTL / INNER_W / MARGIN come (validated) from the single config read.
 
-# ─── Idle wander clamp (movement design-movement §5b / §7.B / §7.C) ─────────
-# The corridor is reclaimed from the right MARGIN; bash owns the clamp because
-# only it knows MARGIN/COLS (the baked sequence carries raw offsets). §7.C
-# resize robustness is automatic — MARGIN/COLS are recomputed every tick, so a
-# shrink caps WANDER_OFF on the next tick and the buddy never clips. §7.B wide
-# mode (flag wanderWide, full-gated) opens a left lane: it shifts the whole
-# bubble+art block left by a CONSTANT WANDER_LEFT (folded into PAD below, once)
-# so the corridor can span WANDER_RANGE_WIDE without the per-tick offset moving
-# anything. WANDER_PAD is plain spaces (never trimmed). WANDER_MAX=0 ⇒ park.
-# WANDER_WIDE / WANDER_BUBBLE come from the single config read above. wanderBubble
-# (design-movement §5e): when true the bubble+connector travel WITH the buddy as
-# one rigid block (connector stays attached) instead of the bubble staying pinned
-# + connector retracting. Pure render flags.
-WANDER_RANGE=6
-WANDER_RANGE_WIDE=10
-WANDER_SAFETY=2
-WANDER_LEFT=0
-WANDER_RANGE_EFF=$WANDER_RANGE
-if [ "$GAME_FEEL" = "full" ] && [ "$WANDER_WIDE" = "true" ]; then
-    WANDER_RANGE_EFF=$WANDER_RANGE_WIDE
-    WANDER_LEFT=$(( WANDER_RANGE_WIDE - (MARGIN - WANDER_SAFETY) ))
-    [ "$WANDER_LEFT" -lt 0 ] && WANDER_LEFT=0
-fi
-WANDER_MAX=$(( MARGIN + WANDER_LEFT - WANDER_SAFETY ))
-[ "$WANDER_MAX" -lt 0 ] && WANDER_MAX=0
-[ "$WANDER_MAX" -gt "$WANDER_RANGE_EFF" ] && WANDER_MAX=$WANDER_RANGE_EFF
-[ "$WANDER_OFF" -gt "$WANDER_MAX" ] && WANDER_OFF=$WANDER_MAX
-WANDER_PAD=$(printf '%*s' "$WANDER_OFF" '')
-# Where the horizontal offset is inserted (§5e). Default: before the art only, so
-# the buddy slides right and the bubble stays pinned (connector retracts). With
-# wanderBubble on: before the whole bubble cluster, so bubble+connector+art
-# translate together as one block (connector stays attached). Exactly one of
-# these two pads is non-empty per tick; both modes shift the art's right edge by
-# the same WANDER_OFF, so the corridor budget (WANDER_MAX) is unchanged.
-if [ "$WANDER_BUBBLE" = "true" ]; then
-    WANDER_PAD_BUBBLE="$WANDER_PAD"
-    WANDER_PAD_ART=""
-else
-    WANDER_PAD_BUBBLE=""
-    WANDER_PAD_ART="$WANDER_PAD"
-fi
+# ─── Idle wander clamp (movement design-movement §7.C / §11 free-roam) ───────
+# bash owns the clamp because only it knows MARGIN/COLS (the baked sequence
+# carries raw offsets). §7.C resize robustness is automatic — MARGIN/COLS are
+# recomputed every tick, so a shrink caps WANDER_OFF on the next tick and the
+# buddy never clips.
+# Free-roam (design-movement §11): the buddy is no longer confined to a tiny
+# right-margin corridor. WANDER_OFF (the raw baked offset) is the number of cells
+# the buddy ambles LEFT of its right-edge home; the actual roam range is the full
+# span between the stats panel and the window edge, computed + clamped in the
+# layout section below (which is the first place ART_W/BOX_W — the cluster width —
+# are known). The bubble travels WITH the buddy as one block (the offset lands in
+# the cluster's leading pad), so the per-segment WANDER_PADs are now no-ops.
+WANDER_PAD_BUBBLE=""
+WANDER_PAD_ART=""
 
 # SHOW_STATS (stats panel), SHOW_PRESTIGE_BADGE (prestige/streak badge) and
 # USE_COMBINED (model/context/usage/reset row) all come from the single config
@@ -380,17 +462,30 @@ if [ "$_CELEB_FRESH" = 1 ]; then
     CELEB_SHOWN=1
 fi
 
+# Bubble suppression during the 10s RESOLVED fight scene (design-pending-encounter
+# D4): the fight summary already rides the celebration toast (kept), so a
+# competing sticky reaction would clutter the two-sprite scene — this folds in the
+# pre-existing "stop the chat bubble during a fight" follow-up. Only the resolved
+# phase suppresses (enc_fresh && combat_on); the PENDING standoff (combat_on but
+# no enc_fresh) keeps the buddy's normal chatter, since it can last hours and
+# muting all reactions would silence the whole personality.
+SUPPRESS_REACTION=0
+if [ "$_ENC_FRESH" = 1 ] && [ "$_COMBAT_ON" = 1 ]; then
+    SUPPRESS_REACTION=1
+fi
+
 # Sticky bubble: status.json's .reaction is volatile — an incidental status
 # refresh (writeStatusState with no reaction) clears it to "". The per-session
 # reaction.$SID.json instead persists the LAST real reaction (hooks only ever
 # write it with content), so fall back to it when the live field is empty. The
 # bubble then stays until a new message replaces it. The TTL check below still
 # uses this file's timestamp, so an opt-in reactionTTL>0 keeps expiring as before.
-if { [ -z "$REACTION" ] || [ "$REACTION" = "null" ]; } && [ -f "$REACTION_FILE" ]; then
-    REACTION=$(jq -r '.reaction // ""' "$REACTION_FILE" 2>/dev/null || echo "")
+if [ "$SUPPRESS_REACTION" -eq 0 ] && { [ -z "$REACTION" ] || [ "$REACTION" = "null" ]; } && [ -f "$REACTION_FILE" ]; then
+    # Same control-char sanitization as the status.json free-text fields.
+    REACTION=$(jq -r '(.reaction // "") | gsub("[\\x01-\\x1f\\x7f]"; " ")' "$REACTION_FILE" 2>/dev/null || echo "")
 fi
 
-if [ "$CELEB_SHOWN" -eq 0 ] && [ -n "$REACTION" ] && [ "$REACTION" != "null" ] && [ "$REACTION" != "" ]; then
+if [ "$SUPPRESS_REACTION" -eq 0 ] && [ "$CELEB_SHOWN" -eq 0 ] && [ -n "$REACTION" ] && [ "$REACTION" != "null" ] && [ "$REACTION" != "" ]; then
     FRESH=0
     if [ "$REACTION_TTL" -eq 0 ]; then
         FRESH=1
@@ -429,10 +524,26 @@ case "$MOOD" in
 esac
 NAME_WITH_LEVEL="${NAME_WITH_LEVEL}${MOOD_EMOJI}"
 NAME_LEN=${#NAME_WITH_LEVEL}
-ART_CENTER=6
+# ${#} counts characters, not display columns — a wide glyph (emoji, CJK) in
+# the name would mis-center it under the art. Only non-ASCII names pay the
+# dwidth pipeline; the common ASCII case stays fork-free.
+case "$NAME_WITH_LEVEL" in
+    *[![:ascii:]]*)
+        NAME_LEN=$(dwidth "$NAME_WITH_LEVEL")
+        case "$NAME_LEN" in ''|*[!0-9]*) NAME_LEN=${#NAME_WITH_LEVEL} ;; esac
+        ;;
+esac
+# Idle art is 12 cols wide ⇒ centre at col 6. The Phase 5 combat scene is wider
+# (server-emitted ART_WIDTH); re-centre the name/title under it. Scoped to the
+# combat path so idle renders keep ART_CENTER=6 byte-identical.
+if [ "$_COMBAT_ON" = 1 ] && [ "$ART_WIDTH" -gt 0 ]; then
+    ART_CENTER=$(( ART_WIDTH / 2 ))
+else
+    ART_CENTER=6
+fi
 NAME_PAD=$(( ART_CENTER - NAME_LEN / 2 ))
 [ "$NAME_PAD" -lt 0 ] && NAME_PAD=0
-NAME_LINE="$(printf '%*s%s' "$NAME_PAD" '' "$NAME_WITH_LEVEL")"
+printf -v NAME_LINE '%*s%s' "$NAME_PAD" '' "$NAME_WITH_LEVEL"
 
 DIM=$'\033[2;3m'
 
@@ -458,7 +569,7 @@ if [ -n "$TITLE" ] && [ "$TITLE" != "null" ]; then
     TITLE_LEN=${#TITLE_TEXT}
     TITLE_PAD=$(( ART_CENTER - TITLE_LEN / 2 ))
     [ "$TITLE_PAD" -lt 0 ] && TITLE_PAD=0
-    TITLE_LINE="$(printf '%*s%s' "$TITLE_PAD" '' "$TITLE_TEXT")"
+    printf -v TITLE_LINE '%*s%s' "$TITLE_PAD" '' "$TITLE_TEXT"
     ALL_LINES+=("$TITLE_LINE"); ALL_COLORS+=("$DIM")
 fi
 
@@ -476,14 +587,23 @@ if [ "$SHOW_PRESTIGE_BADGE" = "true" ]; then
     fi
     if [ -n "$BADGE" ]; then
         BADGE_LEN=${#BADGE}
+        # 🔥 counts as 1 char in ${#} but renders 2 cols — correct the centering
+        # without paying dwidth()'s fork chain for this tiny known-shape string.
+        [ "$STREAK" -gt 0 ] && BADGE_LEN=$(( BADGE_LEN + 1 ))
         BADGE_PAD=$(( ART_CENTER - BADGE_LEN / 2 ))
         [ "$BADGE_PAD" -lt 0 ] && BADGE_PAD=0
-        BADGE_LINE="$(printf '%*s%s' "$BADGE_PAD" '' "$BADGE")"
+        printf -v BADGE_LINE '%*s%s' "$BADGE_PAD" '' "$BADGE"
         ALL_LINES+=("$BADGE_LINE"); ALL_COLORS+=("$DIM")
     fi
 fi
 
 ART_W=14
+# Idle-RPG Phase 5: a fresh two-sprite scene widens the art column to the
+# server-emitted scene width so TOTAL_W/PAD reserve the right room and the scene
+# stays in-window. Scoped to the combat path ⇒ idle keeps ART_W=14 (byte-ident).
+if [ "$_COMBAT_ON" = 1 ] && [ "$ART_WIDTH" -gt "$ART_W" ]; then
+    ART_W=$ART_WIDTH
+fi
 ART_COUNT=${#ALL_LINES[@]}
 
 # ─── Stats panel (optional leftmost column) ─────────────────────────────────
@@ -579,7 +699,7 @@ if [ "$SHOW_STATS" = "true" ] && [ -n "$STATS_TSV" ]; then
                 fi
             fi
             if [ "$_xp_row_w" -gt "$STATS_W" ]; then
-                _XP_EXTRA_PAD=$(printf '%*s' "$(( _xp_row_w - STATS_W ))" '')
+                printf -v _XP_EXTRA_PAD '%*s' "$(( _xp_row_w - STATS_W ))" ''
                 for _bi in "${!STATS_LINES[@]}"; do
                     STATS_LINES[$_bi]="${STATS_LINES[$_bi]}${_XP_EXTRA_PAD}"
                 done
@@ -587,15 +707,20 @@ if [ "$SHOW_STATS" = "true" ] && [ -n "$STATS_TSV" ]; then
             fi
             # Pad the Lv row itself out to the (possibly grown) column width so it
             # matches the stat rows exactly (fixes a latent 1-col under-width).
-            _XP_ROW_PAD=$(printf '%*s' "$(( STATS_W - _xp_row_w ))" '')
+            printf -v _XP_ROW_PAD '%*s' "$(( STATS_W - _xp_row_w ))" ''
             STATS_LINES+=("${_SDIM}${_xp_label}${NC} ${C}${_xp_bar}${NC} ${_SDIM}${_xp_pctstr}${NC}${_xp_toast}${_XP_ROW_PAD}")
             ;;
     esac
 fi
 
-# Combined-mode metrics row: model/context/usage/reset, appended below the
-# stat bars (or as the only row, when SHOW_STATS is off) — same column, so
-# enabling this never pushes the bubble/art further right.
+# Combined-mode metrics: model/context/usage/reset. Rendered on its OWN
+# full-width line ABOVE the buddy block (see the print site before the per-line
+# loop), NOT folded into the stats column. Folding it in grew STATS_W to the
+# long, variable model-name width — which both shoved the buddy cluster right
+# and let the speech bubble crowd the metrics text when the buddy roamed left
+# toward it. A standalone header decouples the two: stats keep their fixed
+# 26-col width and the bubble keeps its room.
+METRICS_HEADER=""
 if [ "$USE_COMBINED" = "true" ]; then
     _METRICS_TSV=$(printf '%s' "$CC_INPUT" | jq -r '
         [
@@ -642,21 +767,10 @@ if [ "$USE_COMBINED" = "true" ]; then
             for (( _mi=1; _mi<${#_METRICS_PARTS[@]}; _mi++ )); do
                 _METRICS_LINE="${_METRICS_LINE} · ${_METRICS_PARTS[$_mi]}"
             done
-            # Model name/percentage lengths vary, so this row can exceed the
-            # fixed STATS_W. Grow STATS_W to fit and backfill already-built
-            # rows with the same extra padding — every row in the stats
-            # column must share one width, or the gap/bubble/art columns
-            # drift on whichever row is narrower.
-            _METRICS_LEN=${#_METRICS_LINE}
-            if [ "$_METRICS_LEN" -gt "$STATS_W" ]; then
-                _EXTRA_PAD=$(printf '%*s' "$(( _METRICS_LEN - STATS_W ))" '')
-                for _bi in "${!STATS_LINES[@]}"; do
-                    STATS_LINES[$_bi]="${STATS_LINES[$_bi]}${_EXTRA_PAD}"
-                done
-                STATS_W=$_METRICS_LEN
-            fi
-            _METRICS_LINE=$(printf '%-*s' "$STATS_W" "$_METRICS_LINE")
-            STATS_LINES+=("${_SDIM}${_METRICS_LINE}${NC}")
+            # Stash for the standalone header line printed above the buddy block.
+            # No STATS_W coupling and no padding: it owns its own full-width line,
+            # so its (variable) length can't push the stats column / bubble / art.
+            METRICS_HEADER="${_SDIM}${_METRICS_LINE}${NC}"
         fi
     fi
 fi
@@ -671,64 +785,113 @@ if [ -n "$BUBBLE" ]; then
     BUBBLE_TEXT="${BUBBLE_TEXT#\"}"
 fi
 
-# ─── Display width (emojis count as 2 cols) ──────────────────────────────────
-# iconv turns the string into a stream of UTF-32LE codepoints, then awk sums
-# widths. Rules mirror server/art.ts:displayWidth — the U+2600-U+27BF range
-# is split by Emoji_Presentation (2) vs text-presentation (1), and VS16
-# (U+FE0F) upgrades the previous narrow symbol to 2 cols (e.g. ❤ + VS16).
-# The ambiguous codepoint list comes from emoji-widths.data, generated by
+# Emoji ambiguous-width data (see dwidth_batch above), generated by
 # scripts/gen-emoji-widths.ts from the Unicode Emoji_Presentation property.
-EMOJI_WIDTHS_DATA="$(dirname "${BASH_SOURCE[0]}")/emoji-widths.data"
-EMOJI_PRES_2600="$(grep -v '^#' "$EMOJI_WIDTHS_DATA" 2>/dev/null | tr -d '\n')"
+# Loaded only when there's bubble text to measure, so on the bubble-less hot
+# path (the common idle tick) this avoids a grep+tr+dirname fork every second.
+if [ -n "$BUBBLE_TEXT" ]; then
+    EMOJI_WIDTHS_DATA="$(dirname "${BASH_SOURCE[0]}")/emoji-widths.data"
+    EMOJI_PRES_2600="$(grep -v '^#' "$EMOJI_WIDTHS_DATA" 2>/dev/null | tr -d '\n')"
+fi
 
-dwidth() {
-    printf '%s' "$1" | iconv -f UTF-8 -t UTF-32LE 2>/dev/null | od -An -tu4 | awk -v pres="$EMOJI_PRES_2600" '
-    BEGIN {
-        n = split(pres, arr)
-        for (k = 1; k <= n; k++) wide[arr[k]] = 1
-    }
-    # Precondition: cp is neither a variation selector (65024-65039) nor ZWJ
-    # (8205); the main loop filters those before calling in.
-    function char_width(cp) {
-        if (cp >= 126976) return 2
-        if (cp >= 9728 && cp <= 10175) return (cp in wide) ? 2 : 1
-        if (cp >= 9472 && cp <= 9631) return 1
-        if (cp >= 12288 && cp <= 40959) return 2
-        if (cp >= 65281 && cp <= 65376) return 2
-        return 1
-    }
-    { for (i = 1; i <= NF; i++) {
-        cp = $i + 0
-        if (cp == 65039) {
-            if (upgradable) { w += 1; upgradable = 0 }
-            continue
-        }
-        if ((cp >= 65024 && cp <= 65038) || cp == 8205) { upgradable = 0; continue }
-        cw = char_width(cp)
-        w += cw
-        upgradable = (cw == 1 && cp >= 9728 && cp <= 10175) ? 1 : 0
-    } }
-    END { print w+0 }'
-}
+# ─── Cluster geometry (shared by dynamic bubble sizing + the layout below) ───
+# These describe the fixed chrome around the roaming cluster. The dynamic bubble
+# sizing (next) and the free-roam layout (further down) both measure against
+# them, so they're defined once here — before either consumer — rather than
+# duplicated. STATS_COUNT/STATS_W/ART_W are all finalized above this point.
+STATS_GAP=2
+STATS_LEFT_MARGIN=1
+# Right-edge reserve. This is NOT dead margin: Claude Code renders the status
+# line inside its own viewport with a small LEFT gutter (a few cols of indent on
+# every row), so a cluster pinned at COLS-1 gets shifted off the right edge and
+# the buddy clips. RIGHT_SAFETY must clear that gutter (plus a little breathing
+# room). It's driven by the configurable bubbleMargin (MARGIN, default 8) so the
+# cushion is tunable per terminal without editing the script. Clamp ≥1 so a
+# config of 0 still reserves a col.
+RIGHT_SAFETY=$MARGIN
+[ "$RIGHT_SAFETY" -lt 1 ] 2>/dev/null && RIGHT_SAFETY=1
+# The bubble→art connector gap is rendered as 3 cols ("-- " / "   "), so the
+# cluster width must count 3 here (not STATS_GAP) or the home position overflows.
+CONNECTOR_W=3
+STATS_BLOCK=0
+[ "$STATS_COUNT" -gt 0 ] && STATS_BLOCK=$(( STATS_LEFT_MARGIN + STATS_W + STATS_GAP ))
+
+# ─── Dynamic bubble sizing (fit the box to the current width) ────────────────
+# The speech bubble adapts its size AND shape to the room available in the
+# current terminal instead of being a fixed-width box that's dropped whole the
+# moment it doesn't fit:
+#   • shrink  — when the DEFAULT width (config bubbleWidth) won't fit the cluster,
+#     narrow INNER_W so the same text wraps to more, shorter rows;
+#   • grow    — when a single word is wider than the configured box, widen it (up
+#     to what fits) so the word never spills past the border;
+#   • drop    — only when even the narrowest usable box can't fit, so the sprite
+#     (the most important element) stays visible.
+# Recomputed every tick, so a resize — or the buddy roaming into a wider window —
+# re-grows the bubble back toward the configured width when the room returns.
+# FIT_INNER mirrors the layout drop check's terms exactly, so a KEPT bubble is
+# guaranteed fully in-window.
+BUBBLE_MIN_INNER=8   # visual floor: never show a box narrower than this
+WORD_W=()            # per-word display widths, reused by the wrap loop below
+if [ -n "$BUBBLE_TEXT" ]; then
+    # read -ra: IFS word-split WITHOUT pathname expansion — reactions canonically
+    # contain asterisks (*narrows eyes*), and a bare unquoted expansion would
+    # glob them against the CWD.
+    read -ra WORDS <<< "$BUBBLE_TEXT"
+    _max_word_w=0
+    # One fork chain for ALL words (perf: N dwidth pipelines → 1). A garbled
+    # width degrades to 0, same as the old per-word pipeline's failure mode.
+    while IFS= read -r _w; do
+        case "$_w" in ''|*[!0-9]*) _w=0 ;; esac
+        WORD_W+=("$_w")
+        [ "$_w" -gt "$_max_word_w" ] && _max_word_w=$_w
+    done < <(dwidth_batch "${WORDS[@]}")
+    # A total pipeline failure emits fewer widths than words — zero-fill so the
+    # wrap arithmetic below never sees an empty operand.
+    while [ "${#WORD_W[@]}" -lt "${#WORDS[@]}" ]; do WORD_W+=(0); done
+    # A box can't be thinner than its widest single word (a word can't wrap
+    # inside itself; a thinner box pushes it past the border and clips the
+    # cluster). The narrowest USABLE box is that floor, but at least the visual
+    # floor for readability.
+    _min_inner=$BUBBLE_MIN_INNER
+    [ "$_max_word_w" -gt "$_min_inner" ] && _min_inner=$_max_word_w
+    # Ideal box = the configured width, grown if a lone word demands more.
+    _ideal=$INNER_W
+    [ "$_max_word_w" -gt "$_ideal" ] && _ideal=$_max_word_w
+    # Largest INNER_W the cluster tolerates at this width; box chrome is 4 cols
+    # ("| " + " |"). Same terms as the layout drop check below.
+    FIT_INNER=$(( COLS - STATS_BLOCK - RIGHT_SAFETY - ART_W - CONNECTOR_W - 4 ))
+    if [ "$_ideal" -le "$FIT_INNER" ]; then
+        INNER_W=$_ideal                 # fits (grown for a long word if needed)
+    elif [ "$FIT_INNER" -ge "$_min_inner" ]; then
+        INNER_W=$FIT_INNER              # shrink the box to fit
+    else
+        BUBBLE_TEXT=""; WORD_W=()       # even the narrowest box won't fit → drop
+    fi
+fi
 
 # ─── Word-wrap bubble text ────────────────────────────────────────────────────
+# TEXT_W tracks each wrapped line's display width alongside it: the wrap already
+# sums the word widths (spaces are 1 col and reset no dwidth state), so the
+# padding below needs no second measurement pass.
 TEXT_LINES=()
+TEXT_W=()
 if [ -n "$BUBBLE_TEXT" ]; then
-    WORDS=($BUBBLE_TEXT)
     CUR_LINE=""
     CUR_W=0
+    _wi=0
     for word in "${WORDS[@]}"; do
-        word_w=$(dwidth "$word")
+        word_w=${WORD_W[$_wi]}
+        _wi=$(( _wi + 1 ))
         if [ -z "$CUR_LINE" ]; then
             CUR_LINE="$word"; CUR_W=$word_w
         elif [ $(( CUR_W + 1 + word_w )) -le $INNER_W ]; then
             CUR_LINE="$CUR_LINE $word"; CUR_W=$(( CUR_W + 1 + word_w ))
         else
-            TEXT_LINES+=("$CUR_LINE")
+            TEXT_LINES+=("$CUR_LINE"); TEXT_W+=("$CUR_W")
             CUR_LINE="$word"; CUR_W=$word_w
         fi
     done
-    [ -n "$CUR_LINE" ] && TEXT_LINES+=("$CUR_LINE")
+    [ -n "$CUR_LINE" ] && { TEXT_LINES+=("$CUR_LINE"); TEXT_W+=("$CUR_W"); }
 fi
 
 TEXT_COUNT=${#TEXT_LINES[@]}
@@ -739,15 +902,18 @@ BOX_W=$(( INNER_W + 4 ))
 BUBBLE_LINES=()
 BUBBLE_TYPES=()  # "border" or "text" — determines coloring
 if [ $TEXT_COUNT -gt 0 ]; then
-    # Top border
-    BORDER=$(printf '%*s' "$(( BOX_W - 2 ))" '' | tr ' ' '-')
+    # Top border (parameter substitution beats a printf|tr fork pair)
+    printf -v BORDER '%*s' "$(( BOX_W - 2 ))" ''
+    BORDER=${BORDER// /-}
     BUBBLE_LINES+=(".${BORDER}.")
     BUBBLE_TYPES+=("border")
-    # Text rows: "| text padded |"
+    # Text rows: "| text padded |" — widths were tracked during the wrap.
+    _ti=0
     for tl in "${TEXT_LINES[@]}"; do
-        tpad=$(( INNER_W - $(dwidth "$tl") ))
+        tpad=$(( INNER_W - ${TEXT_W[$_ti]} ))
+        _ti=$(( _ti + 1 ))
         [ "$tpad" -lt 0 ] && tpad=0
-        padding=$(printf '%*s' "$tpad" '')
+        printf -v padding '%*s' "$tpad" ''
         BUBBLE_LINES+=("| ${tl}${padding} |")
         BUBBLE_TYPES+=("text")
     done
@@ -758,30 +924,44 @@ fi
 
 BUBBLE_COUNT=${#BUBBLE_LINES[@]}
 
-# ─── Right-align: [stats] [bubble] art, columns to the left of the art ───────
-# The bubble+art block stays flush against the right edge regardless of the
-# stats panel — TOTAL_W/PAD below are unchanged by the stats column. Instead,
-# the stats panel gets a small fixed left margin (flush to the terminal's
-# left edge) and the padding that used to precede it is moved to sit between
-# the stats panel and the bubble, so the bubble/art position never shifts.
-GAP=2
-STATS_GAP=2
-STATS_LEFT_MARGIN=1
-TOTAL_W=$ART_W
-[ $BUBBLE_COUNT -gt 0 ] && TOTAL_W=$(( BOX_W + GAP + TOTAL_W ))
-[ $STATS_COUNT -gt 0 ] && TOTAL_W=$(( STATS_W + STATS_GAP + TOTAL_W ))
-# §7.B wide: reserve the left lane once, here — shifts the bubble+art block left
-# by the constant WANDER_LEFT (0 unless wide). Offset-independent, so the bubble
-# position is identical on every tick.
-PAD=$(( COLS - TOTAL_W - MARGIN - WANDER_LEFT ))
-[ "$PAD" -lt 0 ] && PAD=0
+# ─── Free-roam layout: left-anchored stats + a roaming buddy cluster ─────────
+# (design-movement §11.) The stats panel (when shown) is anchored at the left
+# edge. The buddy CLUSTER = [bubble + connector + art] travels as one rigid block
+# between the stats panel (left bound) and the window edge (right bound), and is
+# clamped to stay fully in-window — so the buddy never clips when stats+cluster
+# fit in COLS (the old right-align with a fixed MARGIN reserve could overflow at
+# narrow widths). ART_W is the live sprite width (14 idle, the wide scene during
+# a fight). STATS_GAP/STATS_LEFT_MARGIN/RIGHT_SAFETY/CONNECTOR_W/STATS_BLOCK are
+# defined once up in the cluster-geometry block (dynamic bubble sizing shares them).
+CLUSTER_W=$ART_W
+[ $BUBBLE_COUNT -gt 0 ] && CLUSTER_W=$(( BOX_W + CONNECTOR_W + CLUSTER_W ))
+# Degradation backstop (design-movement §11 / OQ-P5.2): when stats + the full
+# cluster can't fit in COLS, DROP THE BUBBLE so the buddy sprite (the rightmost,
+# most important element) stays in-window. Sprite visibility always wins over the
+# speech bubble at narrow widths. With dynamic sizing above, a kept bubble is
+# already sized to fit (FIT_INNER shares these exact terms), so this is now a
+# defensive guard rather than the primary drop path.
+if [ $BUBBLE_COUNT -gt 0 ] && [ $(( COLS - STATS_BLOCK - CLUSTER_W - RIGHT_SAFETY )) -lt 0 ]; then
+    BUBBLE_COUNT=0
+    BUBBLE_LINES=()
+    CLUSTER_W=$ART_W
+fi
+# The full horizontal span the cluster's left edge may occupy. Clamped ≥ 0; when
+# 0 (terminal too narrow even for stats + the lone sprite) the cluster pins to
+# its left bound and only that absolute-narrow case clips.
+SPAN=$(( COLS - STATS_BLOCK - CLUSTER_W - RIGHT_SAFETY ))
+[ "$SPAN" -lt 0 ] && SPAN=0
+# Home is the right edge (ROAM=SPAN); WANDER_OFF ambles the cluster LEFT toward
+# the stats, clamped so it can neither cross the stats nor leave the window.
+ROAM=$(( SPAN - WANDER_OFF ))
+[ "$ROAM" -lt 0 ] && ROAM=0
+[ "$ROAM" -gt "$SPAN" ] && ROAM=$SPAN
 
 if [ $STATS_COUNT -gt 0 ]; then
     LEAD_PAD=$STATS_LEFT_MARGIN
-    MID_PAD=$(( PAD - STATS_LEFT_MARGIN ))
-    [ "$MID_PAD" -lt 0 ] && MID_PAD=0
+    MID_PAD=$ROAM
 else
-    LEAD_PAD=$PAD
+    LEAD_PAD=$ROAM
     MID_PAD=0
 fi
 
@@ -789,12 +969,14 @@ fi
 # which doubles the spacer and pushes content off-screen. Use regular spaces instead.
 # MID_SPACER sits mid-line (never trimmed), so it's always plain spaces — only
 # the line-leading SPACER needs the non-trimmable Braille Blank.
-case "$(uname -s)" in
-    MINGW*|CYGWIN*|MSYS*) SPACER=$(printf '%*s' "$LEAD_PAD" '') ;;
-    *)                     SPACER=$(printf "${B}%${LEAD_PAD}s" "") ;;
+# $OSTYPE is a bash builtin variable (msys on Git Bash/MSYS2, cygwin on Cygwin)
+# — same platforms uname -s matched, without the fork.
+case "$OSTYPE" in
+    msys*|cygwin*) printf -v SPACER '%*s' "$LEAD_PAD" '' ;;
+    *)             printf -v SPACER "${B}%${LEAD_PAD}s" "" ;;
 esac
-MID_SPACER=$(printf '%*s' "$MID_PAD" '')
-STATS_GAP_STR=$(printf '%*s' "$STATS_GAP" '')
+printf -v MID_SPACER '%*s' "$MID_PAD" ''
+printf -v STATS_GAP_STR '%*s' "$STATS_GAP" ''
 
 # ─── Idle wander hop headroom (movement §7.A, flag wanderHop) ───────────────
 # Reserve HOP_RESERVE blank rows above the art ONLY when the server baked a
@@ -840,16 +1022,25 @@ if [ $BUBBLE_COUNT -gt 2 ]; then
     LAST_TEXT=$(( BUBBLE_COUNT - 2 ))
     CONNECTOR_BI=$(( (FIRST_TEXT + LAST_TEXT) / 2 ))
 fi
-# Idle wander (design-movement §5c): retract the connector while the buddy is
-# away from home — the bubble box stays whole, it just stops pointing at thin
-# air. Reattaches at offset 0 (home). The "   " gap keeps the width identical.
-# §5e exception: when wanderBubble is on, the bubble travels WITH the buddy, so
-# the connector stays attached for horizontal motion — only a vertical hop
-# (WANDER_ROW>0), where the mouth is on a different row, still retracts it.
-if [ "$WANDER_BUBBLE" = "true" ]; then
-    [ "$WANDER_ROW" -gt 0 ] && CONNECTOR_BI=-1
-else
-    { [ "$WANDER_OFF" -gt 0 ] || [ "$WANDER_ROW" -gt 0 ]; } && CONNECTOR_BI=-1
+# Free-roam (design-movement §11): the bubble now ALWAYS travels with the buddy
+# as one rigid cluster (the chosen default), so the connector stays attached for
+# horizontal motion regardless of how far the buddy roams. Only a vertical hop
+# (WANDER_ROW>0), where the mouth sits on a different row, still retracts it.
+[ "$WANDER_ROW" -gt 0 ] && CONNECTOR_BI=-1
+
+# ─── Combined-mode metrics header (standalone full-width line, above) ────────
+# Printed before the buddy block so it never shares a row with — or inflates the
+# width of — the stats column/bubble. Indented to line up with the stats panel's
+# left edge; the lead uses Braille Blank (like SPACER) so a JS .trim() can't eat
+# it and shift the header left of the stats below it.
+if [ -n "$METRICS_HEADER" ]; then
+    # Same lead idiom as SPACER (B + margin spaces) so the header aligns with the
+    # stats column below whether or not the stats panel itself is shown.
+    case "$OSTYPE" in
+        msys*|cygwin*) printf -v _MH_LEAD '%*s' "$STATS_LEFT_MARGIN" '' ;;
+        *)             printf -v _MH_LEAD "${B}%${STATS_LEFT_MARGIN}s" "" ;;
+    esac
+    echo "${_MH_LEAD}${METRICS_HEADER}"
 fi
 
 # ─── Output: merged stats panel + bubble + connector + art per line ──────────
@@ -858,6 +1049,11 @@ TOTAL_STATS=$(( STATS_START + STATS_COUNT ))
 MAX_LINES=$ART_COUNT_TOTAL
 [ $TOTAL_BUBBLE -gt $MAX_LINES ] && MAX_LINES=$TOTAL_BUBBLE
 [ $TOTAL_STATS -gt $MAX_LINES ] && MAX_LINES=$TOTAL_STATS
+# Blank fillers, built once: the $(printf) form inside the loop forked a
+# subshell per blank row, every tick.
+printf -v _ART_FILL '%*s' "$ART_W" ''
+printf -v _STATS_FILL '%*s' "$STATS_W" ''
+printf -v _BOX_FILL '%*s' "$BOX_W" ''
 for (( i=0; i<MAX_LINES; i++ )); do
     # Art part: actual art line (shifted down by the hop headroom, up by the
     # live hop row) or blank filler.
@@ -865,7 +1061,7 @@ for (( i=0; i<MAX_LINES; i++ )); do
     if [ $ai -ge 0 ] && [ $ai -lt $ART_COUNT ]; then
         art_part="${ALL_COLORS[$ai]}${ALL_LINES[$ai]}${NC}"
     else
-        art_part=$(printf '%*s' "$ART_W" '')
+        art_part=$_ART_FILL
     fi
 
     line_out="$SPACER"
@@ -876,7 +1072,7 @@ for (( i=0; i<MAX_LINES; i++ )); do
         if [ $si -ge 0 ] && [ $si -lt $STATS_COUNT ]; then
             line_out+="${STATS_LINES[$si]}"
         else
-            line_out+=$(printf '%*s' "$STATS_W" '')
+            line_out+=$_STATS_FILL
         fi
         line_out+="$STATS_GAP_STR"
         line_out+="$MID_SPACER"
@@ -911,15 +1107,14 @@ for (( i=0; i<MAX_LINES; i++ )); do
                 line_out+="${C}${pipe_l}${NC}${DIM}${inner}${NC}${C}${pipe_r}${NC}${gap}"
             fi
         else
-            line_out+=$(printf '%*s' "$BOX_W" '')
+            line_out+=$_BOX_FILL
             line_out+="   "
         fi
     fi
 
-    # Idle wander (design-movement §5d): nudge the art block right into the
-    # reclaimed margin. In the default mode this is the whole offset (bubble
-    # pinned); with wanderBubble on it's empty because the offset already shifted
-    # the bubble cluster above (art rode along, connector attached).
+    # Idle wander (design-movement §11 free-roam): WANDER_PAD_ART is empty — the
+    # roam offset already shifted the whole cluster's leading pad above (bubble +
+    # connector + art ride together as one block, connector stays attached).
     line_out+="$WANDER_PAD_ART"
     line_out+="$art_part"
     echo "$line_out"

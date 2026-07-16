@@ -1,7 +1,7 @@
 ---
 name: buddy
 description: "Show, pet, or manage your coding companion. Use when the user types /buddy or mentions their companion by name."
-argument-hint: "[show|pet|stats [bar [on|off]]|xp|upgrades [buy|refund|title <id>|ascend]|badge [on|off]|gamefeel [off|subtle|full]|wander [on|off|hop|wide|bubble|status]|brag|mood|memory [resolve <bug-id>]|theme [dark|light|auto]|help|off|on|rename <name>|personality <text>|achievements|summon [slot]|save [slot]|list|dismiss <slot>|pick|frequency [seconds]|style [classic|round]|position [top|left]|rarity [on|off]|rainbow [#hex ...]|statusline [on|off]|uninstall]"
+argument-hint: "[show|menu|pet|stats [bar [on|off]]|xp|upgrades [buy|refund|title <id>|ascend]|badge [on|off]|gamefeel [off|subtle|full]|wander [on|off|hop|wide|bubble|status]|brag|mood|memory [resolve <bug-id>]|theme [dark|light|auto]|help|off|on|rename <name>|personality <text>|achievements|summon [slot]|save [slot]|list|dismiss <slot>|pick|frequency [seconds]|style [classic|round]|position [top|left]|rarity [on|off]|rainbow [#hex ...]|statusline [on|off]|uninstall]"
 allowed-tools: mcp__claude_buddy__*, Bash
 ---
 
@@ -40,6 +40,7 @@ Based on `$ARGUMENTS`:
 | Input                    | Action                                                                                       |
 | ------------------------ | -------------------------------------------------------------------------------------------- |
 | _(empty)_ or `show`      | Call `buddy_show`                                                                            |
+| `menu`                   | Call `buddy_menu` (no args → root); follow the MENU NAVIGATION directive to drive the interactive menu |
 | `help`                   | Call `buddy_help`                                                                            |
 | `pet`                    | Call `buddy_pet`                                                                             |
 | `stats`                  | Call `buddy_stats`                                                                           |
@@ -60,8 +61,6 @@ Based on `$ARGUMENTS`:
 | `wander` or `wander status` | Call `buddy_wander` with no args (report idle-wander settings)                            |
 | `wander on\|off`         | Call `buddy_wander` with `enabled=<true\|false>`                                             |
 | `wander hop [on\|off]`   | Call `buddy_wander` with `hop=<true\|false>` (bare `hop` ⇒ `hop=true`)                       |
-| `wander wide [on\|off]`  | Call `buddy_wander` with `wide=<true\|false>` (bare `wide` ⇒ `wide=true`)                    |
-| `wander bubble [on\|off]`| Call `buddy_wander` with `bubble=<true\|false>` (bare `bubble` ⇒ `bubble=true`; bubble travels with the buddy) |
 | `brag`                   | Call `buddy_brag` (paste-able markdown brag card; add `plain=true` for emoji-light)          |
 | `mood`                   | Call `buddy_mood`                                                                            |
 | `memory`                 | Call `buddy_memory` with no args                                                             |

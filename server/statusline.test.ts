@@ -8,7 +8,7 @@ import { describe, test, expect, beforeEach } from "bun:test";
 import { mkdtempSync, writeFileSync, readFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { setBuddyStatusLine, unsetBuddyStatusLine } from "./state.ts";
+import { setBuddyStatusLine, unsetBuddyStatusLine, DEFAULT_CONFIG } from "./state.ts";
 
 describe("buddy statusline settings patch", () => {
   let settingsPath: string;
@@ -82,5 +82,56 @@ describe("buddy statusline settings patch", () => {
     const result = JSON.parse(readFileSync(settingsPath, "utf8"));
     expect(result.statusLine.command).not.toContain("\\");
     expect(result.statusLine.command).toContain("/");
+  });
+});
+
+// ─── TS ↔ bash defaults parity ────────────────────────────────────────────────
+//
+// buddy-status.sh mirrors DEFAULT_CONFIG's fallbacks in two places (the
+// pre-read initializers for a missing config.json, and the jq `//` defaults for
+// a config missing a field). Those copies drifted once (bubbleWidth 28 vs 44 —
+// changing an unrelated setting visibly narrowed the bubble), so pin them to
+// the exported DEFAULT_CONFIG.
+
+describe("buddy-status.sh config defaults parity", () => {
+  const script = readFileSync(
+    join(import.meta.dir, "..", "statusline", "buddy-status.sh"),
+    "utf8",
+  );
+
+  /** The jq `.key // <fallback>` default for a config field, unquoted. */
+  function jqFallback(key: string): string {
+    const m = script.match(new RegExp(`\\.${key} // ("[^"]*"|[a-z0-9]+)`));
+    expect(m).not.toBeNull();
+    return m![1].replaceAll('"', "");
+  }
+
+  /** A `NAME=value` initializer at line start (the missing-file defaults). */
+  function initializer(name: string): string {
+    const m = script.match(new RegExp(`^${name}=("?)([^"\\n]*)\\1$`, "m"));
+    expect(m).not.toBeNull();
+    return m![2];
+  }
+
+  test("jq field fallbacks match DEFAULT_CONFIG", () => {
+    expect(jqFallback("gameFeel")).toBe(DEFAULT_CONFIG.gameFeel);
+    expect(jqFallback("theme")).toBe(DEFAULT_CONFIG.theme);
+    expect(Number(jqFallback("reactionTTL"))).toBe(DEFAULT_CONFIG.reactionTTL);
+    expect(Number(jqFallback("bubbleWidth"))).toBe(DEFAULT_CONFIG.bubbleWidth);
+    expect(Number(jqFallback("bubbleMargin"))).toBe(DEFAULT_CONFIG.bubbleMargin);
+    expect(jqFallback("showStats")).toBe(String(DEFAULT_CONFIG.showStats));
+    expect(jqFallback("showPrestigeBadge")).toBe(
+      String(DEFAULT_CONFIG.showPrestigeBadge),
+    );
+    expect(jqFallback("useCombinedStatus")).toBe(
+      String(DEFAULT_CONFIG.useCombinedStatus),
+    );
+  });
+
+  test("pre-read initializers match DEFAULT_CONFIG (missing config.json)", () => {
+    expect(initializer("GAME_FEEL")).toBe(DEFAULT_CONFIG.gameFeel);
+    expect(Number(initializer("REACTION_TTL"))).toBe(DEFAULT_CONFIG.reactionTTL);
+    expect(Number(initializer("INNER_W"))).toBe(DEFAULT_CONFIG.bubbleWidth);
+    expect(Number(initializer("MARGIN"))).toBe(DEFAULT_CONFIG.bubbleMargin);
   });
 });

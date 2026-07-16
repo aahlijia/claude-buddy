@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
 import type { BuddyBones } from "./engine";
+import { ITEMS } from "./items";
 import type { Equipment, ItemId } from "./items";
 import {
   equipError,
   equipItem,
+  gearArtOf,
   gearedBones,
   renderLoadoutCard,
   resolveAppearance,
@@ -146,10 +148,95 @@ describe("resolveAppearance (derive-on-read)", () => {
     expect(a.flags).toContain("trinket_duck");
   });
 
+  test("trinket art surfaces in the resolved view; empty slots yield \"\"", () => {
+    const a = resolveAppearance(bones(), { trinket: "rubber_duck" });
+    expect(a.trinketArt).toBe(",>");
+    expect(a.weaponArt).toBe("");
+    const bare = resolveAppearance(bones(), {});
+    expect(bare.trinketArt).toBe("");
+  });
+
+  test("gearArtOf maps art glyphs to GearArt and collapses a bare loadout", () => {
+    const geared = resolveAppearance(bones(), {
+      weapon: "foam_sword",
+      trinket: "rubber_duck",
+    });
+    expect(gearArtOf(geared)).toEqual({ weapon: "†", trinket: ",>" });
+    // Weapon-only: the empty trinket becomes undefined, not "".
+    const swordOnly = resolveAppearance(bones(), { weapon: "foam_sword" });
+    expect(gearArtOf(swordOnly)).toEqual({ weapon: "†", trinket: undefined });
+    // Nothing renders ⇒ undefined so callers can pass it straight through.
+    expect(gearArtOf(resolveAppearance(bones(), {}))).toBeUndefined();
+    // Headgear alone has no overlay glyph (it renders via the hat effect).
+    expect(
+      gearArtOf(resolveAppearance(bones(), { headgear: "lucky_hat" })),
+    ).toBeUndefined();
+  });
+
   test("innate cosmetic flags are preserved and merged", () => {
     const a = resolveAppearance(bones(), { trinket: "rubber_duck" }, ["aura_shiny"]);
     expect(a.flags).toContain("aura_shiny");
     expect(a.flags).toContain("trinket_duck");
+  });
+
+  test("default upgradeEffects ([]) is byte-identical to omitting the param", () => {
+    const b = bones();
+    const withDefault = resolveAppearance(b, { headgear: "lucky_hat" }, ["x"]);
+    const explicitEmpty = resolveAppearance(b, { headgear: "lucky_hat" }, ["x"], ITEMS, []);
+    expect(explicitEmpty).toEqual(withDefault);
+  });
+});
+
+describe("resolveAppearance (upgrade effects, derive-on-read Phase 1)", () => {
+  test("upgrade hats fold in purchase order — later purchase wins", () => {
+    const a = resolveAppearance(bones(), {}, [], ITEMS, [
+      { type: "hat", hat: "tinyduck" },
+      { type: "hat", hat: "crown" },
+    ]);
+    expect(a.hat).toBe("crown");
+  });
+
+  test("equipped headgear overrides an owned upgrade hat", () => {
+    const a = resolveAppearance(
+      bones(),
+      { headgear: "lucky_hat" },
+      [],
+      ITEMS,
+      [{ type: "hat", hat: "crown" }],
+    );
+    expect(a.hat).toBe("beanie"); // equipment folds last, wins
+  });
+
+  test("upgrade and item stat effects both sum onto the peak stat, clamped at 100", () => {
+    const b = bones({
+      peak: "DEBUGGING",
+      stats: { ...bones().stats, DEBUGGING: 97 },
+    });
+    const a = resolveAppearance(
+      b,
+      { weapon: "foam_sword" }, // stat:+1
+      [],
+      ITEMS,
+      [{ type: "stat", amount: 3 }],
+    );
+    expect(a.stats.DEBUGGING).toBe(100); // 97 + 3 clamped to 100, + 1 stays 100
+    expect(b.stats.DEBUGGING).toBe(97); // innate bones untouched
+  });
+
+  test("an owned shiny upgrade ORs onto innate shiny and implies aura_shiny", () => {
+    const b = bones({ shiny: false });
+    const a = resolveAppearance(b, {}, [], ITEMS, [{ type: "shiny" }]);
+    expect(a.shiny).toBe(true);
+    expect(a.flags).toContain("aura_shiny");
+    expect(b.shiny).toBe(false); // innate bones untouched
+  });
+
+  test("upgrade flags union with innate cosmetic flags", () => {
+    const a = resolveAppearance(bones(), {}, ["existing_flag"], ITEMS, [
+      { type: "flag", flag: "has_third_eye" },
+    ]);
+    expect(a.flags).toContain("existing_flag");
+    expect(a.flags).toContain("has_third_eye");
   });
 });
 

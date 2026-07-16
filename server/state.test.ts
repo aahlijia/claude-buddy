@@ -14,9 +14,12 @@ import {
   formatRaritySetLine,
   computeXpPct,
   buildCelebration,
+  pickCelebration,
   resolveEmotion,
   autoQuietActive,
+  autoQuietReasonFor,
   clampGameFeel,
+  coerceGameFeel,
   deepFocusActive,
   FOCUS_MIN_SECONDS,
   type Celebration,
@@ -221,6 +224,48 @@ describe("buildCelebration (game-feel §2/§2.5)", () => {
   });
 });
 
+describe("pickCelebration (award ladder, incl. idle-RPG fight toast)", () => {
+  const NOW = 1_000_000_000_000; // fixed Date.now()-style ms
+  const FIGHT = "🗡 squashed a null-pointer! +3 pt";
+
+  test("level-up wins the slot over everything else", () => {
+    const got = pickCelebration(7, true, true, FIGHT, true, "loot", NOW);
+    expect(got.celebration?.kind).toBe("levelup");
+    expect(got.celebration?.text).toContain("LEVEL 7");
+    expect(got.cause).toBe("levelup");
+  });
+
+  test("a completed whim beats the fight summary", () => {
+    const got = pickCelebration(3, false, true, FIGHT, false, "loot", NOW);
+    expect(got.celebration?.kind).toBe("whim");
+    expect(got.cause).toBe("whim");
+  });
+
+  test("the fight summary surfaces as a loot-kind toast (the clobber fix)", () => {
+    const got = pickCelebration(3, false, false, FIGHT, false, "loot", NOW);
+    expect(got.celebration).toEqual({ text: FIGHT, kind: "loot", at: NOW });
+    expect(got.cause).toBe("loot");
+  });
+
+  test("the fight summary beats the one-time discovery announce", () => {
+    const got = pickCelebration(3, false, false, FIGHT, true, "loot", NOW);
+    expect(got.celebration?.kind).toBe("loot");
+    expect(got.celebration?.text).toBe(FIGHT);
+  });
+
+  test("discovery surfaces when nothing above claims the bubble", () => {
+    const got = pickCelebration(3, false, false, null, true, "loot", NOW);
+    expect(got.celebration?.kind).toBe("discovery");
+    expect(got.cause).toBeUndefined();
+  });
+
+  test("falls back to a null celebration with the caller's cause", () => {
+    const got = pickCelebration(3, false, false, null, false, "loot", NOW);
+    expect(got.celebration).toBeNull();
+    expect(got.cause).toBe("loot");
+  });
+});
+
 describe("resolveEmotion (game-feel FR-A4)", () => {
   test("maps known reasons to emotions", () => {
     expect(resolveEmotion("pet", "full")).toBe("happy");
@@ -322,5 +367,47 @@ describe("deepFocusActive (game-feel FR-E1 deep-focus)", () => {
     expect(
       deepFocusActive({ sessionElapsedSec: null, hasFreshError: false }),
     ).toBe(false);
+  });
+});
+
+describe("autoQuietReasonFor (pure core of the auto-quiet clamp)", () => {
+  test("an error-family reason reports error-spike, regardless of focus", () => {
+    expect(autoQuietReasonFor("error", false, null)).toBe("error-spike");
+    expect(
+      autoQuietReasonFor("test-fail", true, FOCUS_MIN_SECONDS + 100),
+    ).toBe("error-spike");
+  });
+
+  test("deep focus only with the opt-in AND a long session", () => {
+    expect(
+      autoQuietReasonFor(undefined, true, FOCUS_MIN_SECONDS),
+    ).toBe("deep-focus");
+    expect(
+      autoQuietReasonFor(undefined, false, FOCUS_MIN_SECONDS),
+    ).toBeNull();
+    expect(
+      autoQuietReasonFor(undefined, true, FOCUS_MIN_SECONDS - 1),
+    ).toBeNull();
+    expect(autoQuietReasonFor(undefined, true, null)).toBeNull();
+  });
+
+  test("a non-spike reason does not clamp", () => {
+    expect(autoQuietReasonFor("pet", false, null)).toBeNull();
+  });
+});
+
+describe("coerceGameFeel", () => {
+  test("passes valid levels through", () => {
+    expect(coerceGameFeel("off")).toBe("off");
+    expect(coerceGameFeel("subtle")).toBe("subtle");
+    expect(coerceGameFeel("full")).toBe("full");
+  });
+
+  test("coerces anything else to the documented default (mirrors bash)", () => {
+    expect(coerceGameFeel("loud")).toBe("subtle");
+    expect(coerceGameFeel("")).toBe("subtle");
+    expect(coerceGameFeel(undefined)).toBe("subtle");
+    expect(coerceGameFeel(3)).toBe("subtle");
+    expect(coerceGameFeel(true)).toBe("subtle");
   });
 });

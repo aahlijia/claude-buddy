@@ -7,6 +7,8 @@
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { join, resolve, dirname } from "path";
@@ -84,19 +86,33 @@ import {
   equipFromInventory,
   unequipToInventory,
   buyShopItem,
+  ownedUpgradeEffects,
   MAX_LEVEL,
   PRESTIGE_MAX,
   computeLevel,
 } from "./xp";
-import { gearedBones, renderLoadoutCard } from "./equipment";
-import { SLOTS, findItem, type Slot } from "./items";
+import { gearArtOf, resolveAppearance, renderLoadoutCard } from "./equipment";
+import { ITEMS, SLOTS, findItem, type Slot } from "./items";
 import {
   shopListing,
   shopStateOf,
   renderShopCard,
   buyableChoices,
-  choicesMarker,
+  shopAsk,
 } from "./shop";
+import {
+  navMarker,
+  advance,
+  type MenuEnvelope,
+  type NavAsk,
+  type RouteResult,
+} from "./menu";
+import {
+  MENU_TOOLS,
+  runTool,
+  type ToolResult,
+  type CapturedHandler,
+} from "./registry";
 import {
   getMood,
   shiftMood,
@@ -128,10 +144,21 @@ function getInstructions(): string {
     `with a short in-character response (surprise, recognition, dry wit — fits the personality).`,
     `Display the tool result verbatim. This is the only time to call buddy_react proactively.`,
     ``,
-    `SHOP MENUS: When a buddy_shop result contains a "buddy:choices" HTML comment,`,
-    `present those options to the user with AskUserQuestion (a single-select`,
-    `"What would you like to buy?"). On their pick, call buddy_shop buy=<id>; if they`,
-    `decline, do nothing. Never offer items that aren't in the choices block.`,
+    `MENU NAVIGATION: buddy_menu (and tools routed from it) may return a visible`,
+    `card followed by a hidden "buddy:nav" marker. If there is NO buddy:nav marker,`,
+    `print the result verbatim. Otherwise print everything before the marker`,
+    `verbatim, NEVER print the marker, and act on its JSON — do not reshape it:`,
+    `- If it has "ask": call AskUserQuestion with that one object as its single`,
+    `  question (questions: [ask]) — it is already complete; do not add, drop, or`,
+    `  rename fields. On pick, call ask.then.tool with ask.then.args merged with`,
+    `  { [ask.then.pick_arg]: option.value ?? option.label }. Nothing else.`,
+    `- If it has "do": perform exactly that one instruction. prompt → ask the user`,
+    `  do.ask, then call do.tool with the answer as do.arg. shell → tell the user`,
+    `  to run \`! <do.command>\` themselves. sequence → run the named orchestration`,
+    `  (e.g. "uninstall", per the skill).`,
+    `If the user picks Other and types a buddy command, route it as if typed after`,
+    `/buddy; if they type "back" or "menu", call buddy_menu (no args). Never`,
+    `re-present a menu without the user advancing it.`,
     ``,
     `PAIR-PROGRAMMING: When you notice a teachable moment in the code, call buddy_suggest.`,
     `Patterns to watch for:`,
@@ -160,6 +187,22 @@ const server = new McpServer(
     instructions: getInstructions(),
   },
 );
+
+// ─── Tool registry: in-process dispatch for buddy_menu (Phase B) ─────────────
+// Types, MENU_TOOLS dict, and runTool live in registry.ts (importable without
+// starting the server). registerTool stays here: it closes over `server` and
+// populates the shared MENU_TOOLS by reference.
+
+/** Like `server.tool`, but also captures the handler for in-process routing. */
+function registerTool<Args extends ZodRawShapeCompat>(
+  name: string,
+  description: string,
+  schema: Args,
+  handler: ToolCallback<Args>,
+): void {
+  server.tool(name, description, schema, handler);
+  MENU_TOOLS[name] = handler as unknown as CapturedHandler;
+}
 
 // ─── Helper: ensure companion exists ────────────────────────────────────────
 
@@ -221,7 +264,7 @@ function activeSlot(): string {
 
 // ─── Tool: buddy_show ───────────────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_show",
   "Show the coding companion with full ASCII art card, stats, and personality",
   {},
@@ -234,14 +277,29 @@ server.tool(
     // Use markdown rendering for the MCP tool response — Claude Code's UI
     // doesn't render raw ANSI escape codes, so we return pure markdown with
     // unicode rarity dots instead of RGB-colored borders.
-    // Render with equipment folded in (derive-on-read): equipped headgear and
-    // stat-bearing gear show on the card without mutating the innate bones.
+    // Render with equipment folded in (derive-on-read): equipped headgear,
+    // stat-bearing gear, and the weapon/trinket sprite overlays all show on
+    // the card without mutating the innate bones.
     const xp = getXpState();
+    const appearance = resolveAppearance(
+      companion.bones,
+      xp.equipment,
+      xp.cosmeticFlags,
+      ITEMS,
+      ownedUpgradeEffects(xp),
+    );
     const card = renderCompanionCardMarkdown(
-      gearedBones(companion.bones, xp.equipment, xp.cosmeticFlags),
+      {
+        ...companion.bones,
+        hat: appearance.hat,
+        shiny: appearance.shiny,
+        stats: appearance.stats,
+      },
       companion.name,
       companion.personality,
       reactionText,
+      0,
+      gearArtOf(appearance),
     );
 
     writeStatusState(companion, { reaction: reaction?.reaction });
@@ -265,7 +323,7 @@ server.tool(
 
 // ─── Tool: buddy_pet ────────────────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_pet",
   "Pet your coding companion — they react with happiness",
   {},
@@ -307,7 +365,7 @@ server.tool(
 
 // ─── Tool: buddy_stats ──────────────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_stats",
   "Show detailed companion stats: species, rarity, all stats with bars",
   {},
@@ -330,7 +388,7 @@ server.tool(
 
 // ─── Tool: buddy_react ──────────────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_react",
   "Post a buddy comment. Call this at the END of every response with a short in-character comment from the companion about what just happened. The comment should be 1 sentence, in character, and reference something specific from the conversation — a pitfall noticed, a compliment on clean code, a warning about edge cases, etc. Write the comment yourself based on the companion's personality.",
   {
@@ -383,7 +441,7 @@ server.tool(
 
 // ─── Tool: buddy_rename ─────────────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_rename",
   "Rename your coding companion",
   {
@@ -415,7 +473,7 @@ server.tool(
 
 // ─── Tool: buddy_set_personality ────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_set_personality",
   "Set a custom personality description for your buddy",
   {
@@ -447,7 +505,7 @@ server.tool(
 
 // ─── Tool: buddy_help ────────────────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_help",
   "Show all available /buddy commands",
   {},
@@ -484,7 +542,7 @@ server.tool(
       "  /buddy statusline Enable or disable buddy in the status line",
       "  /buddy theme     Set color theme: dark (bright) or light (dark colors)",
       "  /buddy gamefeel  Animation intensity: off, subtle, or full (default subtle)",
-      "  /buddy wander    Toggle the idle status-line amble (on/off/hop/wide/bubble)",
+      "  /buddy wander    Toggle the idle status-line amble (on/off/hop)",
       "",
       "  Motion feels distracting? Turn off the amble with /buddy wander off, or",
       "  quiet the animations with /buddy gamefeel subtle (or off for silence).",
@@ -509,7 +567,7 @@ server.tool(
 
 // ─── Tool: buddy_frequency / buddy_style ─────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_frequency",
   "Configure how often buddy comments appear in the speech bubble. Returns current settings if called without arguments.",
   {
@@ -539,7 +597,7 @@ server.tool(
   },
 );
 
-server.tool(
+registerTool(
   "buddy_style",
   "Configure the buddy bubble appearance. Returns current settings if called without arguments.",
   {
@@ -626,7 +684,7 @@ server.tool(
   },
 );
 
-server.tool(
+registerTool(
   "buddy_theme",
   "Set buddy's color theme. dark = bright colors for dark terminal backgrounds; light = dark colors for light backgrounds; auto = follow system (currently falls back to dark).",
   {
@@ -659,7 +717,7 @@ server.tool(
   },
 );
 
-server.tool(
+registerTool(
   "buddy_mute",
   "Mute buddy reactions (buddy stays visible but stops reacting)",
   {},
@@ -685,7 +743,7 @@ server.tool(
   },
 );
 
-server.tool("buddy_unmute", "Unmute buddy reactions", {}, async () => {
+registerTool("buddy_unmute", "Unmute buddy reactions", {}, async () => {
   const companion = ensureCompanion();
   writeStatusState(companion, { reaction: "*stretches* I'm back!", muted: false });
   saveReaction("*stretches* I'm back!", "pet");
@@ -702,7 +760,7 @@ server.tool("buddy_unmute", "Unmute buddy reactions", {}, async () => {
 
 // ─── Tool: buddy_statusline ─────────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_statusline",
   "Enable or disable the buddy status line, and toggle combined mode (shows rate-limit usage bars alongside the buddy). Returns current status if called without arguments.",
   {
@@ -776,7 +834,7 @@ server.tool(
 
 // ─── Tool: buddy_stats_panel ─────────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_stats_panel",
   "Toggle the stat-bar panel that renders to the left of the buddy in the status line (DEBUGGING/PATIENCE/CHAOS/WISDOM/SNARK with ▲ peak / ▼ dump markers). Pass enabled=true/false to set it explicitly, or omit to toggle. Backs the /buddy stats bar command. The status line reads this live — no restart needed once the buddy's MCP server is running.",
   {
@@ -804,7 +862,7 @@ server.tool(
 
 // ─── Tool: buddy_gamefeel (game-feel FR-E1) ──────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_gamefeel",
   "Set the game-feel intensity — how much celebratory juice (level-up/loot toasts, animations) the buddy shows. 'off' silences all of it (status line unchanged from the classic look), 'subtle' (default) shows brief toasts, 'full' adds the chattier surprises. Omit level to report the current setting. Backs /buddy gamefeel. Read live — no restart needed.",
   {
@@ -853,8 +911,6 @@ function wanderStateLine(cfg: BuddyConfig): string {
   const flags = [
     `wander ${cfg.wanderEnabled ? "on" : "off"}`,
     `hop ${cfg.wanderHop ? "on" : "off"}`,
-    `wide ${cfg.wanderWide ? "on" : "off"}`,
-    `bubble ${cfg.wanderBubble ? "on" : "off"}`,
   ].join(", ");
   let note = "";
   if (cfg.wanderEnabled && effectiveGameFeel() !== "full") {
@@ -863,9 +919,9 @@ function wanderStateLine(cfg: BuddyConfig): string {
   return `Idle wander: ${flags}.${note}`;
 }
 
-server.tool(
+registerTool(
   "buddy_wander",
-  "Control the buddy's idle wander — the gentle amble back and forth on the status line while it's idle. `enabled` toggles the whole walk (default on); `hop` adds a small vertical bob (costs one status-line row, default off); `wide` opens a longer two-sided corridor (default off); `bubble` makes the speech bubble travel with the buddy so the connector stays attached, instead of the bubble staying pinned (default off). Omit all args to report the current settings. Backs /buddy wander. Read live — no restart needed. The walk only animates when game-feel intensity is 'full'.",
+  "Control the buddy's idle wander — the gentle amble back and forth on the status line while it's idle. `enabled` toggles the whole walk (default on); `hop` adds a small vertical bob (costs one status-line row, default off). The buddy free-roams the full line and the speech bubble travels with it. Omit all args to report the current settings. Backs /buddy wander. Read live — no restart needed. The walk only animates when game-feel intensity is 'full'.",
   {
     enabled: z
       .boolean()
@@ -875,25 +931,10 @@ server.tool(
       .boolean()
       .optional()
       .describe("Add a vertical hop arc (costs one row). Omit to leave unchanged."),
-    wide: z
-      .boolean()
-      .optional()
-      .describe("Use the wide corridor. Omit to leave unchanged."),
-    bubble: z
-      .boolean()
-      .optional()
-      .describe(
-        "Make the speech bubble travel with the buddy (connector stays attached). Omit to leave unchanged.",
-      ),
   },
-  async ({ enabled, hop, wide, bubble }) => {
+  async ({ enabled, hop }) => {
     ensureCompanion();
-    if (
-      enabled === undefined &&
-      hop === undefined &&
-      wide === undefined &&
-      bubble === undefined
-    ) {
+    if (enabled === undefined && hop === undefined) {
       return {
         content: [{ type: "text", text: wanderStateLine(loadConfig()) }],
       };
@@ -901,8 +942,6 @@ server.tool(
     const patch: Partial<BuddyConfig> = {};
     if (enabled !== undefined) patch.wanderEnabled = enabled;
     if (hop !== undefined) patch.wanderHop = hop;
-    if (wide !== undefined) patch.wanderWide = wide;
-    if (bubble !== undefined) patch.wanderBubble = bubble;
     saveConfig(patch);
     return {
       content: [{ type: "text", text: wanderStateLine(loadConfig()) }],
@@ -939,7 +978,7 @@ function renderBragCard(companion: Companion, plain = false): string {
   return `${card}\n\n${milestone}`;
 }
 
-server.tool(
+registerTool(
   "buddy_brag",
   "Generate a paste-able markdown 'brag card' for your buddy — the ASCII art card plus a milestone line (level, prestige, title, best streak) — ready to drop into a PR comment, Slack, or socials. Pass plain=true for an emoji-light variant. Contains only public stats; never leaks project or memory contents. Backs /buddy brag.",
   {
@@ -958,7 +997,7 @@ server.tool(
 
 // ─── Tool: buddy_prestige_badge ──────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_prestige_badge",
   "Toggle the prestige/streak badge — a compact centered line under the buddy's title in the status line showing prestige tier (P2) and current session streak (🔥7). Default off. Pass enabled=true/false to set it explicitly, or omit to toggle. The status line reads this live — no restart needed. The badge is hidden automatically when both prestige and streak are zero.",
   {
@@ -986,7 +1025,7 @@ server.tool(
 
 // ─── Tool: buddy_uninstall ───────────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_uninstall",
   "Clean up claude-buddy's writes to Claude Code's settings.json and transient session files in the buddy state dir (resolved via CLAUDE_CONFIG_DIR), in preparation for `claude plugin uninstall`. Companion data (menagerie, status, config) is intentionally preserved so reinstalling restores the buddy. The tool only cleans the plugin's own settings — it never removes a foreign statusLine.",
   {},
@@ -1031,7 +1070,7 @@ server.tool(
 
 // ─── Tool: buddy_achievements ────────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_achievements",
   "Show all achievement badges — earned and locked. Displays a card with progress bar and status for each badge.",
   {},
@@ -1046,7 +1085,7 @@ server.tool(
 
 // ─── Tool: buddy_xp ──────────────────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_xp",
   "Show your companion's XP, level, and unlocked reactions and upgrades.",
   {},
@@ -1059,7 +1098,25 @@ server.tool(
 
 // ─── Tool: buddy_upgrades ─────────────────────────────────────────────────────
 
-server.tool(
+/** Build a NavAsk for affordable upgrades (capped at 4, AskUserQuestion bound). */
+function upgradesAsk(
+  choices: Array<{ id: string; label: string; description: string }>,
+): NavAsk | undefined {
+  if (choices.length === 0) return undefined;
+  return {
+    question: "Which upgrade would you like to buy?",
+    header: "Buy unlock",
+    multiSelect: false,
+    options: choices.slice(0, 4).map((c) => ({
+      label: c.label,
+      description: c.description,
+      value: c.id,
+    })),
+    then: { tool: "buddy_upgrades", args: {}, pick_arg: "buy" },
+  };
+}
+
+registerTool(
   "buddy_upgrades",
   "Spend skill points earned by leveling up. With no argument, lists every unlock (owned / affordable / locked) and your point balance. Use `buy` to purchase an unlock, `refund` to reclaim one (only while respec is open, below level 10), `equipTitle` to wear a prestige title, or `ascend` (only at max level) to reset to level 1 for a permanent XP multiplier and access to the prestige-exclusive catalog \u2014 all owned unlocks and titles are kept.",
   {
@@ -1094,7 +1151,6 @@ server.tool(
     if (buy) {
       const companion = loadCompanion();
       const res = spendUnlock(buy, companion);
-      if (res.ok && res.companionChanged && companion) saveCompanion(companion);
       let msg = res.message;
       // Cosmetic-set milestone (game-feel FR-C1): a purchase may complete a set.
       if (res.ok) {
@@ -1112,9 +1168,7 @@ server.tool(
       return text(msg);
     }
     if (refund) {
-      const companion = loadCompanion();
-      const res = refundUnlock(refund, companion);
-      if (res.ok && res.companionChanged && companion) saveCompanion(companion);
+      const res = refundUnlock(refund);
       return text(res.message);
     }
     if (titleId !== undefined) {
@@ -1192,13 +1246,33 @@ server.tool(
       );
     }
 
-    return text(lines.join("\n"));
+    const affordableChoices = catalog
+      .filter(
+        (i) =>
+          !owned.has(i.id) &&
+          state.level >= i.level &&
+          (!i.prestigeLevel || state.prestigeLevel >= i.prestigeLevel) &&
+          avail >= i.cost,
+      )
+      .map((i) => ({
+        id: i.id,
+        label: `${i.cost} pt \u00b7 ${i.label}`,
+        description: `Costs ${i.cost} skill point${i.cost !== 1 ? "s" : ""}`,
+      }));
+
+    const card = lines.join("\n");
+    const ask = upgradesAsk(affordableChoices);
+    if (ask) {
+      const env: MenuEnvelope = { display: card, ask };
+      return text(`${env.display}\n\n${navMarker(env)}`);
+    }
+    return text(card);
   },
 );
 
 // ─── Tool: buddy_equip ────────────────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_equip",
   "Manage your buddy's equipment loadout (weapon / headgear / trinket). With no argument, shows the current loadout and inventory. Use `equip` with an item id to equip an owned item (swapping out any current occupant of that slot), or `unequip` with a slot name to return its item to your inventory. Equipped headgear overlays the buddy's innate hat and stat-bearing gear nudges the peak stat — gear never alters the buddy permanently and is freely swappable.",
   {
@@ -1251,9 +1325,37 @@ server.tool(
   },
 );
 
+// ─── Tool: buddy_menu ─────────────────────────────────────────────────────────
+
+registerTool(
+  "buddy_menu",
+  "Open or advance the interactive buddy command browser. No argument → the top-level menu. Pass `page` + `select` to advance: the server resolves the pick and returns the next page or a `do` hand-off. The result carries a hidden buddy:nav marker — follow the MENU NAVIGATION directive; never print the marker.",
+  {
+    page: z
+      .string()
+      .optional()
+      .describe("Current page id (default: root)"),
+    select: z
+      .string()
+      .optional()
+      .describe("Chosen option label or id, to advance the menu"),
+  },
+  async ({ page, select }) => {
+    const companion = ensureCompanion();
+    incrementEvent("commands_run", 1, activeSlot());
+    const result: MenuEnvelope | RouteResult = advance(page, select, companion.name);
+    if ("route" in result) {
+      return runTool(result.route.tool, result.route.args);
+    }
+    return {
+      content: [{ type: "text", text: `${result.display}\n\n${navMarker(result)}` }],
+    };
+  },
+);
+
 // ─── Tool: buddy_shop ─────────────────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_shop",
   "Visit the merchant to buy equipment with skill points (the same points spent at buddy_upgrades). With no argument, lists the catalog with owned / affordable / locked status and your point balance. Use `buy` with an item id to purchase it into your inventory; equip it afterward with buddy_equip. When browsing, the result includes a hidden choices block — present it to the user with an interactive menu per your instructions.",
   {
@@ -1283,20 +1385,22 @@ server.tool(
       return text(res.message);
     }
 
-    // No action — render the shop with the interactive choices marker.
+    // No action — render the shop with an interactive nav ask when items are buyable.
     const state = getXpState();
     const avail = availablePoints(state);
     const rows = shopListing(shopStateOf(state, avail));
     const card = renderShopCard(companion.name, rows, avail);
-    const marker = choicesMarker(buyableChoices(rows));
+    const ask = shopAsk(buyableChoices(rows));
     incrementEvent("commands_run", 1, activeSlot());
-    return text(marker ? `${card}\n\n${marker}` : card);
+    if (!ask) return text(card);
+    const env: MenuEnvelope = { display: card, ask };
+    return text(`${env.display}\n\n${navMarker(env)}`);
   },
 );
 
 // ─── Tool: buddy_suggest ────────────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_suggest",
   "Called proactively by the buddy when it detects a teachable moment in your code. Do NOT call this unprompted — the Stop hook handles pattern detection automatically. This tool is only for buddy-initiated suggestions when YOU notice a pattern.",
   {
@@ -1333,7 +1437,7 @@ server.tool(
 
 // ─── Tool: buddy_memory ─────────────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_memory",
   "Query and manage buddy's cross-session memory — remembered projects, bugs, and preferences.",
   {
@@ -1406,7 +1510,7 @@ server.tool(
 
 // ─── Tool: buddy_mood ────────────────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_mood",
   "Show your buddy's current mood and what influences it. Mood shifts based on coding events, test results, and time of day.",
   {},
@@ -1447,7 +1551,7 @@ server.tool(
 
 // ─── Tool: buddy_summon ─────────────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_summon",
   "Summon a buddy by slot name. Loads a saved buddy if the slot exists; generates a new deterministic buddy for unknown slot names. Omit slot to pick randomly from all saved buddies. Your current buddy is NOT destroyed — they stay saved in their slot.",
   {
@@ -1518,7 +1622,7 @@ server.tool(
 
 // ─── Tool: buddy_save ───────────────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_save",
   "Save the current buddy to a named slot. Useful for bookmarking before trying a new buddy.",
   {
@@ -1557,7 +1661,7 @@ server.tool(
 
 // ─── Tool: buddy_list ───────────────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_list",
   "List all saved buddies with their slot names, species, and rarity",
   {},
@@ -1595,7 +1699,7 @@ server.tool(
 
 // ─── Tool: buddy_dismiss ────────────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_dismiss",
   "Remove a saved buddy by slot name. Cannot dismiss the currently active buddy — switch first with buddy_summon.",
   {
@@ -1646,7 +1750,7 @@ server.tool(
 
 // ─── Tool: buddy_pick ────────────────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "buddy_pick",
   "Generate a new random buddy and add it to the menagerie. Optionally filter by species and/or rarity. The new buddy becomes the active one.",
   {

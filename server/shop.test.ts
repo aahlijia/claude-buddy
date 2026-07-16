@@ -5,7 +5,7 @@ import {
   buyError,
   buyStatus,
   buyableChoices,
-  choicesMarker,
+  shopAsk,
   ownedItems,
   renderShopCard,
   shopListing,
@@ -98,7 +98,7 @@ describe("buyStatus / shopListing", () => {
   });
 });
 
-describe("buyableChoices / marker", () => {
+describe("buyableChoices", () => {
   test("includes only affordable, unowned, unlocked items", () => {
     const s = state({ level: 3, available: 3, inventory: ["debug_wand"] });
     const ids = buyableChoices(shopListing(s)).map((c) => c.id);
@@ -107,18 +107,38 @@ describe("buyableChoices / marker", () => {
     expect(ids).not.toContain("debug_wand"); // owned
     expect(ids).not.toContain("compiler_crown"); // locked
   });
+});
 
-  test("marker round-trips to valid JSON", () => {
-    const choices = buyableChoices(shopListing(state()));
-    const marker = choicesMarker(choices);
-    expect(marker.startsWith("<!-- buddy:choices ")).toBe(true);
-    const json = marker.replace("<!-- buddy:choices ", "").replace(" -->", "");
-    expect(JSON.parse(json)).toHaveLength(choices.length);
+describe("shopAsk", () => {
+  test("returns undefined when nothing is buyable", () => {
+    const broke = state({ available: 0, level: 1 });
+    expect(shopAsk(buyableChoices(shopListing(broke)))).toBeUndefined();
   });
 
-  test("marker is empty when nothing is buyable", () => {
-    const broke = state({ available: 0, level: 1 });
-    expect(choicesMarker(buyableChoices(shopListing(broke)))).toBe("");
+  test("builds a NavAsk with value=ItemId and buddy_shop continuation", () => {
+    const choices = buyableChoices(shopListing(state()));
+    const ask = shopAsk(choices)!;
+    expect(ask).toBeDefined();
+    expect(ask.then.tool).toBe("buddy_shop");
+    expect(ask.then.pick_arg).toBe("buy");
+    expect(ask.then.args).toEqual({});
+    expect(ask.multiSelect).toBe(false);
+    // value carries the ItemId (not the display label)
+    for (const [i, opt] of ask.options.entries()) {
+      expect(opt.value).toBe(choices[i].id);
+      expect(opt.label).toBe(choices[i].label);
+      expect(opt.description).toBe(choices[i].description);
+    }
+  });
+
+  test("caps options at 4 (AskUserQuestion bound)", () => {
+    // Synthesize >4 affordable choices to verify the cap.
+    const many: import("./shop").ShopChoice[] = Array.from(
+      { length: 6 },
+      (_, i) => ({ id: `item_${i}` as import("./items").ItemId, label: `Item ${i}`, description: "" }),
+    );
+    const ask = shopAsk(many)!;
+    expect(ask.options).toHaveLength(4);
   });
 });
 

@@ -348,10 +348,12 @@ export interface ReactionState {
   reason: string;
 }
 
-export function loadReaction(): ReactionState | null {
+export function loadReaction(cfg?: BuddyConfig): ReactionState | null {
   try {
     const data: ReactionState = JSON.parse(readFileSync(reactionFile(), "utf8"));
-    const { reactionTTL } = loadConfig();
+    // Callers that already hold the config (writeStatusState) pass it in so
+    // the TTL check doesn't re-parse config.json.
+    const { reactionTTL } = cfg ?? loadConfig();
     if (reactionTTL > 0 && Date.now() - data.timestamp > reactionTTL * 1000) return null;
     return data;
   } catch {
@@ -362,7 +364,17 @@ export function loadReaction(): ReactionState | null {
 export function saveReaction(reaction: string, reason: string): void {
   mkdirSync(STATE_DIR, { recursive: true });
   const state: ReactionState = { reaction, timestamp: Date.now(), reason };
-  writeFileSync(reactionFile(), JSON.stringify(state));
+  // Atomic like the manifest/status writes — the statusline reads this file
+  // every tick when the live reaction field is empty (sticky-bubble fallback).
+  const file = reactionFile();
+  const json = JSON.stringify(state);
+  const tmp = file + ".tmp";
+  writeFileSync(tmp, json);
+  try {
+    renameSync(tmp, file);
+  } catch {
+    writeFileSync(file, json);
+  }
 }
 
 // ─── Identity resolution ─────────────────────────────────────────────────────
@@ -411,20 +423,14 @@ export interface BuddyConfig {
   /** §7.A vertical hop / path arc. Costs one reserved headroom row, so default
    *  false (NFR6 real-estate). */
   wanderHop: boolean;
-  /** §7.B wide two-sided corridor: shifts the bubble left by a constant to open
-   *  a left lane. Default false. */
-  wanderWide: boolean;
-  /** Bubble-follows-buddy: when true, the speech bubble + connector travel with
-   *  the buddy as one rigid block (connector stays attached) instead of the
-   *  bubble staying pinned while the connector retracts. Default false (the
-   *  pinned-bubble layout invariant). Pure render flag, read live by bash. */
-  wanderBubble: boolean;
 }
 
 /** Game-feel intensity level (game-feel FR-E1). */
 export type GameFeel = "off" | "subtle" | "full";
 
-const DEFAULT_CONFIG: BuddyConfig = {
+/** The documented defaults. Exported so tests can assert the bash renderer's
+ *  fallback values (buddy-status.sh) stay in lockstep — see statusline.test.ts. */
+export const DEFAULT_CONFIG: BuddyConfig = {
   commentCooldown: 30,
   reactionTTL: 0,
   bubbleStyle: "classic",
@@ -445,14 +451,27 @@ const DEFAULT_CONFIG: BuddyConfig = {
   autoQuietFocus: false,
   wanderEnabled: true,
   wanderHop: false,
-  wanderWide: false,
-  wanderBubble: false,
 };
+
+const GAME_FEEL_LEVELS: readonly GameFeel[] = ["off", "subtle", "full"];
+
+/**
+ * Coerce an untrusted config value to a valid game-feel level. A hand-edited
+ * config.json can hold anything; bash re-validates its own copy (buddy-status.sh
+ * does `case "$GAME_FEEL" in off|subtle|full)`), so the TS side must match or an
+ * invalid value silently passes the `!== "off"` gates while failing `=== "full"`.
+ * Falls back to the documented default, "subtle". Pure; exported for tests.
+ */
+export function coerceGameFeel(v: unknown): GameFeel {
+  return GAME_FEEL_LEVELS.includes(v as GameFeel) ? (v as GameFeel) : "subtle";
+}
 
 export function loadConfig(): BuddyConfig {
   try {
     const data = JSON.parse(readFileSync(CONFIG_FILE, "utf8"));
-    return { ...DEFAULT_CONFIG, ...data };
+    const merged: BuddyConfig = { ...DEFAULT_CONFIG, ...data };
+    merged.gameFeel = coerceGameFeel(merged.gameFeel);
+    return merged;
   } catch {
     return { ...DEFAULT_CONFIG };
   }
@@ -462,7 +481,16 @@ export function saveConfig(config: Partial<BuddyConfig>): BuddyConfig {
   mkdirSync(STATE_DIR, { recursive: true });
   const current = loadConfig();
   const merged = { ...current, ...config };
-  writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2));
+  // Atomic like the manifest/status writes: bash re-reads config.json every
+  // tick, so a torn read would degrade one tick to defaults.
+  const json = JSON.stringify(merged, null, 2);
+  const tmp = CONFIG_FILE + ".tmp";
+  writeFileSync(tmp, json);
+  try {
+    renameSync(tmp, CONFIG_FILE);
+  } catch {
+    writeFileSync(CONFIG_FILE, json);
+  }
   return merged;
 }
 
@@ -565,10 +593,41 @@ function sessionElapsedSeconds(): number | null {
 export type AutoQuietReason = "error-spike" | "deep-focus" | null;
 
 /**
- * The live auto-quiet reason, for *reporting* (doctor / `buddy_gamefeel`).
+ * Core of {@link autoQuietReason} with every read injected (pure).
  *
  * Error spike is checked first (cheapest, highest signal); deep focus only when
- * the user has opted in via `autoQuietFocus`. Guarded; never throws.
+ * the user has opted in via `autoQuietFocus`. Exported for tests and for
+ * callers (writeStatusState) that already hold the reads.
+ *
+ * @param reason: The active (TTL-filtered) reaction reason, or null/undefined.
+ * @param focusOptIn: The `autoQuietFocus` config flag.
+ * @param sessionElapsedSec: Seconds since the session baseline, or null when
+ *     no snapshot exists (callers may pass null when `focusOptIn` is false to
+ *     skip the snapshot read entirely).
+ * @returns The active clamp reason, or null when nothing is clamping.
+ */
+export function autoQuietReasonFor(
+  reason: string | null | undefined,
+  focusOptIn: boolean,
+  sessionElapsedSec: number | null,
+): AutoQuietReason {
+  if (autoQuietActive(reason)) return "error-spike";
+  if (
+    focusOptIn &&
+    deepFocusActive({
+      sessionElapsedSec,
+      hasFreshError: false, // a spike already returned above
+    })
+  ) {
+    return "deep-focus";
+  }
+  return null;
+}
+
+/**
+ * The live auto-quiet reason, for *reporting* (doctor / `buddy_gamefeel`).
+ * Reads the reaction + config state, then delegates to
+ * {@link autoQuietReasonFor}. Guarded; never throws.
  *
  * @returns The active clamp reason, or null when nothing is clamping.
  */
@@ -579,24 +638,17 @@ export function autoQuietReason(): AutoQuietReason {
   } catch {
     // Reaction state optional.
   }
-  if (autoQuietActive(reason)) return "error-spike";
-
   let focusOptIn = false;
   try {
     focusOptIn = loadConfig().autoQuietFocus;
   } catch {
     // Config optional during first install / version skew.
   }
-  if (
-    focusOptIn &&
-    deepFocusActive({
-      sessionElapsedSec: sessionElapsedSeconds(),
-      hasFreshError: autoQuietActive(reason),
-    })
-  ) {
-    return "deep-focus";
-  }
-  return null;
+  return autoQuietReasonFor(
+    reason,
+    focusOptIn,
+    focusOptIn ? sessionElapsedSeconds() : null,
+  );
 }
 
 /**
@@ -667,11 +719,28 @@ export interface StatusState {
    *  index. Present only when wanderHop is on; absent ⇒ floor-only. */
   wanderRowSequence?: number[];
   /** Idle-RPG (Phase 4): the bug glyph to hover in the margin during a fresh
-   *  fight. Absent ⇒ no encounter. Rendered only at gameFeel=full. */
+   *  fight. Now the **degraded-skew fallback** render — Phase 5 prefers the full
+   *  two-sprite scene below. Absent ⇒ no encounter. Rendered only at full. */
   enemyGlyph?: string;
   /** Idle-RPG (Phase 4): Date.now() of the encounter, for the statusline TTL
    *  (same freshness idiom as celebration.at). */
   encounterAt?: number;
+  /** Idle-RPG (Phase 5): the baked two-sprite fight scene (player + mirrored
+   *  enemy creature). Animated by the status line only while the encounter is
+   *  fresh, then it falls back to `frames` — the flourish pattern. Absent ⇒ no
+   *  fresh fight. Present only at gameFeel=full. */
+  combatFrames?: string[];
+  combatSequence?: number[];
+  /** Idle-RPG (Phase 5): display width of the active combat scene, so the shell
+   *  widens its art column to fit the two sprites. Absent ⇒ shell keeps its
+   *  default single-sprite width. */
+  artWidth?: number;
+  /** Pending encounter (design-pending-encounter §3.2): present (=1) only when
+   *  the combat scene is the persistent PRE-fight standoff rather than a fresh
+   *  resolved fight. Tells the shell to bypass the 10s encounter TTL for the
+   *  frame-source decision (the standoff has no `encounterAt`). Resolved scenes
+   *  never carry it, so the two phases never mix fields. */
+  combatSticky?: 1;
 }
 
 // ─── Celebration channel (game-feel §2 — one transient slot, many producers) ──
@@ -748,6 +817,67 @@ export function buildCelebration(
   return cands[0];
 }
 
+/**
+ * Pure: pick the celebration an award's final status write should surface.
+ * The ladder mirrors {@link CELEB_PRIORITY}: level-up wins the single bubble
+ * slot; then a just-completed daily whim; then this commit's idle-RPG fight
+ * summary (kind "loot" — the only surface `subtle` users ever see for combat);
+ * then a one-time system discovery; otherwise the caller's fallback cause (so
+ * session-completion can still surface streak loot via the 🎁 side-channel).
+ *
+ * Lives beside {@link buildCelebration} so the two halves of the celebration
+ * channel stay in one place; award-xp.ts is a thin caller.
+ *
+ * @param level: The buddy's post-award level (for the level-up text).
+ * @param leveled: Whether this award crossed a level boundary.
+ * @param whimRewarded: Whether today's whim just completed.
+ * @param fightSummary: The idle-RPG fight's one-liner, or null when none.
+ * @param discovered: Whether the once-ever whim discovery fired this write.
+ * @param fallbackCause: Cause to scope the loot side-channel when nothing
+ *     above claims the bubble.
+ * @param now: Injected clock for tests; `Date.now()` in production.
+ * @returns The celebration to write (or null) and the write's cause.
+ */
+export function pickCelebration(
+  level: number,
+  leveled: boolean,
+  whimRewarded: boolean,
+  fightSummary: string | null,
+  discovered: boolean,
+  fallbackCause: StatusOpts["cause"],
+  now: number = Date.now(),
+): { celebration: Celebration | null; cause: StatusOpts["cause"] } {
+  if (leveled) {
+    return {
+      celebration: { text: `✨ LEVEL ${level} ✨`, kind: "levelup", at: now },
+      cause: "levelup",
+    };
+  }
+  if (whimRewarded) {
+    return {
+      celebration: { text: "⭐ today's whim — done!", kind: "whim", at: now },
+      cause: "whim",
+    };
+  }
+  if (fightSummary) {
+    return {
+      celebration: { text: fightSummary, kind: "loot", at: now },
+      cause: "loot",
+    };
+  }
+  if (discovered) {
+    return {
+      celebration: {
+        text: "🎁 new: a daily whim — see /buddy xp",
+        kind: "discovery",
+        at: now,
+      },
+      cause: undefined,
+    };
+  }
+  return { celebration: null, cause: fallbackCause };
+}
+
 // ─── Emotion mapping (game-feel FR-A4) ────────────────────────────────────────
 
 /** Active-reaction reason → emotion. Unmapped reasons stay neutral. */
@@ -781,52 +911,136 @@ export function computeXpPct(level: number, totalXp: number): number {
   return Math.min(100, Math.round(((totalXp - lower) / (upper - lower)) * 100));
 }
 
-/** §7.B wide-corridor max amble distance (cells); see design-movement §8. The
- *  bash side mirrors this constant when reclaiming the left lane. */
-const WANDER_RANGE_WIDE = 10;
-
 export function writeStatusState(
   companion: Companion,
   opts: StatusOpts = {},
 ): void {
   const { reaction, muted, achievement, level, xp, xpGain } = opts;
   mkdirSync(STATE_DIR, { recursive: true });
+  const statusFile = join(STATE_DIR, "status.json");
+  // Mute is a user toggle that lives only in status.json (buddy_mute/unmute
+  // pass it explicitly). Every other writer must carry the on-disk value
+  // forward — defaulting to false here let any XP award or bug sighting
+  // silently unmute the buddy.
+  let mutedState = muted;
+  if (mutedState === undefined) {
+    try {
+      const prev = JSON.parse(readFileSync(statusFile, "utf8")) as {
+        muted?: boolean;
+      };
+      mutedState = prev.muted === true;
+    } catch {
+      mutedState = false;
+    }
+  }
   const { renderFace, RARITY_STARS } =
     require("./engine.ts") as typeof import("./engine.ts");
   const { getStatusFrames } =
     require("./art.ts") as typeof import("./art.ts");
 
-  // Game-feel intensity, read once (guarded) — drives emotion + celebration.
-  // effectiveGameFeel() applies the transient error-spike clamp (FR-E1).
-  let gate: GameFeel = "subtle";
-  try {
-    gate = effectiveGameFeel();
-  } catch {
-    // Config / reaction optional during first install / version skew.
-  }
+  // One config + one reaction read for this whole write; the auto-quiet clamp,
+  // the emotion map, and the wander branch below all share these instead of
+  // re-parsing the same files. Both loaders are internally guarded (they return
+  // defaults/null on any failure), so no try needed here.
+  const cfg = loadConfig();
+  const activeReason = loadReaction(cfg)?.reason;
+
+  // Game-feel intensity — drives emotion + celebration. Same transient clamp
+  // as effectiveGameFeel() (error spike / opt-in deep focus, FR-E1), built
+  // from the pre-read values.
+  const gate: GameFeel = clampGameFeel(
+    cfg.gameFeel,
+    autoQuietReasonFor(
+      activeReason,
+      cfg.autoQuietFocus,
+      cfg.autoQuietFocus ? sessionElapsedSeconds() : null,
+    ) !== null,
+  );
 
   // Emotion frames (FR-A4): derived from the active reaction's reason.
-  let emotion: Emotion = "neutral";
-  try {
-    emotion = resolveEmotion(loadReaction()?.reason, gate);
-  } catch {
-    // Reaction state optional.
-  }
+  const emotion: Emotion = resolveEmotion(activeReason, gate);
   // Idle-RPG encounter (design-rpg Phase 4): a fresh fight biases the face angry
   // and surfaces the enemy glyph. Render is gated to `full` in the status line;
   // `off` produced no encounter.json in the first place (opt-out, session.ts).
   // The read is event-frequency, not per tick — cheap, like seasonal/xp below.
   let enemyGlyph: string | undefined;
   let encounterAt: number | undefined;
+  let combatFrames: string[] | undefined;
+  let combatSequence: number[] | undefined;
+  let artWidth: number | undefined;
+  let combatSticky: 1 | undefined;
   if (gate !== "off") {
     try {
-      const { readEncounter } =
+      const { readEncounter, readPendingEncounter } =
         require("./combat.ts") as typeof import("./combat.ts");
+      const { displayWidth } = require("./art.ts") as typeof import("./art.ts");
+      const sceneWidth = (frs: string[]): number =>
+        frs.reduce(
+          (max, frame) =>
+            frame
+              .split("\n")
+              .reduce((m, line) => Math.max(m, displayWidth(line)), max),
+          0,
+        );
+      // "Bug fight in <project>!" caption: encounter state is global, so the
+      // scene follows the buddy into every instance's status line — the caption
+      // says which project the fight belongs to. Prepended as a frame line
+      // (centered over the scene) so the shell needs no layout change: art
+      // height and width already come from the frames themselves. Re-stripped
+      // here because frame art is exempt from the shell-side jq sanitizer.
+      const captionFrames = (
+        frs: string[],
+        project?: string,
+      ): { frames: string[]; width: number } => {
+        const w = sceneWidth(frs);
+        const name = (project ?? "").replace(/[\x00-\x1f\x7f]/g, "").trim();
+        if (!name) return { frames: frs, width: w };
+        const caption = `Bug fight in ${name}!`;
+        const captionW = displayWidth(caption);
+        const pad = Math.max(0, Math.floor((w - captionW) / 2));
+        const line = " ".repeat(pad) + caption;
+        return {
+          frames: frs.map((frame) => line + "\n" + frame),
+          width: Math.max(w, pad + captionW),
+        };
+      };
       const enc = readEncounter();
       if (enc) {
+        // Resolved phase (Phase 5) — always outranks pending (§5.2). Surface the
+        // baked two-sprite scene + its width. The scene carries its own fight
+        // eyes, so idle `.frames` stay neutral (no angry bias).
+        // `enemyGlyph`/`encounterAt` remain for the degraded-skew render when a
+        // stale bash can't read `combatFrames`.
         enemyGlyph = enc.enemyGlyph;
         encounterAt = enc.at;
-        emotion = "angry"; // fight face — reuses the emotion-frame pipeline
+        if (Array.isArray(enc.frames) && enc.frames.length > 0) {
+          const scene = captionFrames(enc.frames, enc.project);
+          combatFrames = scene.frames;
+          combatSequence = enc.sequence;
+          artWidth = scene.width;
+        }
+      } else if (cfg.gameFeel === "full") {
+        // Pending standoff (design-pending-encounter §5.1): no TTL, full-only,
+        // and only when it belongs to the live session (staleness guard §5.3).
+        // Gated on the CONFIGURED level, not the clamped `gate`: the standoff
+        // exists BECAUSE of errors, and the fresh error reaction keeps the
+        // auto-quiet spike clamp active (FR-E1) — the clamped gate would strip
+        // the scene sightBug just landed on the very next status write.
+        // Surfaced through the same combat fields plus the `combatSticky` bit so
+        // the shell bypasses the encounter TTL (the standoff has no encounterAt).
+        const pending = readPendingEncounter();
+        if (pending && Array.isArray(pending.frames) && pending.frames.length > 0) {
+          const { loadSnapshot } =
+            require("./session.ts") as typeof import("./session.ts");
+          const snap = loadSnapshot();
+          if (snap && snap.startedAt === pending.startedAt) {
+            const scene = captionFrames(pending.frames, pending.project);
+            combatFrames = scene.frames;
+            combatSequence = pending.sequence;
+            artWidth = scene.width;
+            combatSticky = 1;
+          }
+        }
       }
     } catch {
       // Combat is optional during first install / version skew.
@@ -857,15 +1071,28 @@ export function writeStatusState(
     // XP state is optional during first install / version skew.
   }
   let displayBones = companion.bones;
+  let gearArt: import("./art.ts").GearArt | undefined;
   if (xpStateForStatus) {
     try {
-      const { gearedBones } =
+      const { resolveAppearance, gearArtOf } =
         require("./equipment.ts") as typeof import("./equipment.ts");
-      displayBones = gearedBones(
+      const { ITEMS } = require("./items.ts") as typeof import("./items.ts");
+      const { ownedUpgradeEffects } =
+        require("./xp.ts") as typeof import("./xp.ts");
+      const appearance = resolveAppearance(
         companion.bones,
         xpStateForStatus.equipment,
         xpStateForStatus.cosmeticFlags,
+        ITEMS,
+        ownedUpgradeEffects(xpStateForStatus),
       );
+      displayBones = {
+        ...companion.bones,
+        hat: appearance.hat,
+        shiny: appearance.shiny,
+        stats: appearance.stats,
+      };
+      gearArt = gearArtOf(appearance);
     } catch {
       // Equipment is optional during first install / version skew.
     }
@@ -874,6 +1101,7 @@ export function writeStatusState(
     displayBones,
     emotion,
     seasonalHat,
+    gearArt,
   );
   let xpLevel = level ?? 1;
   let xpTotal = xp ?? 0;
@@ -945,14 +1173,12 @@ export function writeStatusState(
   let wanderRowSequence: number[] | undefined;
   if (gate === "full") {
     try {
-      const cfg = loadConfig();
       if (cfg.wanderEnabled) {
         const { buildWanderSequence, moodWalkOpts } =
           require("./wander.ts") as typeof import("./wander.ts");
-        const opts = moodWalkOpts(moodStr, xpLevel, Date.now());
-        if (!cfg.wanderHop) opts.hopHeight = 0; // §7.A opt-in
-        if (cfg.wanderWide) opts.range = WANDER_RANGE_WIDE; // §7.B opt-in
-        const walk = buildWanderSequence(opts);
+        const walkOpts = moodWalkOpts(moodStr, xpLevel, Date.now());
+        if (!cfg.wanderHop) walkOpts.hopHeight = 0; // §7.A opt-in
+        const walk = buildWanderSequence(walkOpts);
         wanderSequence = walk.horizontal;
         wanderRowSequence = walk.vertical;
       }
@@ -971,7 +1197,7 @@ export function writeStatusState(
     shiny: companion.bones.shiny,
     hat: displayBones.hat,
     reaction: reaction ?? "",
-    muted: muted ?? false,
+    muted: mutedState,
     achievement: achievement ?? "",
     frames,
     frameSequence,
@@ -995,10 +1221,14 @@ export function writeStatusState(
     ...(enemyGlyph && encounterAt
       ? { enemyGlyph, encounterAt }
       : {}),
+    ...(combatFrames && combatSequence && artWidth
+      ? { combatFrames, combatSequence, artWidth }
+      : {}),
+    ...(combatSticky ? { combatSticky } : {}),
   };
   // Atomic write (game-feel §2.6): the MCP server, the award-xp.ts process, and
   // react.sh's jq patch all touch status.json — tmp+rename avoids torn reads.
-  const file = join(STATE_DIR, "status.json");
+  const file = statusFile;
   const tmp = file + ".tmp";
   writeFileSync(tmp, JSON.stringify(state));
   try {
@@ -1077,6 +1307,10 @@ const TRANSIENT_PREFIXES = [
   ".last_comment.",
   ".session_start.",
   "session.",
+  "pending-encounter.", // standoff side-channel + its .tmp (design-pending-encounter §3.1)
+  ".tty.", // statusline's cached controlling-PTY device (per session)
+  ".status.patch.", // react.sh's atomic-patch temp (crash leftovers only)
+  ".events.patch.",
 ];
 
 /**

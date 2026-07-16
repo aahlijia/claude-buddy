@@ -20,7 +20,7 @@ import { grantBonusPoints } from "./xp.ts";
 import {
   loadActiveSlot,
   loadCompanionSlot,
-  saveCompanionSlot,
+  updateCompanionSlot,
 } from "./state.ts";
 import type { Companion } from "./engine.ts";
 
@@ -245,18 +245,27 @@ export function rollLoot(
   const state = loadLoot();
 
   // 2. Cosmetic roll — bonus on top, gated by "unowned" so a maxed-loot player
-  //    never wastes a roll (they just keep the guaranteed point).
+  //    never wastes a roll (they just keep the guaranteed point). The drop only
+  //    counts (and is only recorded as owned) once a companion actually
+  //    received it — with no companion, or on a persist failure, the roll
+  //    degrades to points-only and the cosmetic stays in the pool for a later
+  //    roll. Guarded because loot must never break the caller's award path.
   let cosmetic: LootCosmetic | null = null;
   if (rng() < LOOT_COSMETIC_CHANCE) {
-    cosmetic = pickUnownedCosmetic(state.ownedLootCosmetics, rng);
-    if (cosmetic) {
-      const targetSlot = slot ?? loadActiveSlot();
-      const companion = loadCompanionSlot(targetSlot);
-      if (companion) {
-        cosmetic.apply(companion);
-        saveCompanionSlot(companion, targetSlot);
+    const picked = pickUnownedCosmetic(state.ownedLootCosmetics, rng);
+    if (picked) {
+      try {
+        const targetSlot = slot ?? loadActiveSlot();
+        const companion = loadCompanionSlot(targetSlot);
+        if (companion) {
+          picked.apply(companion);
+          updateCompanionSlot(targetSlot, companion);
+          state.ownedLootCosmetics.push(picked.id);
+          cosmetic = picked;
+        }
+      } catch {
+        cosmetic = null; // points-only; the pool keeps the cosmetic
       }
-      state.ownedLootCosmetics.push(cosmetic.id);
     }
   }
 

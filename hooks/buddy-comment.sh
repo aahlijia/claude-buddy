@@ -48,8 +48,11 @@ mkdir -p "$STATE_DIR"
 date +%s > "$COOLDOWN_FILE"
 
 # Update status.json with the reaction
-TMP=$(mktemp)
-jq --arg r "$COMMENT" '.reaction = $r' "$STATUS_FILE" > "$TMP" 2>/dev/null && mv "$TMP" "$STATUS_FILE"
+# Same-dir mktemp: /tmp may be another filesystem, where mv degrades to
+# copy+unlink and a concurrent statusline tick can see a torn status.json.
+TMP=$(mktemp "$STATE_DIR/.status.patch.XXXXXX")
+jq --arg r "$COMMENT" '.reaction = $r' "$STATUS_FILE" > "$TMP" 2>/dev/null \
+    && mv "$TMP" "$STATUS_FILE" || rm -f "$TMP"
 
 # Also write reaction file (use jq for safe JSON encoding)
 jq -n --arg r "$COMMENT" --arg ts "$(date +%s)000" \
@@ -61,8 +64,9 @@ if command -v jq >/dev/null 2>&1; then
     if [ ! -f "$EVENTS_FILE" ]; then
         echo '{}' > "$EVENTS_FILE"
     fi
-    TMP=$(mktemp)
-    jq '.turns = (.turns // 0 + 1)' "$EVENTS_FILE" > "$TMP" 2>/dev/null && mv "$TMP" "$EVENTS_FILE"
+    TMP=$(mktemp "$STATE_DIR/.events.patch.XXXXXX")
+    jq '.turns = (.turns // 0 + 1)' "$EVENTS_FILE" > "$TMP" 2>/dev/null \
+        && mv "$TMP" "$EVENTS_FILE" || rm -f "$TMP"
 fi
 
 # Award XP for turn (async, non-blocking)

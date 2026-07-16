@@ -12,6 +12,9 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 
+import { displayWidth } from "./art";
+import { bakePendingScene } from "./combat";
+
 const SCRIPT = resolve(import.meta.dir, "..", "statusline", "buddy-status.sh");
 
 /** Strip ANSI SGR escape codes so assertions can match rendered text. */
@@ -60,10 +63,6 @@ interface StatusOverrides {
   /** Override the server-rendered art frames (e.g. a tall frame to exercise the
    *  hop height-budget degrade). */
   frames?: string[];
-  /** §7.B wide corridor flag, written into config.json. */
-  wanderWide?: boolean;
-  /** §5e bubble-follows-buddy flag, written into config.json. */
-  wanderBubble?: boolean;
   /** Writes reaction.<SID>.json (the persistent per-session reaction file) so the
    *  sticky-bubble fallback can be exercised. SID is "default" outside tmux. */
   persistedReaction?: { reaction: string; secondsAgo?: number };
@@ -76,6 +75,20 @@ interface StatusOverrides {
   /** Idle-RPG (Phase 4): enemy glyph + its age for the encounter render. */
   enemyGlyph?: string;
   encounterSecondsAgo?: number;
+  /** Idle-RPG (Phase 5): the baked two-sprite combat scene + its width. Shares
+   *  encounterSecondsAgo for the TTL window. */
+  combatFrames?: string[];
+  combatSequence?: number[];
+  artWidth?: number;
+  /** Pending encounter (design-pending-encounter §5): render the scene as the
+   *  persistent standoff — writes combatSticky:1 and, crucially, NO encounterAt
+   *  (proving the TTL bypass). Requires combatFrames; ignores encounterSecondsAgo. */
+  combatSticky?: boolean;
+  /** Combined-status mode: model/context/usage/reset metrics, written into
+   *  config.json (useCombinedStatus) and fed as the Claude Code stdin JSON. */
+  useCombinedStatus?: boolean;
+  /** Raw Claude Code stdin JSON (model/context/rate-limit). Default "". */
+  ccInput?: string;
 }
 
 /** Write a minimal status.json into a temp config dir and run buddy-status.sh
@@ -135,6 +148,19 @@ function renderStatus(overrides: StatusOverrides): string {
     status.encounterAt =
       (fakeNow - (overrides.encounterSecondsAgo ?? 0)) * 1000;
   }
+  if (overrides.combatFrames) {
+    status.combatFrames = overrides.combatFrames;
+    status.combatSequence = overrides.combatSequence ?? [0];
+    status.artWidth = overrides.artWidth ?? 28;
+    if (overrides.combatSticky) {
+      // Pending standoff: sticky bit, no encounterAt — the TTL is bypassed.
+      status.combatSticky = 1;
+    } else {
+      // Resolved phase: the scene render keys off encounterAt freshness.
+      status.encounterAt =
+        (fakeNow - (overrides.encounterSecondsAgo ?? 0)) * 1000;
+    }
+  }
   if (overrides.wanderSequence) status.wanderSequence = overrides.wanderSequence;
   if (overrides.wanderRowSequence) {
     status.wanderRowSequence = overrides.wanderRowSequence;
@@ -167,21 +193,19 @@ function renderStatus(overrides: StatusOverrides): string {
     overrides.showStats !== undefined ||
     overrides.showPrestigeBadge !== undefined ||
     overrides.gameFeel !== undefined ||
-    overrides.wanderWide !== undefined ||
-    overrides.wanderBubble !== undefined ||
     overrides.reactionTTL !== undefined ||
-    overrides.bubbleMargin !== undefined
+    overrides.bubbleMargin !== undefined ||
+    overrides.useCombinedStatus !== undefined
   ) {
     const cfg: Record<string, unknown> = {};
+    if (overrides.useCombinedStatus !== undefined) {
+      cfg.useCombinedStatus = overrides.useCombinedStatus;
+    }
     if (overrides.showStats !== undefined) cfg.showStats = overrides.showStats;
     if (overrides.showPrestigeBadge !== undefined) {
       cfg.showPrestigeBadge = overrides.showPrestigeBadge;
     }
     if (overrides.gameFeel !== undefined) cfg.gameFeel = overrides.gameFeel;
-    if (overrides.wanderWide !== undefined) cfg.wanderWide = overrides.wanderWide;
-    if (overrides.wanderBubble !== undefined) {
-      cfg.wanderBubble = overrides.wanderBubble;
-    }
     if (overrides.bubbleMargin !== undefined) {
       cfg.bubbleMargin = overrides.bubbleMargin;
     }
@@ -197,15 +221,18 @@ function renderStatus(overrides: StatusOverrides): string {
   // multibyte bar slicing depends on char-aware substrings. Ensure one even if
   // the host env didn't set it.
   if (!env.LC_ALL && !env.LANG && !env.LC_CTYPE) env.LC_ALL = "en_US.UTF-8";
-  // Pin width so right-alignment padding is deterministic and the buddy renders.
+  // Pin width so layout padding is deterministic and the buddy renders. COLUMNS
+  // alone is unreliable (the script walks the process tree to the controlling
+  // PTY first); BUDDY_FAKE_COLS is the test seam that forces it.
   env.COLUMNS = String(overrides.columns ?? 125);
+  env.BUDDY_FAKE_COLS = String(overrides.columns ?? 125);
   // Match the fixed reference "now" used to derive lastXpGain.at above.
   env.BUDDY_FAKE_NOW = String(fakeNow);
 
   try {
     const result = spawnSync("bash", [SCRIPT], {
       env,
-      input: "",
+      input: overrides.ccInput ?? "",
       encoding: "utf8",
     });
     if (result.status !== 0) {
@@ -591,12 +618,13 @@ describe("buddy-status.sh sticky bubble", () => {
   });
 });
 
-// ─── Idle wander — the per-tick layout invariant (movement P3, design §9) ─────
+// ─── Idle wander — free-roam layout invariant (movement §11 / design-rpg P5) ──
 //
-// The keystone gate: as the buddy ambles right into the reclaimed margin, NOTHING
-// left of the art may move a single column. We bake a wanderSequence [0..6] and
-// sweep BUDDY_FAKE_NOW so NOW % 7 lands on each offset 0..6 in turn, then assert
-// the left columns are byte-fixed while only the art (and its leading pad) shifts.
+// Free-roam: the buddy CLUSTER (bubble + connector + art) travels as one rigid
+// block, ambling LEFT from its right-edge home toward the stats. The keystone
+// gate: the left-anchored STATS column never moves, while the whole cluster
+// shifts left by exactly the offset (connector stays attached). We bake a
+// wanderSequence [0..6] and sweep BUDDY_FAKE_NOW so NOW % 7 lands on each offset.
 describe("buddy-status.sh idle wander (base horizontal)", () => {
   const SEQ = [0, 1, 2, 3, 4, 5, 6]; // offset == index == NOW for NOW in 0..6
   const REACTION = "hello friend"; // no dashes, so "|--" uniquely marks connector
@@ -624,31 +652,32 @@ describe("buddy-status.sh idle wander (base horizontal)", () => {
     return line!.indexOf(needle);
   }
 
-  test("columns left of the art are byte-identical across every offset", () => {
+  test("the stats column is byte-fixed while the cluster roams", () => {
     const frames = sweep();
-    // Stats labels (leftmost column) never move.
+    // Stats labels (left-anchored) never move.
     for (const label of ["DBG", "SNK"]) {
       const cols = frames.map((f) => colOf(f, label));
       expect(new Set(cols).size).toBe(1);
     }
-    // The bubble (left of art) never moves.
-    const bubbleCols = frames.map((f) => colOf(f, REACTION));
-    expect(new Set(bubbleCols).size).toBe(1);
-  });
-
-  test("the buddy art translates right by exactly the offset", () => {
-    const frames = sweep();
-    const base = colOf(frames[0], "Waffle");
+    // The bubble travels WITH the buddy — it shifts left by exactly the offset.
+    const base = colOf(frames[0], REACTION);
     for (let k = 0; k < SEQ.length; k++) {
-      expect(colOf(frames[k], "Waffle")).toBe(base + k);
+      expect(colOf(frames[k], REACTION)).toBe(base - k);
     }
   });
 
-  test("the connector is attached only at home (offset 0)", () => {
+  test("the buddy art translates LEFT by exactly the offset (home = right edge)", () => {
     const frames = sweep();
-    expect(frames[0].includes("|--")).toBe(true); // connector present at home
-    for (let k = 1; k < SEQ.length; k++) {
-      expect(frames[k].includes("|--")).toBe(false); // retracted while away
+    const base = colOf(frames[0], "Waffle");
+    for (let k = 0; k < SEQ.length; k++) {
+      expect(colOf(frames[k], "Waffle")).toBe(base - k);
+    }
+  });
+
+  test("the connector stays attached as the cluster roams (bubble travels)", () => {
+    const frames = sweep();
+    for (let k = 0; k < SEQ.length; k++) {
+      expect(frames[k].includes("|--")).toBe(true);
     }
   });
 
@@ -697,11 +726,11 @@ describe("buddy-status.sh idle wander (base horizontal)", () => {
         celebration: { text: "🎉 LEVEL 5 🎉", secondsAgo: 2 },
       }),
     );
-    const homeCol = colOf(sweep()[0], "Waffle"); // offset-0 art column
-    expect(colOf(wandered, "Waffle")).toBe(homeCol + 5); // wander is live
+    const homeCol = colOf(sweep()[0], "Waffle"); // offset-0 art column (home = right)
+    expect(colOf(wandered, "Waffle")).toBe(homeCol - 5); // wander is live (ambles left)
     expect(paused).toContain("🎉 LEVEL 5 🎉"); // celebration is showing
     expect(colOf(paused, "Waffle")).toBe(homeCol); // forced home (offset 0)
-    expect(paused.includes("|--")).toBe(true); // connector reattached
+    expect(paused.includes("|--")).toBe(true); // connector attached
   });
 
   test("an old status.json without wanderSequence renders byte-identically", () => {
@@ -813,68 +842,13 @@ describe("buddy-status.sh idle wander (vertical hop)", () => {
   });
 });
 
-// ─── Idle wander — wide corridor (movement P5a / §7.B, flag wanderWide) ───────
+// ─── Idle wander — bubble travels with the buddy (free-roam default, §11) ─────
 //
-// Wide mode opens a left lane by shifting the bubble+art block left by a CONSTANT
-// WANDER_LEFT = WANDER_RANGE_WIDE − (MARGIN − WANDER_SAFETY) = 10 − (8 − 2) = 4.
-// The shift is one-time (offset-independent) so the bubble holds its column on
-// every tick.
-describe("buddy-status.sh idle wander (wide corridor)", () => {
-  const REACTION = "hello friend";
-  const WANDER_LEFT = 10 - (8 - 2); // = 4 at the default margin
-
-  function bubbleCol(opts: Partial<StatusOverrides>): number {
-    const out = stripAnsi(
-      renderStatus({ reaction: REACTION, name: "Waffle", ...opts }),
-    );
-    const line = out.split("\n").find((l) => l.includes(REACTION))!;
-    return line.indexOf(REACTION);
-  }
-
-  test("enabling wanderWide shifts the bubble left by exactly WANDER_LEFT", () => {
-    const narrow = bubbleCol({ gameFeel: "full", wanderSequence: [0], fakeNow: 0 });
-    const wide = bubbleCol({
-      gameFeel: "full",
-      wanderWide: true,
-      wanderSequence: [0],
-      fakeNow: 0,
-    });
-    expect(narrow - wide).toBe(WANDER_LEFT);
-  });
-
-  test("the wide shift is identical on every tick (offset-independent)", () => {
-    const seq = [0, 3, 6, 9]; // valid offsets in the wide corridor (max 10)
-    const cols = seq.map((_, now) =>
-      bubbleCol({
-        gameFeel: "full",
-        wanderWide: true,
-        wanderSequence: seq,
-        fakeNow: now,
-      }),
-    );
-    expect(new Set(cols).size).toBe(1);
-  });
-
-  test("wanderWide is inert when the gate is below full", () => {
-    // Below full the buddy is planted, so wide must not shift the bubble either.
-    const plain = bubbleCol({ gameFeel: "subtle", wanderSequence: [0], fakeNow: 0 });
-    const wideButGated = bubbleCol({
-      gameFeel: "subtle",
-      wanderWide: true,
-      wanderSequence: [0],
-      fakeNow: 0,
-    });
-    expect(wideButGated).toBe(plain);
-  });
-});
-
-// ─── Idle wander — bubble follows buddy (§5e, flag wanderBubble) ──────────────
-//
-// Inverts the default pinned-bubble invariant: with wanderBubble on, the whole
-// [bubble · connector · art] block translates right by the offset as a rigid
-// unit, so the bubble moves WITH the buddy and the connector stays attached.
-// We bake [0..6] and sweep BUDDY_FAKE_NOW so NOW%7 lands on each offset.
-describe("buddy-status.sh idle wander (bubble follows buddy)", () => {
+// Free-roam makes "the bubble travels with the buddy" the default: the whole
+// [bubble · connector · art] cluster translates LEFT by the offset as a rigid
+// unit, connector stays attached. (The old wanderWide / wanderBubble flags are
+// retired — the whole line is the lane.) We bake [0..6] and sweep BUDDY_FAKE_NOW.
+describe("buddy-status.sh idle wander (bubble travels with buddy)", () => {
   const SEQ = [0, 1, 2, 3, 4, 5, 6];
   const REACTION = "hello friend"; // no dashes → "|--" uniquely marks connector
 
@@ -885,7 +859,6 @@ describe("buddy-status.sh idle wander (bubble follows buddy)", () => {
         name: "Waffle",
         showStats: true,
         gameFeel: "full",
-        wanderBubble: true,
         wanderSequence: SEQ,
         fakeNow: now,
       }),
@@ -895,13 +868,13 @@ describe("buddy-status.sh idle wander (bubble follows buddy)", () => {
     return frame.split("\n").find((l) => l.includes(needle))!.indexOf(needle);
   }
 
-  test("the bubble moves right by exactly the offset (travels with the buddy)", () => {
+  test("the bubble moves LEFT by exactly the offset (travels with the buddy)", () => {
     const baseBubble = colOf(render(0), REACTION);
     const baseArt = colOf(render(0), "Waffle");
     for (let k = 0; k < SEQ.length; k++) {
-      // Both the bubble and the art shift right by k — as one rigid block.
-      expect(colOf(render(k), REACTION)).toBe(baseBubble + k);
-      expect(colOf(render(k), "Waffle")).toBe(baseArt + k);
+      // Both the bubble and the art shift left by k — as one rigid block.
+      expect(colOf(render(k), REACTION)).toBe(baseBubble - k);
+      expect(colOf(render(k), "Waffle")).toBe(baseArt - k);
     }
   });
 
@@ -919,62 +892,161 @@ describe("buddy-status.sh idle wander (bubble follows buddy)", () => {
     expect(new Set(gaps).size).toBe(1);
   });
 
-  test("stats column stays left-pinned even as the bubble travels", () => {
+  test("stats column stays left-pinned even as the cluster travels", () => {
     const cols = SEQ.map((_, k) => colOf(render(k), "DBG"));
     expect(new Set(cols).size).toBe(1);
   });
-
-  test("default (flag off) keeps the bubble pinned — connector retracts away from home", () => {
-    const off = (now: number) =>
-      stripAnsi(
-        renderStatus({
-          reaction: REACTION,
-          name: "Waffle",
-          showStats: true,
-          gameFeel: "full",
-          wanderSequence: SEQ,
-          fakeNow: now,
-        }),
-      );
-    // Pinned bubble: its column does not move with the offset.
-    expect(colOf(off(5), REACTION)).toBe(colOf(off(0), REACTION));
-    // And the connector is gone once away from home.
-    expect(off(5).includes("|--")).toBe(false);
-  });
 });
 
-// ─── Idle wander — resize robustness (movement P5b / §7.C, no flag) ───────────
+// ─── Idle wander — free-roam in-window clamp (movement §11, no flag) ──────────
 //
-// The clamp runs against the LIVE MARGIN/COLS every tick, so a narrow terminal
-// caps the offset and the buddy never clips. WANDER_MAX = MARGIN − WANDER_SAFETY.
-describe("buddy-status.sh idle wander (resize robustness)", () => {
-  function nameCol(margin: number, seq: number[], now: number): number {
-    const out = stripAnsi(
+// The roam range is the full span between the stats panel and the window edge,
+// recomputed against the live COLS every tick. The keystone guarantee: when the
+// stats + cluster fit in COLS, the buddy is ALWAYS fully in-window (the old fixed
+// MARGIN reserve could overflow at narrow widths). A large baked offset can't push
+// the cluster off the left, and a too-narrow terminal drops the bubble to keep the
+// sprite visible.
+describe("buddy-status.sh idle wander (free-roam in-window clamp)", () => {
+  function render(columns: number, seq: number[], now: number): string {
+    return stripAnsi(
       renderStatus({
         reaction: "hi",
         name: "Waffle",
         gameFeel: "full",
-        bubbleMargin: margin,
+        columns,
         wanderSequence: seq,
         fakeNow: now,
       }),
     );
-    const line = out.split("\n").find((l) => l.includes("Waffle"))!;
-    return line.indexOf("Waffle");
   }
+  const nameCol = (out: string): number =>
+    out.split("\n").find((l) => l.includes("Waffle"))!.indexOf("Waffle");
+  // Pure-ASCII fixture (no stats/emoji) ⇒ code-point count == display width.
+  const maxW = (out: string): number =>
+    Math.max(...out.split("\n").map((l) => [...l].length));
 
-  test("a baked offset beyond the corridor is clamped to WANDER_MAX", () => {
-    // margin 3 ⇒ WANDER_MAX = 3 − 2 = 1, so a baked 6 must render as 1.
-    const home = nameCol(3, [0, 6], 0); // offset 0
-    const clamped = nameCol(3, [0, 6], 1); // baked 6 → clamped to 1
-    expect(clamped - home).toBe(1);
+  test("a wide terminal ambles the buddy LEFT by exactly the offset", () => {
+    const home = nameCol(render(125, [0, 6], 0)); // offset 0 (home = right)
+    const moved = nameCol(render(125, [0, 6], 1)); // offset 6
+    expect(home - moved).toBe(6);
   });
 
-  test("WANDER_MAX=0 parks the buddy (degrade)", () => {
-    // margin 2 ⇒ WANDER_MAX = 0, so every tick is home regardless of the bake.
-    const a = nameCol(2, [0, 6], 0);
-    const b = nameCol(2, [0, 6], 1);
-    expect(a).toBe(b);
+  test("bubbleMargin sets the right-edge reserve (buddy home shifts left)", () => {
+    // The home (offset-0) cluster sits at COLS - CLUSTER_W - RIGHT_SAFETY, and
+    // RIGHT_SAFETY is driven by bubbleMargin. A larger margin pulls the buddy
+    // LEFT by exactly the delta — the reserve that keeps it clear of Claude
+    // Code's status-line left gutter so it doesn't clip off the right edge.
+    const nameCol = (margin: number): number => {
+      const out = stripAnsi(
+        renderStatus({
+          name: "Waffle",
+          gameFeel: "full",
+          columns: 125,
+          wanderSequence: [0],
+          fakeNow: 0,
+          bubbleMargin: margin,
+        }),
+      );
+      return out.split("\n").find((l) => l.includes("Waffle"))!.indexOf("Waffle");
+    };
+    expect(nameCol(2) - nameCol(12)).toBe(10);
+  });
+
+  test("a large baked offset can't push the cluster off the left edge", () => {
+    for (const now of [0, 1]) {
+      const out = render(125, [0, 9999], now); // absurd offset → clamps to span
+      expect(nameCol(out)).toBeGreaterThanOrEqual(0);
+      expect(maxW(out)).toBeLessThanOrEqual(125);
+    }
+  });
+
+  test("a narrow terminal keeps the buddy fully in-window (no clip)", () => {
+    for (const columns of [80, 70, 60]) {
+      const out = render(columns, [0, 4, 8], columns % 3);
+      expect(maxW(out)).toBeLessThanOrEqual(columns);
+      expect(out).toContain("Waffle");
+    }
+  });
+});
+
+// ─── Dynamic bubble — the box changes SIZE and SHAPE to fit the width ─────────
+// Instead of a fixed-width box that's dropped whole the moment it doesn't fit,
+// the bubble shrinks (narrower ⇒ more, shorter rows), grows to contain an
+// over-long word, and only drops when even the narrowest usable box won't fit —
+// recomputed every tick, so it re-grows as the terminal (or the buddy's window)
+// widens. All geometry uses the no-stats path (STATS_BLOCK=0, RIGHT_SAFETY=8,
+// ART_W=14 ⇒ FIT_INNER = COLS - 29; default INNER_W 28 ⇒ box border 32).
+describe("buddy-status.sh dynamic bubble (fit-to-width)", () => {
+  const MSG = "this is a fairly long reaction that needs several rows";
+  const render = (columns: number, reaction = MSG): string =>
+    stripAnsi(
+      renderStatus({ reaction, name: "Waffle", gameFeel: "full", columns }),
+    );
+  // A border row is a run of dashes fenced by corner dots; the token length is
+  // BOX_W. (Don't trim the whole line — the leading Braille-Blank spacer isn't
+  // ASCII whitespace, so trim() wouldn't drop it.)
+  const borderW = (out: string): number => {
+    const m = out.match(/\.-+\./);
+    return m ? m[0].length : 0;
+  };
+  // A text row carries "| … |" (the last one also trails the connector/sprite).
+  const textRows = (out: string): number =>
+    out.split("\n").filter((l) => /\|.+\|/.test(l)).length;
+  const maxW = (out: string): number =>
+    Math.max(...out.split("\n").map((l) => [...l].length));
+
+  test("uses the full configured width when there's room", () => {
+    expect(borderW(render(125))).toBe(32); // INNER_W 28 + 4 chrome
+  });
+
+  test("shrinks the box (narrower + taller) when the default won't fit", () => {
+    const wide = render(125);
+    const narrow = render(45); // FIT_INNER = 16 < 28 ⇒ shrink
+    expect(borderW(narrow)).toBeGreaterThan(0); // still shown…
+    expect(borderW(narrow)).toBeLessThan(borderW(wide)); // …but narrower…
+    expect(textRows(narrow)).toBeGreaterThan(textRows(wide)); // …and taller
+    expect(maxW(narrow)).toBeLessThanOrEqual(45); // never clips
+  });
+
+  test("re-grows monotonically as the terminal widens", () => {
+    expect(borderW(render(45))).toBeLessThanOrEqual(borderW(render(55)));
+    expect(borderW(render(55))).toBeLessThanOrEqual(borderW(render(125)));
+    expect(borderW(render(125))).toBe(32); // capped at the configured width
+  });
+
+  test("drops the bubble only when even the narrowest box can't fit", () => {
+    // The script floors detected width at 40, so squeeze the room with a large
+    // right-edge reserve instead: FIT_INNER = 60 - 35 - 14 - 3 - 4 = 4 < floor 8.
+    const out = stripAnsi(
+      renderStatus({
+        reaction: MSG,
+        name: "Waffle",
+        gameFeel: "full",
+        columns: 60,
+        bubbleMargin: 35,
+      }),
+    );
+    expect(/\.-+\./.test(out)).toBe(false); // no bubble border
+    expect(out).toContain("Waffle"); // sprite/name still visible
+    expect(maxW(out)).toBeLessThanOrEqual(60);
+  });
+
+  test("grows the box to contain a word wider than the configured width", () => {
+    // A 40-col lone word exceeds the default 28 box; with room it widens to fit.
+    const word = "x".repeat(40);
+    const out = render(125, `hi ${word} ok`);
+    expect(out).toContain(word); // rendered whole, on its own row
+    expect(borderW(out)).toBeGreaterThan(32); // box grew past the default
+    expect(maxW(out)).toBeLessThanOrEqual(125); // still in-window
+  });
+
+  test("never clips an over-long word — grows if it fits, else drops", () => {
+    const word = "x".repeat(40); // ~40-col unbreakable token
+    for (const columns of [125, 90, 70, 55, 45]) {
+      const out = render(columns, `hi ${word} ok`);
+      expect(maxW(out)).toBeLessThanOrEqual(columns); // invariant either way
+      expect(out).toContain("Waffle");
+    }
   });
 });
 
@@ -1045,5 +1117,267 @@ describe("idle-RPG encounter glyph", () => {
     // Exactly one line changed.
     const changed = without.filter((l, i) => l !== withGlyph[i]).length;
     expect(changed).toBe(1);
+  });
+});
+
+describe("idle-RPG combat scene (Phase 5)", () => {
+  const GLYPH = "\u{1F409}"; // 🐉
+  // Two distinct 4-line scenes; every line is padded to a constant width so the
+  // status line never jitters. L*/R* mark the player/enemy halves.
+  const W = 24;
+  const mkLine = (l: string, r: string): string =>
+    (l.padEnd(10) + "  " + r.padEnd(10)).padEnd(W);
+  const sceneA = ["LA0", "LA1", "LA2", "LA3"].map((l, i) => mkLine(l, `RA${i}`));
+  const sceneB = ["LB0", "LB1", "LB2", "LB3"].map((l, i) => mkLine(l, `RB${i}`));
+  const SCENE = [sceneA.join("\n"), sceneB.join("\n")];
+
+  const renderScene = (o: Partial<StatusOverrides> = {}): string =>
+    stripAnsi(
+      renderStatus({
+        gameFeel: "full",
+        combatFrames: SCENE,
+        combatSequence: [0],
+        artWidth: W,
+        encounterSecondsAgo: 0,
+        ...o,
+      }),
+    );
+
+  test("renders both creature halves at gameFeel=full while fresh", () => {
+    const out = renderScene();
+    expect(out).toContain("LA0"); // player half
+    expect(out).toContain("RA2"); // enemy half
+  });
+
+  test("cycles combatFrames by NOW (animation)", () => {
+    const even = renderScene({ combatSequence: [0, 1], fakeNow: 1_700_000_000 });
+    const odd = renderScene({ combatSequence: [0, 1], fakeNow: 1_700_000_001 });
+    expect(even).toContain("LA0");
+    expect(even).not.toContain("LB0");
+    expect(odd).toContain("LB0");
+    expect(odd).not.toContain("LA0");
+  });
+
+  test("does NOT render the scene at subtle (full-only)", () => {
+    const out = renderScene({ gameFeel: "subtle" });
+    expect(out).not.toContain("LA0");
+  });
+
+  test("a stale encounter past TTL reverts to the idle frames", () => {
+    const out = renderScene({ encounterSecondsAgo: 99 });
+    expect(out).not.toContain("LA0");
+    expect(out).toContain("("); // the default idle fixture is still drawn
+  });
+
+  test("suppresses the fallback glyph when a scene is active (no doubled enemy)", () => {
+    const out = renderScene({ enemyGlyph: GLYPH });
+    expect(out).toContain("LA0"); // the scene wins
+    expect(out).not.toContain(GLYPH); // ...and the margin glyph is suppressed
+  });
+
+  test("the wide scene stays fully in-window (no clip) across terminal widths", () => {
+    // COLS is forced via BUDDY_FAKE_COLS, so the in-window guarantee is exact.
+    for (const columns of [125, 100, 80]) {
+      const lines = renderScene({ columns }).split("\n");
+      for (const line of lines) {
+        // Pure-ASCII fixture + the 1-col leading braille ⇒ code points == width.
+        expect([...line].length).toBeLessThanOrEqual(columns);
+      }
+      expect(lines.some((l) => l.includes("LA0"))).toBe(true); // not degraded away
+    }
+  });
+});
+
+describe("pending standoff render (design-pending-encounter Phase 3)", () => {
+  const W = 24;
+  const mkLine = (l: string, r: string): string =>
+    (l.padEnd(10) + "  " + r.padEnd(10)).padEnd(W);
+  const sceneA = ["SA0", "SA1", "SA2", "SA3"].map((l, i) => mkLine(l, `EA${i}`));
+  const sceneB = ["SB0", "SB1", "SB2", "SB3"].map((l, i) => mkLine(l, `EB${i}`));
+  const SCENE = [sceneA.join("\n"), sceneB.join("\n")];
+
+  const renderStandoff = (o: Partial<StatusOverrides> = {}): string =>
+    stripAnsi(
+      renderStatus({
+        gameFeel: "full",
+        combatFrames: SCENE,
+        combatSequence: [0],
+        artWidth: W,
+        combatSticky: true, // sticky bit, NO encounterAt
+        ...o,
+      }),
+    );
+
+  test("renders the standoff with NO encounterAt (TTL bypass proves out)", () => {
+    const out = renderStandoff();
+    expect(out).toContain("SA0"); // player half
+    expect(out).toContain("EA2"); // enemy half
+  });
+
+  test("the sticky standoff persists even when any encounter would be stale", () => {
+    // A resolved scene at the same age (99s) reverts to idle; the sticky one
+    // does not, because it carries no TTL at all.
+    const out = renderStandoff({ fakeNow: 1_700_009_999 });
+    expect(out).toContain("SA0"); // still rendering, hours later
+  });
+
+  test("does NOT render the standoff at subtle (full-only surface)", () => {
+    const out = renderStandoff({ gameFeel: "subtle" });
+    expect(out).not.toContain("SA0");
+    expect(out).toContain("("); // the idle fixture is drawn instead
+  });
+
+  test("cycles the standoff flipbook by NOW", () => {
+    const even = renderStandoff({ combatSequence: [0, 1], fakeNow: 1_700_000_000 });
+    const odd = renderStandoff({ combatSequence: [0, 1], fakeNow: 1_700_000_001 });
+    expect(even).toContain("SA0");
+    expect(even).not.toContain("SB0");
+    expect(odd).toContain("SB0");
+    expect(odd).not.toContain("SA0");
+  });
+
+  test("wander is frozen while the standoff renders (D3)", () => {
+    // A wanderSequence that would push the buddy right on odd ticks. With the
+    // scene active the offsets are zeroed, so the two ticks render identically.
+    const a = renderStandoff({ wanderSequence: [0, 9], fakeNow: 1_700_000_000 });
+    const b = renderStandoff({ wanderSequence: [0, 9], fakeNow: 1_700_000_001 });
+    expect(a).toBe(b);
+  });
+
+  test("the standoff keeps the reaction bubble (pending is NOT suppressed, D4)", () => {
+    const out = renderStandoff({
+      persistedReaction: { reaction: "you have uncommitted work" },
+    });
+    expect(out).toContain("you have uncommitted work");
+  });
+
+  test("a RESOLVED fight suppresses the reaction bubble (D4, resolved-only)", () => {
+    // Same scene, but as a fresh resolved encounter (encounterAt, no sticky) and
+    // no celebration set — so the ONLY thing that can hide the reaction is the
+    // resolved-phase suppression.
+    const out = stripAnsi(
+      renderStatus({
+        gameFeel: "full",
+        combatFrames: SCENE,
+        combatSequence: [0],
+        artWidth: W,
+        encounterSecondsAgo: 0,
+        persistedReaction: { reaction: "you have uncommitted work" },
+      }),
+    );
+    expect(out).toContain("SA0"); // the scene is up
+    expect(out).not.toContain("you have uncommitted work"); // ...bubble muted
+  });
+
+  test("the wide standoff stays fully in-window (no clip) across widths", () => {
+    for (const columns of [125, 100, 80]) {
+      const lines = renderStandoff({ columns }).split("\n");
+      for (const line of lines) {
+        expect([...line].length).toBeLessThanOrEqual(columns);
+      }
+      expect(lines.some((l) => l.includes("SA0"))).toBe(true);
+    }
+  });
+
+  test("no combatSticky and no encounter ⇒ plain idle art, no scene", () => {
+    const out = stripAnsi(renderStatus({ gameFeel: "full" }));
+    expect(out).not.toContain("SA0");
+    expect(out).toContain("("); // the default idle fixture
+  });
+});
+
+describe("skirmish-bout render (design-attack-animation)", () => {
+  // Real baked frames, not a fixture: the guard for the taller (+overlay row)
+  // and ANSI-bearing flipbook through the real jq + layout path. frames[3] is
+  // the first bout's impact pose — attacker adjacent, red ✗ -N pop on top.
+  const scene = bakePendingScene("cactus", "·", "dragon", "·", 42, 3);
+  const W = displayWidth(scene.frames[0].split("\n")[0]);
+
+  const renderBout = (o: Partial<StatusOverrides> = {}): string =>
+    renderStatus({
+      gameFeel: "full",
+      combatFrames: scene.frames,
+      combatSequence: [3], // pin the impact frame
+      artWidth: W,
+      combatSticky: true,
+      ...o,
+    });
+
+  test("the impact frame's damage pop renders through the real shell", () => {
+    const out = renderBout();
+    expect(stripAnsi(out)).toMatch(/✗ -\d+/); // the pop is visible
+    expect(out).toContain("\x1b[31m"); // ...and still red (frames skip the sanitizer)
+  });
+
+  test("a base standoff frame renders with a blank overlay (no pop)", () => {
+    const out = renderBout({ combatSequence: [0] });
+    expect(stripAnsi(out)).not.toContain("✗");
+  });
+
+  test("strict no-clip at hostile widths (BUDDY_FAKE_COLS)", () => {
+    for (const columns of [125, 100, 80]) {
+      const lines = stripAnsi(renderBout({ columns })).split("\n");
+      for (const line of lines) {
+        // Stripped scene is ASCII + the 1-cell ✗ ⇒ code points == width.
+        expect([...line].length).toBeLessThanOrEqual(columns);
+      }
+    }
+  });
+});
+
+describe("buddy-status.sh combined-status metrics header", () => {
+  // resets_at is 8100s (2h15m) past the fixed fakeNow used by renderStatus.
+  const CC = JSON.stringify({
+    model: { display_name: "Claude Opus 4.8" },
+    context_window: { context_window_size: 200000, used_percentage: 45 },
+    rate_limits: {
+      five_hour: { used_percentage: 30, resets_at: 1_700_000_000 + 8100 },
+    },
+  });
+
+  test("renders metrics on their own standalone line above the buddy block", () => {
+    const lines = renderStatus({
+      showStats: true,
+      useCombinedStatus: true,
+      ccInput: CC,
+    }).split("\n");
+    // The metrics are the FIRST line and carry every part…
+    expect(lines[0]).toContain("claude opus 4.8");
+    expect(lines[0]).toContain("ctx 45%");
+    expect(lines[0]).toContain("usage 30%");
+    expect(lines[0]).toContain("reset 2h15m");
+    // …and that line is standalone: no stat labels, no buddy name share it.
+    expect(lines[0]).not.toContain("DBG");
+    expect(lines[0]).not.toContain("Waffle");
+    // The metrics never share a row with the speech bubble (no crowding).
+    for (const l of lines) {
+      if (l.includes("claude opus 4.8")) continue;
+      expect(l).not.toContain("claude opus 4.8");
+    }
+  });
+
+  test("does not push the buddy block right (header is purely additive)", () => {
+    // The whole point: folding metrics into the stats column used to grow
+    // STATS_W to the model-name width and shove the buddy cluster right. Now the
+    // buddy block must be byte-identical with and without combined mode — the
+    // combined render is just one extra header line prepended.
+    const base = renderStatus({ showStats: true });
+    const combined = renderStatus({
+      showStats: true,
+      useCombinedStatus: true,
+      ccInput: CC,
+    });
+    expect(combined.split("\n").slice(1).join("\n")).toBe(base);
+  });
+
+  test("renders the header even when the stats panel is off", () => {
+    const out = renderStatus({
+      showStats: false,
+      useCombinedStatus: true,
+      ccInput: CC,
+    });
+    expect(out.split("\n")[0]).toContain("claude opus 4.8");
+    expect(out).toContain("Waffle"); // the buddy still renders below
+    expect(out).not.toContain("DBG"); // …with no stats column
   });
 });

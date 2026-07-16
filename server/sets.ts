@@ -8,7 +8,9 @@
  */
 
 import type { Companion } from "./engine.ts";
-import type { XpState } from "./xp.ts";
+import { resolveAppearance } from "./equipment.ts";
+import { ITEMS } from "./items.ts";
+import { ownedUpgradeEffects, type XpState } from "./xp.ts";
 
 export interface CosmeticSet {
   id: string;
@@ -40,16 +42,48 @@ export const COSMETIC_SETS: CosmeticSet[] = [
   },
 ];
 
-/** Whether a single set member is satisfied by the state + companion. */
+/**
+ * Flags an owned upgrade grants, independent of any companion — used when no
+ * companion exists to resolve a full appearance against (mirrors
+ * resolveAppearance's flag fold: cosmeticFlags ∪ owned flag/shiny effects).
+ */
+function upgradeGrantedFlags(state: XpState): Set<string> {
+  const flags = new Set<string>();
+  for (const effect of ownedUpgradeEffects(state)) {
+    if (effect.type === "flag") flags.add(effect.flag);
+    else if (effect.type === "shiny") flags.add("aura_shiny");
+  }
+  return flags;
+}
+
+/**
+ * Whether a single set member is satisfied by the state + companion. Reads
+ * the *resolved* appearance (design-derive-upgrades.md D4): post-migration, a
+ * bought hat/flag lives in ownership (`unlockedUpgrades`), not in
+ * `companion.bones` or `cosmeticFlags` directly, so a worn hat/flag from
+ * equipment or an owned upgrade satisfies a member the same as before.
+ */
 export function memberMet(
   member: string,
   state: XpState,
   companion: Companion | null,
 ): boolean {
-  if (member.startsWith("hat:")) {
-    return !!companion && companion.bones.hat === member.slice(4);
+  if (companion) {
+    const a = resolveAppearance(
+      companion.bones,
+      state.equipment,
+      state.cosmeticFlags,
+      ITEMS,
+      ownedUpgradeEffects(state),
+    );
+    return member.startsWith("hat:")
+      ? a.hat === member.slice(4)
+      : a.flags.includes(member);
   }
-  return state.cosmeticFlags.includes(member);
+  if (member.startsWith("hat:")) return false;
+  return (
+    state.cosmeticFlags.includes(member) || upgradeGrantedFlags(state).has(member)
+  );
 }
 
 export interface SetProgress {

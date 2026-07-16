@@ -154,7 +154,7 @@ const WYVERN_HAT: Partial<Record<Hat, string>> = {
   tinyduck:  "}  ,>   {",   // ,> (2) slightly left of center
 };
 
-function applyHat(species: Species, hat: Hat, art: string[]): void {
+export function applyHat(species: Species, hat: Hat, art: string[]): void {
   if (hat === "none") return;
   if (species === "wyvern") {
     const wyvernLine = WYVERN_HAT[hat];
@@ -162,6 +162,83 @@ function applyHat(species: Species, hat: Hat, art: string[]): void {
   } else if (!art[0].trim()) {
     art[0] = HAT_ART[hat];
   }
+}
+
+// ─── Gear overlays (equipped weapon / trinket on the sprite) ─────────────────
+
+/** Weapon/trinket glyphs to composite onto a rendered frame (see applyGear). */
+export interface GearArt {
+  weapon?: string;
+  trinket?: string;
+}
+
+/**
+ * Hand-tuned per-species anchor cells for gear glyphs, as `[row, col]` into the
+ * *rendered* (eye-substituted) frame. `weapon` sits beside the body at hand
+ * height so the glyph reads as held; `trinket` rests on the ground by the
+ * buddy's feet. Every anchor is blank in all three idle frames of its species
+ * (art.test.ts enforces this), so gear never flickers as the idle cycle plays.
+ */
+export const GEAR_ANCHORS: Record<
+  Species,
+  { weapon: [number, number]; trinket: [number, number] }
+> = {
+  duck:     { weapon: [3, 1],  trinket: [4, 0] }, // held at the chest (faces left)
+  goose:    { weapon: [3, 10], trinket: [4, 0] }, // at the wing
+  blob:     { weapon: [2, 11], trinket: [4, 0] }, // beside the widest (breathing) frame
+  cat:      { weapon: [3, 10], trinket: [4, 0] },
+  dragon:   { weapon: [3, 11], trinket: [4, 0] },
+  octopus:  { weapon: [2, 11], trinket: [4, 0] }, // a tentacle-height hold
+  owl:      { weapon: [3, 10], trinket: [4, 0] },
+  penguin:  { weapon: [2, 9],  trinket: [4, 0] }, // clear of the frame-2 body shift
+  turtle:   { weapon: [2, 10], trinket: [4, 0] },
+  snail:    { weapon: [2, 1],  trinket: [4, 0] }, // by the eye stalk (faces left)
+  ghost:    { weapon: [3, 10], trinket: [4, 0] },
+  axolotl:  { weapon: [3, 10], trinket: [4, 0] }, // rows 1-2 are gills, full width
+  capybara: { weapon: [2, 11], trinket: [4, 0] },
+  cactus:   { weapon: [2, 11], trinket: [4, 0] }, // beside the arm pot
+  robot:    { weapon: [3, 10], trinket: [4, 0] },
+  rabbit:   { weapon: [2, 10], trinket: [4, 0] },
+  mushroom: { weapon: [3, 9],  trinket: [4, 0] }, // by the stem, under the cap
+  chonk:    { weapon: [2, 11], trinket: [4, 0] },
+  wyvern:   { weapon: [3, 8],  trinket: [4, 9] }, // row 5 is the ANSI-fire tail — avoid
+  pikachu:  { weapon: [3, 9],  trinket: [4, 0] },
+};
+
+/**
+ * Write `glyph` into `art` at an anchor, padding the line rightward if the
+ * anchor sits past its end. Skips (leaving the frame intact) when any target
+ * cell holds a body pixel or the line carries ANSI — a shifted animation frame
+ * must never be clobbered, and splicing into escape codes would corrupt them.
+ */
+function overlayGlyph(
+  art: string[],
+  anchor: readonly [number, number],
+  glyph: string,
+): void {
+  const [row, col] = anchor;
+  const line = art[row];
+  if (line === undefined || line.includes("\x1b")) return;
+  const cells = [...line];
+  const glyphCells = [...glyph];
+  while (cells.length < col + glyphCells.length) cells.push(" ");
+  for (let i = 0; i < glyphCells.length; i++) {
+    if (cells[col + i] !== " ") return;
+  }
+  cells.splice(col, glyphCells.length, ...glyphCells);
+  art[row] = cells.join("");
+}
+
+/** Composite equipped-gear glyphs onto a rendered frame at the species' anchors. */
+export function applyGear(
+  species: Species,
+  art: string[],
+  gear?: GearArt,
+): void {
+  if (!gear) return;
+  const anchors = GEAR_ANCHORS[species];
+  if (gear.weapon) overlayGlyph(art, anchors.weapon, gear.weapon);
+  if (gear.trinket) overlayGlyph(art, anchors.trinket, gear.trinket);
 }
 
 const SHINY_COLOR = "\x1b[93m"; // bright yellow
@@ -235,6 +312,69 @@ export function getArtFrame(species: Species, eye: Eye, frame: number = 0): stri
   return f.map((line) => line.replace(/\{E\}/g, eye));
 }
 
+/**
+ * The row index of a species' eyes within its raw art frame — the first line
+ * carrying the `{E}` placeholder.
+ *
+ * Drives the two-sprite combat-scene clash alignment (idle-RPG Phase 5) so the
+ * sword lands on the eye row regardless of where a species wears its face: most
+ * are centered (row 2 of 5), but goose/snail sit on row 1, mushroom on row 3,
+ * and wyvern's body spans 6 lines — `length/2` is wrong for all of these. Falls
+ * back to the vertical center if a species somehow has no placeholder. Pure.
+ */
+export function eyeRowIndex(species: Species, frame: number = 0): number {
+  const frames = SPECIES_ART[species];
+  const f = frames[frame % frames.length];
+  const idx = f.findIndex((line) => line.includes("{E}"));
+  return idx >= 0 ? idx : Math.floor(f.length / 2);
+}
+
+// ─── Frame geometry (idle-RPG Phase 5: two-sprite combat scene) ──────────────
+
+/** Directional glyphs swapped when a sprite is mirrored, so the flipped art
+ *  still reads as a creature facing the other way. Symmetric glyphs
+ *  (`| _ ^ ~ . ' = ω` …) are absent and pass through unchanged. */
+const MIRROR_SWAP: Readonly<Record<string, string>> = {
+  "(": ")",
+  ")": "(",
+  "<": ">",
+  ">": "<",
+  "[": "]",
+  "]": "[",
+  "{": "}",
+  "}": "{",
+  "/": "\\",
+  "\\": "/",
+};
+
+/** Right-pad every line of a frame to the frame's max display width, yielding a
+ *  rectangular block. Pure. */
+export function rectFrame(lines: string[]): string[] {
+  const w = lines.reduce((m, l) => Math.max(m, displayWidth(l)), 0);
+  return lines.map((l) => dpad(l, w));
+}
+
+/**
+ * Mirror a rendered frame left↔right so a creature faces the opposite way.
+ *
+ * Rectangularizes first (square bounding box), reverses each line **by code
+ * point** (surrogate-pair safe), then swaps directional glyphs. Pure.
+ *
+ * Intended for the curated 5-line, ANSI-free roster (`bugs.ts` excludes
+ * `wyvern`/`pikachu`): ANSI escapes would reverse into garbage.
+ *
+ * @param lines: A rendered (eye-substituted, ANSI-free) frame.
+ * @returns The mirrored frame, every line equal display width.
+ */
+export function mirrorFrame(lines: string[]): string[] {
+  return rectFrame(lines).map((line) =>
+    [...line]
+      .reverse()
+      .map((ch) => MIRROR_SWAP[ch] ?? ch)
+      .join(""),
+  );
+}
+
 // Original 15-tick cycle [0,0,0,0,1,0,0,0,-1,0,0,2,0,0,0]: -1 (blink) becomes
 // index 3 in the pre-baked frames array.
 export const STATUS_FRAME_SEQUENCE: readonly number[] = [
@@ -274,6 +414,8 @@ const EMOTION_FRAME_SEQUENCE: readonly number[] = [0, 0, 0, 1, 1, 1];
  * @param eye: The glyph to substitute for the `{E}` eye placeholder.
  * @param seasonalHat: Optional seasonal hat to overlay when the hat slot is
  *     empty (never clobbers a user-equipped hat).
+ * @param gear: Optional equipped-gear glyphs composited at the species'
+ *     anchors (weapon held beside the body, trinket at the feet).
  * @returns The rendered frame as a newline-joined string.
  */
 function renderSpeciesFrame(
@@ -281,16 +423,16 @@ function renderSpeciesFrame(
   frameIdx: number,
   eye: string,
   seasonalHat?: Hat,
+  gear?: GearArt,
 ): string {
   const raw = SPECIES_ART[bones.species][frameIdx];
   const art = raw.map((line) => line.replace(/\{E\}/g, eye));
-  const hatLine = HAT_ART[bones.hat];
-  if (hatLine && !art[0].trim()) {
-    art[0] = hatLine;
-  } else if (seasonalHat && bones.hat === "none" && !art[0].trim()) {
-    // Seasonal cosmetic (FR-C2): only when the hat slot is empty.
-    art[0] = HAT_ART[seasonalHat];
-  }
+  // Seasonal cosmetic (FR-C2): only when the hat slot is empty. applyHat is
+  // the single hat renderer (shared with the card path) — it knows the wyvern's
+  // between-the-horns placement, so wyvern hats show on the status line too.
+  const hat = bones.hat !== "none" ? bones.hat : seasonalHat ?? "none";
+  applyHat(bones.species, hat, art);
+  applyGear(bones.species, art, gear);
   return art.join("\n");
 }
 
@@ -298,12 +440,13 @@ export function getStatusFrames(
   bones: BuddyBones,
   emotion: Emotion = "neutral",
   seasonalHat?: Hat,
+  gear?: GearArt,
 ): {
   frames: string[];
   frameSequence: number[];
 } {
   const resolveFrame = (frameIdx: number, eye: string): string =>
-    renderSpeciesFrame(bones, frameIdx, eye, seasonalHat);
+    renderSpeciesFrame(bones, frameIdx, eye, seasonalHat, gear);
 
   // Emotion: swap in the emotion's eye and run a 2-frame micro-cycle.
   if (emotion !== "neutral") {
@@ -406,12 +549,14 @@ export function renderCompanionCard(
   reaction?: string,
   frame: number = 0,
   width: number = 40,
+  gear?: GearArt,
 ): string {
   const color = getRarityColor(bones.rarity);
   const stars = RARITY_STARS[bones.rarity];
   const shiny = bones.shiny ? `${SHINY_COLOR}\u2728 ${NC}` : "";
   const art = getArtFrame(bones.species, bones.eye, frame);
   applyHat(bones.species, bones.hat, art);
+  applyGear(bones.species, art, gear);
 
   // Build the card
   const W = Math.max(24, width);
@@ -516,12 +661,14 @@ export function renderCompanionCardMarkdown(
   personality: string,
   reaction?: string,
   frame: number = 0,
+  gear?: GearArt,
 ): string {
   const dot = RARITY_DOT[bones.rarity];
   const stars = RARITY_STARS[bones.rarity];
   const shiny = bones.shiny ? " \u2728" : "";
   const art = getArtFrame(bones.species, bones.eye, frame);
   applyHat(bones.species, bones.hat, art);
+  applyGear(bones.species, art, gear);
 
   // Strip empty lines from art for cleaner rendering
   const artLines = art.filter((l) => l.trim().length > 0);

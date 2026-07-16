@@ -48,7 +48,7 @@
 </td>
 <td align="center" width="25%">
 <h3>🎨</h3>
-<b>19 Species</b><br>
+<b>20 Species</b><br>
 <sub>From ducks to dragons — each with animated ASCII art and rarity colors.</sub>
 </td>
 <td align="center" width="25%">
@@ -113,15 +113,15 @@ The installer prints `Target profile: <path>` at the top so you can see at a gla
 <!-- ============================================================ -->
 
 <details>
-<summary><b>🐙 &nbsp; Meet the 19 Species</b></summary>
+<summary><b>🐙 &nbsp; Meet the 20 Species</b></summary>
 
 <br>
 
-Every buddy is uniquely generated from your Claude Code account — same species, same stats, same personality every time. 19 species, each with 3 idle animation frames + a blink.
+Every buddy is uniquely generated from your Claude Code account — same species, same stats, same personality every time. 20 species, each with 3 idle animation frames + a blink.
 
 <!-- Later replace with: docs/species-grid.png -->
 <p align="center">
-<img src="https://placehold.co/800x500/1e1e2e/cdd6f4?text=%F0%9F%90%99+SPECIES+GRID+IMAGE+%F0%9F%90%99%0A%2818+species+in+a+visual+grid%29" alt="all 18 species" width="800" />
+<img src="https://placehold.co/800x500/1e1e2e/cdd6f4?text=%F0%9F%90%99+SPECIES+GRID+IMAGE+%F0%9F%90%99%0A%2820+species+in+a+visual+grid%29" alt="all 20 species" width="800" />
 </p>
 
 ```
@@ -143,6 +143,9 @@ Every buddy is uniquely generated from your Claude Code account — same species
 (   oo   )  |_|    |_|   [ ==== ]   =(  ..  )=    |°  °|   (   ..   )
  `------'     |    |      `------'   (")__(")      |____|    `------'
 ```
+
+> Plus **wyvern** and **pikachu** — two community-contributed species with
+> bespoke, larger art that doesn't fit this fixed-size grid layout.
 
 ### Rarities
 
@@ -198,7 +201,7 @@ Rarer buddies earn a small flavor bonus (common ×1.0 → legendary ×1.2) — n
 - **Stat unlocks** — small permanent boosts to your buddy's peak stat
 - **Prestige titles** (level 11+) — `Committer`, `Debugger`, `Architect`, `Sage`, `Legend`. Equip one with `/buddy upgrades title <id>`; it shows under your buddy's name in the status line.
 
-Respec (refunding unlocks) is open until level 10, then locks permanently — `/buddy upgrades` always shows your current respec status and point balance.
+Respec (refunding unlocks) is open until level 10, then locks permanently — `/buddy upgrades` always shows your current respec status and point balance. Every unlock is derived on read rather than baked into your buddy, so refunds are always exact (no permanent stat loss, no clobbered hat) and an unlock applies to your **whole menagerie**, not just whoever was active when you bought it.
 
 ### Mood
 
@@ -243,11 +246,38 @@ Own one companion of **every rarity tier** (common → legendary) at once and ea
 
 An **opt-in** status-line badge (`P2 🔥7`) under your buddy's name shows prestige tier and current streak. Default off — toggle with `/buddy badge [on|off]`.
 
-### Idle wander
+### Equipment & the merchant
 
-When game-feel intensity is `full`, your buddy quietly **ambles back and forth** along the status line while it's idle — the speech bubble, stats panel, and name stay pinned, only the art drifts. Cosmetic-only motion, no power creep. Default on; toggle with `/buddy wander [on|off]`. Three extra modes are opt-in: `/buddy wander hop` adds a small vertical bob (costs one status-line row), `/buddy wander wide` opens a longer two-sided corridor, and `/buddy wander bubble` makes the speech bubble travel **with** the buddy (the connector stays attached) instead of staying pinned. `/buddy wander status` reports the current settings. The walk only animates at game-feel `full` (`/buddy gamefeel full`), so it stays out of the way for everyone else.
+Your buddy has three gear slots — **weapon**, **headgear**, **trinket** — filled
+from a starter kit and topped up from the merchant or combat loot. Gear is
+cosmetic-first but also nudges the stat that matters for it (a weapon boosts
+fight odds, for instance); equipping never mutates your buddy's innate rolled
+stats, it's derived on read. Manage loadout with `buddy_equip`, browse and buy
+with `buddy_shop` (spends the same skill-point wallet as `/buddy upgrades`) —
+both are reachable from `/buddy menu` as a guided, pick-driven browser, or by
+just asking ("show me the shop", "equip the lucky hat").
+
+### Idle wander (free-roam)
+
+When game-feel intensity is `full`, your buddy quietly **ambles back and forth** along the status line while it's idle. It free-roams the **whole line** — gliding left toward the stats panel and back to its home at the right edge — and its **speech bubble travels with it** (the connector stays attached), so the two move as one. The left-anchored stats panel never moves.
+
+The buddy is always kept **fully on-screen**: as long as the window can fit the stats panel and the buddy, it never clips. On a window too narrow to also fit the speech bubble, the bubble is dropped so the **buddy itself is never cut off**. Cosmetic-only motion, no power creep.
+
+Default on; toggle with `/buddy wander [on|off]`. `/buddy wander hop` adds a small vertical bob (costs one status-line row); `/buddy wander status` reports the current settings. The walk only animates at game-feel `full` (`/buddy gamefeel full`), so it stays out of the way for everyone else.
+
+> The old `wide` / `bubble` sub-modes are now folded into free-roam (the whole line is the lane, and the bubble always travels with the buddy), so they're no longer separate toggles.
 
 **Motion feels distracting?** Stop the amble with `/buddy wander off`, or dial all the celebratory animation down with `/buddy gamefeel subtle` (brief toasts only) or `/buddy gamefeel off` (silent — the classic status line). Both are read live, no restart needed.
+
+### Bug fights
+
+The moment Claude hits an error, a bug appears as a **second creature** in the status line and squares off against your buddy — a tense standoff that **stays put until you commit**. That persistence is the point: a bug on your status line means you have uncommitted, error-marked work, so the standoff doubles as a gentle *commit nudge*. More errors in the same session summon a tougher foe (the enemy escalates as you go), each rendered as a full creature of a different kind: a *typo gremlin* shows up as a blob, a *null wraith* as a ghost, a *segfault dragon* as an actual dragon. Fixing the error doesn't clear the standoff — **only committing does**.
+
+The standoff isn't just staring, either: every so often one of the two **walks over and takes a swing** at the other — a red `✗ -N` damage pop flashes over the victim and floats away, and the attacker saunters back to its corner. Pure theater (nobody has HP; the real fight resolves at commit), but the bug hitting back is a reminder of who wins if you never commit.
+
+When you commit, the buddy actually fights the bug it's been staring down: a quick sword-swing duel (ready → wind-up → ⚔ strike → resolve), the same red damage pop landing on the bug when your buddy wins. Win and your buddy pockets skill points (and, now and then, an item); lose and the bug scuttles off. A win/flee toast rides the speech bubble, the fight plays for ~10 seconds, then your buddy goes back to idling. Your buddy keeps its usual chatter during the standoff, but the chat bubble steps aside for those 10 seconds so the duel has the stage.
+
+Like all the ambient animation the standoff only shows at game-feel `full`; `/buddy gamefeel subtle` keeps just the win/flee toast at commit, and `/buddy gamefeel off` disables fights entirely (no standoff, no spawns, no rewards, no render).
 
 > All multipliers stack multiplicatively but stay modest: rarity (≤×1.20) × prestige (≤×1.15) × collection (×1.05) caps around ×1.45. Every new reward back-fills cleanly onto existing buddies — nothing is lost on upgrade.
 
@@ -273,7 +303,7 @@ Five integration points, zero binary dependencies. When Claude Code updates, you
              │    claude-buddy     │
              │                     │
              │  wyhash + mulberry32│
-             │  18 species, 3 anim │
+             │  20 species, 3 anim │
              │  rarity colors      │
              │  speech bubbles     │
              │  ~/.claude-buddy/   │
@@ -321,6 +351,7 @@ claude-buddy/
 | Command | Description |
 |---|---|
 | `/buddy` | Show companion card with ASCII art and stats |
+| `/buddy menu` | Interactive command browser — navigate every buddy command as a guided tree; common settings (theme, style, game-feel, toggles) are set right from the menu |
 | `/buddy pet` | Pet your companion |
 | `/buddy stats` | Stats-only card |
 | `/buddy xp` | Show XP, level, and unlocked reactions/upgrades |
@@ -330,8 +361,13 @@ claude-buddy/
 | `/buddy upgrades title <id\|none>` | Equip a prestige title, or clear it |
 | `/buddy upgrades ascend` | At max level: reset to L1 for a permanent prestige multiplier (keeps all unlocks) |
 | `/buddy badge [on\|off]` | Toggle the prestige/streak badge (`P2 🔥7`) in the status line |
-| `/buddy wander [on\|off\|hop\|wide\|bubble\|status]` | Toggle the idle status-line amble (and the `hop`/`wide`/`bubble` modes); animates at game-feel `full` |
+| `/buddy gamefeel [off\|subtle\|full]` | Show or set the intensity gate for celebrations, idle animation, and idle-RPG combat |
+| `/buddy wander [on\|off\|hop\|status]` | Toggle the idle status-line free-roam amble (and the `hop` vertical bob); bubble travels with the buddy by default; animates at game-feel `full` |
+| `buddy_shop` / `buddy_equip` | Visit the merchant to buy gear, or manage your weapon/headgear/trinket loadout — reachable from `/buddy menu`, or just ask ("show me the shop") |
+| `/buddy brag` | Paste-able markdown brag card (add `plain=true` for emoji-light) |
+| `/buddy achievements` | List earned and in-progress achievement badges |
 | `/buddy mood` | Show current mood and what's influencing it |
+| `/buddy memory [<project>\|resolve <bug-id>]` | Show cross-session memory (optionally filtered), or mark a remembered bug fixed |
 | `/buddy theme [dark\|light\|auto]` | Show or set color theme |
 | `/buddy stats bar [on\|off]` | Toggle the stat-bar panel in the status line |
 | `/buddy off` / `on` | Mute / unmute reactions |
@@ -346,6 +382,7 @@ claude-buddy/
 | `/buddy style [classic\|round]` | Bubble border style (tmux only) |
 | `/buddy position [top\|left]` | Bubble position (tmux only) |
 | `/buddy rarity [on\|off]` | Show or hide stars + rarity line (tmux only) |
+| `/buddy rainbow [#hex ...\|reset]` | Set or reset the shiny-buddy gradient colors (tmux only) |
 | `/buddy width [10-60]` | Set bubble text width in chars (tmux only) |
 | `/buddy margin [0-20]` | Set right-side margin (tmux only) |
 | `/buddy statusline [on\|off]` | Enable or disable buddy in the status line |
@@ -362,11 +399,11 @@ claude-buddy/
 | `bun run pick` | Interactive TUI to find and save your dream buddy |
 | `bun run hunt` | Legacy search (use `pick` instead) |
 | `bun run doctor` | Full diagnostic report |
-| `bun run verify` | Verify buddy generation matches expected output |
 | `bun run backup` | Snapshot / restore state |
 | `bun run settings` | View / change buddy settings — cooldown, TTL (TUI coming soon) |
 | `bun run disable` | Temporarily deactivate buddy |
 | `bun run enable` | Re-enable buddy |
+| `bun run upgrade` | Pull the latest claude-buddy release into an existing install |
 | `bun run help` | Full CLI reference |
 | `bun run cli/uninstall.ts` | Clean removal |
 
@@ -483,12 +520,13 @@ bun run cli/uninstall.ts    # full clean removal
 - [x] **Multi-buddy support** — menagerie system with named slots, interactive TUI picker 💜[@doctor-ew](https://github.com/doctor-ew)💜
 - [x] **Leveling system** — XP from coding sessions, skill points, unlockable reactions/upgrades, prestige titles
 - [x] **Endgame rewards** — prestige/ascension loop, session streaks, milestone loot boxes, rarity-set collection milestone, opt-in prestige/streak badge
-- [ ] **Buddy pair-programming** — `buddy_suggest` flags teachable moments (repeated errors, large diffs, long functions, TODOs) during sessions
-- [ ] **Cross-session memory** — `/buddy memory` remembers past projects, recurring bugs, and inferred preferences
-- [ ] **Mood system** — `/buddy mood` shifts based on tests, errors, session length, time of day
+- [x] **Idle-RPG** — equipment slots + merchant, bugs-as-enemies with baked auto-combat, two-sprite fight scenes, free-roam idle wander, interactive `/buddy menu` browser
+- [x] **Buddy pair-programming** — `buddy_suggest` flags teachable moments (repeated errors, large diffs, long functions, TODOs) during sessions
+- [x] **Cross-session memory** — `/buddy memory` remembers past projects, recurring bugs, and inferred preferences
+- [x] **Mood system** — `/buddy mood` shifts based on tests, errors, session length, time of day
 - [x] **Achievement badges** — "1000 lines reviewed", "week streak", etc. 💜[ndcorder](https://github.com/ndcorder)💜
-- [ ] **Light theme colors** — auto-detect and match light theme RGB
-- [x] **New species + community art** — wyvern added 💜[@jpmalone0](https://github.com/jpmalone0)💜 (community contributions welcome)
+- [x] **Light theme colors** — `/buddy theme light`, auto-detect via `theme auto`
+- [x] **New species + community art** — wyvern and pikachu added 💜[@jpmalone0](https://github.com/jpmalone0)💜 (community contributions welcome)
 - [ ] **`npx claude-buddy`** — one-command install without cloning
 
 <br>
