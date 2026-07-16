@@ -186,8 +186,11 @@ REACTION="${REACTIONS[$((RANDOM % N))]}"
 
 mkdir -p "$STATE_DIR"
 
-TMP=$(mktemp)
-jq --arg r "$REACTION" '.reaction = $r' "$STATUS_FILE" > "$TMP" 2>/dev/null && mv "$TMP" "$STATUS_FILE"
+# Same-dir mktemp: /tmp may be another filesystem, where mv degrades to
+# copy+unlink and a concurrent statusline tick can see a torn status.json.
+TMP=$(mktemp "$STATE_DIR/.status.patch.XXXXXX")
+jq --arg r "$REACTION" '.reaction = $r' "$STATUS_FILE" > "$TMP" 2>/dev/null \
+    && mv "$TMP" "$STATUS_FILE" || rm -f "$TMP"
 
 jq -n --arg r "$REACTION" --arg ts "$(date +%s)000" \
   '{reaction: $r, timestamp: ($ts | tonumber), reason: "name"}' \

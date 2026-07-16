@@ -186,12 +186,36 @@ describe("migrateUpgradeEffects (no companion store present)", () => {
   });
 
   test("strips the aura_shiny marker when no loot cosmetic protects it (no loot store => not shiny)", () => {
-    const s = makeXpState({
-      unlockedUpgrades: ["shiny_aura"],
-      cosmeticFlags: ["aura_shiny"],
-    });
-    const migrated = migrateUpgradeEffects(s);
-    expect(migrated.cosmeticFlags).toEqual([]);
+    // migrateUpgradeEffects consults the REAL loot store (loadLoot) to decide
+    // whether a loot cosmetic protects the marker. In-process that's the
+    // ambient config dir — on a machine whose store owns a shiny cosmetic the
+    // marker is (correctly) kept and this expectation flips. A fresh
+    // subprocess with a temp CLAUDE_CONFIG_DIR guarantees the empty store the
+    // test name promises (same isolation idiom as the suite below).
+    const cfgDir = mkdtempSync(join(tmpdir(), "buddy-migrate-shiny-"));
+    const script = `
+      const { migrateUpgradeEffects } = await import("./server/migrate.ts");
+      const { backfillXpState } = await import("./server/xp.ts");
+      const s = backfillXpState({
+        unlockedUpgrades: ["shiny_aura"],
+        cosmeticFlags: ["aura_shiny"],
+      });
+      const migrated = migrateUpgradeEffects(s);
+      console.log(JSON.stringify({ cosmeticFlags: migrated.cosmeticFlags }));
+    `;
+    try {
+      const res = spawnSync("bun", ["-e", script], {
+        cwd: join(import.meta.dir, ".."),
+        env: { ...process.env, CLAUDE_CONFIG_DIR: cfgDir },
+        encoding: "utf8",
+      });
+      expect(res.stderr).toBe("");
+      expect(res.status).toBe(0);
+      const out = JSON.parse(res.stdout.trim());
+      expect(out.cosmeticFlags).toEqual([]);
+    } finally {
+      rmSync(cfgDir, { recursive: true, force: true });
+    }
   });
 });
 

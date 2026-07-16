@@ -348,10 +348,12 @@ export interface ReactionState {
   reason: string;
 }
 
-export function loadReaction(): ReactionState | null {
+export function loadReaction(cfg?: BuddyConfig): ReactionState | null {
   try {
     const data: ReactionState = JSON.parse(readFileSync(reactionFile(), "utf8"));
-    const { reactionTTL } = loadConfig();
+    // Callers that already hold the config (writeStatusState) pass it in so
+    // the TTL check doesn't re-parse config.json.
+    const { reactionTTL } = cfg ?? loadConfig();
     if (reactionTTL > 0 && Date.now() - data.timestamp > reactionTTL * 1000) return null;
     return data;
   } catch {
@@ -915,6 +917,22 @@ export function writeStatusState(
 ): void {
   const { reaction, muted, achievement, level, xp, xpGain } = opts;
   mkdirSync(STATE_DIR, { recursive: true });
+  const statusFile = join(STATE_DIR, "status.json");
+  // Mute is a user toggle that lives only in status.json (buddy_mute/unmute
+  // pass it explicitly). Every other writer must carry the on-disk value
+  // forward — defaulting to false here let any XP award or bug sighting
+  // silently unmute the buddy.
+  let mutedState = muted;
+  if (mutedState === undefined) {
+    try {
+      const prev = JSON.parse(readFileSync(statusFile, "utf8")) as {
+        muted?: boolean;
+      };
+      mutedState = prev.muted === true;
+    } catch {
+      mutedState = false;
+    }
+  }
   const { renderFace, RARITY_STARS } =
     require("./engine.ts") as typeof import("./engine.ts");
   const { getStatusFrames } =
@@ -925,7 +943,7 @@ export function writeStatusState(
   // re-parsing the same files. Both loaders are internally guarded (they return
   // defaults/null on any failure), so no try needed here.
   const cfg = loadConfig();
-  const activeReason = loadReaction()?.reason;
+  const activeReason = loadReaction(cfg)?.reason;
 
   // Game-feel intensity — drives emotion + celebration. Same transient clamp
   // as effectiveGameFeel() (error spike / opt-in deep focus, FR-E1), built
@@ -970,16 +988,21 @@ export function writeStatusState(
       // (centered over the scene) so the shell needs no layout change: art
       // height and width already come from the frames themselves. Re-stripped
       // here because frame art is exempt from the shell-side jq sanitizer.
-      const captionFrames = (frs: string[], project?: string): string[] => {
+      const captionFrames = (
+        frs: string[],
+        project?: string,
+      ): { frames: string[]; width: number } => {
+        const w = sceneWidth(frs);
         const name = (project ?? "").replace(/[\x00-\x1f\x7f]/g, "").trim();
-        if (!name) return frs;
+        if (!name) return { frames: frs, width: w };
         const caption = `Bug fight in ${name}!`;
-        const pad = Math.max(
-          0,
-          Math.floor((sceneWidth(frs) - displayWidth(caption)) / 2),
-        );
+        const captionW = displayWidth(caption);
+        const pad = Math.max(0, Math.floor((w - captionW) / 2));
         const line = " ".repeat(pad) + caption;
-        return frs.map((frame) => line + "\n" + frame);
+        return {
+          frames: frs.map((frame) => line + "\n" + frame),
+          width: Math.max(w, pad + captionW),
+        };
       };
       const enc = readEncounter();
       if (enc) {
@@ -991,9 +1014,10 @@ export function writeStatusState(
         enemyGlyph = enc.enemyGlyph;
         encounterAt = enc.at;
         if (Array.isArray(enc.frames) && enc.frames.length > 0) {
-          combatFrames = captionFrames(enc.frames, enc.project);
+          const scene = captionFrames(enc.frames, enc.project);
+          combatFrames = scene.frames;
           combatSequence = enc.sequence;
-          artWidth = sceneWidth(combatFrames);
+          artWidth = scene.width;
         }
       } else if (cfg.gameFeel === "full") {
         // Pending standoff (design-pending-encounter §5.1): no TTL, full-only,
@@ -1010,9 +1034,10 @@ export function writeStatusState(
             require("./session.ts") as typeof import("./session.ts");
           const snap = loadSnapshot();
           if (snap && snap.startedAt === pending.startedAt) {
-            combatFrames = captionFrames(pending.frames, pending.project);
+            const scene = captionFrames(pending.frames, pending.project);
+            combatFrames = scene.frames;
             combatSequence = pending.sequence;
-            artWidth = sceneWidth(combatFrames);
+            artWidth = scene.width;
             combatSticky = 1;
           }
         }
@@ -1172,7 +1197,7 @@ export function writeStatusState(
     shiny: companion.bones.shiny,
     hat: displayBones.hat,
     reaction: reaction ?? "",
-    muted: muted ?? false,
+    muted: mutedState,
     achievement: achievement ?? "",
     frames,
     frameSequence,
@@ -1203,7 +1228,7 @@ export function writeStatusState(
   };
   // Atomic write (game-feel §2.6): the MCP server, the award-xp.ts process, and
   // react.sh's jq patch all touch status.json — tmp+rename avoids torn reads.
-  const file = join(STATE_DIR, "status.json");
+  const file = statusFile;
   const tmp = file + ".tmp";
   writeFileSync(tmp, JSON.stringify(state));
   try {
@@ -1283,6 +1308,9 @@ const TRANSIENT_PREFIXES = [
   ".session_start.",
   "session.",
   "pending-encounter.", // standoff side-channel + its .tmp (design-pending-encounter §3.1)
+  ".tty.", // statusline's cached controlling-PTY device (per session)
+  ".status.patch.", // react.sh's atomic-patch temp (crash leftovers only)
+  ".events.patch.",
 ];
 
 /**

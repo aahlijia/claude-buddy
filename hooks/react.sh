@@ -32,24 +32,38 @@ DOW=$(date +%u)
 
 INPUT=$(cat)
 
+RESULT=$(echo "$INPUT" | jq -r '.tool_response // ""' 2>/dev/null)
+[ -z "$RESULT" ] && exit 0
+
+# Lifecycle exemption (design-pending-encounter G5): a commit closes the
+# session — it awards the session bonus, resolves the fight, and dismisses the
+# pending standoff. The cooldown and mute gates below must not swallow it, or
+# a commit landing within 30s of an unrelated reaction (the classic
+# error→fix→commit flow) silently skips all three and the "commit nudge"
+# survives the very commit that should clear it. Same pattern the classifier's
+# commit branch matches below.
+IS_COMMIT=0
+if echo "$RESULT" | grep -qiE '[0-9]+ files? changed|\[[a-zA-Z_-]+ [a-f0-9]{7,}\]'; then
+    IS_COMMIT=1
+fi
+
 COOLDOWN=30
 if [ -f "$CONFIG_FILE" ]; then
   _cd=$(jq -r '.commentCooldown // 30' "$CONFIG_FILE" 2>/dev/null || echo 30)
   [[ "$_cd" =~ ^[0-9]+$ ]] && COOLDOWN=$_cd
 fi
 
-if [ -f "$COOLDOWN_FILE" ]; then
+if [ -f "$COOLDOWN_FILE" ] && [ "$IS_COMMIT" -eq 0 ]; then
     LAST=$(cat "$COOLDOWN_FILE" 2>/dev/null)
     NOW=$(date +%s)
     DIFF=$(( NOW - ${LAST:-0} ))
     [ "$DIFF" -lt "$COOLDOWN" ] && exit 0
 fi
 
-RESULT=$(echo "$INPUT" | jq -r '.tool_response // ""' 2>/dev/null)
-[ -z "$RESULT" ] && exit 0
-
+# Mute silences the visible reaction (the bubble writes are gated on $MUTED at
+# the dispatch tail) but must not drop a commit's lifecycle work.
 MUTED=$(jq -r '.muted // false' "$STATUS_FILE" 2>/dev/null)
-[ "$MUTED" = "true" ] && exit 0
+[ "$MUTED" = "true" ] && [ "$IS_COMMIT" -eq 0 ] && exit 0
 
 SPECIES=$(jq -r '.species // "blob"' "$STATUS_FILE" 2>/dev/null)
 NAME=$(jq -r '.name // "buddy"' "$STATUS_FILE" 2>/dev/null)
@@ -1345,12 +1359,24 @@ if [ -n "$REASON" ] && [ -n "$REACTION" ]; then
     mkdir -p "$STATE_DIR"
     date +%s > "$COOLDOWN_FILE"
 
-    jq -n --arg r "$REACTION" --arg ts "$(date +%s)000" --arg reason "$REASON" \
-      '{reaction: $r, timestamp: ($ts | tonumber), reason: $reason}' \
-      > "$REACTION_FILE"
+    # The visible reaction (bubble) is suppressed while muted — only a commit
+    # reaches this point muted (lifecycle exemption above), and it should do
+    # its session work silently.
+    if [ "$MUTED" != "true" ]; then
+        # Atomic (tmp + same-dir mv): the statusline reads this file every tick
+        # when the live reaction field is empty (sticky-bubble fallback), so a
+        # bare > redirect risked a torn read. Same idiom as the TS saveReaction.
+        jq -n --arg r "$REACTION" --arg ts "$(date +%s)000" --arg reason "$REASON" \
+          '{reaction: $r, timestamp: ($ts | tonumber), reason: $reason}' \
+          > "$REACTION_FILE.tmp.$$" && mv "$REACTION_FILE.tmp.$$" "$REACTION_FILE"
 
-    TMP=$(mktemp)
-    jq --arg r "$REACTION" '.reaction = $r' "$STATUS_FILE" > "$TMP" 2>/dev/null && mv "$TMP" "$STATUS_FILE"
+        # mktemp INSIDE the state dir: /tmp may be another filesystem, where mv
+        # degrades to copy+unlink and a concurrent statusline tick can see a
+        # torn status.json.
+        TMP=$(mktemp "$STATE_DIR/.status.patch.XXXXXX")
+        jq --arg r "$REACTION" '.reaction = $r' "$STATUS_FILE" > "$TMP" 2>/dev/null \
+            && mv "$TMP" "$STATUS_FILE" || rm -f "$TMP"
+    fi
 
     if command -v jq >/dev/null 2>&1; then
         XP_EVENT=""
@@ -1381,8 +1407,10 @@ if [ -n "$REASON" ] && [ -n "$REACTION" ]; then
             *)                KEY="" ;;
         esac
         if [ -n "$KEY" ]; then
-            TMP=$(mktemp)
-            jq --arg k "$KEY" 'if .[$k] then .[$k] += 1 else .[$k] = 1 end' "$EVENTS_FILE" > "$TMP" 2>/dev/null && mv "$TMP" "$EVENTS_FILE"
+            # Same-dir mktemp for an atomic rename (see the status patch above).
+            TMP=$(mktemp "$STATE_DIR/.events.patch.XXXXXX")
+            jq --arg k "$KEY" 'if .[$k] then .[$k] += 1 else .[$k] = 1 end' "$EVENTS_FILE" > "$TMP" 2>/dev/null \
+                && mv "$TMP" "$EVENTS_FILE" || rm -f "$TMP"
         fi
         # Award XP for core coding events.
         if [ -n "$XP_EVENT" ] && [ -x "$(command -v bun)" ]; then

@@ -185,8 +185,11 @@ if [ -n "$MOOD" ] && [ -n "$REACTION" ]; then
       '{reaction: $r, timestamp: ($ts | tonumber), reason: $reason}' \
       > "$REACTION_FILE"
 
-    TMP=$(mktemp)
-    jq --arg r "$REACTION" '.reaction = $r' "$STATUS_FILE" > "$TMP" 2>/dev/null && mv "$TMP" "$STATUS_FILE"
+    # Same-dir mktemp: /tmp may be another filesystem, where mv degrades to
+    # copy+unlink and a concurrent statusline tick can see a torn status.json.
+    TMP=$(mktemp "$STATE_DIR/.status.patch.XXXXXX")
+    jq --arg r "$REACTION" '.reaction = $r' "$STATUS_FILE" > "$TMP" 2>/dev/null \
+        && mv "$TMP" "$STATUS_FILE" || rm -f "$TMP"
 
     if command -v jq >/dev/null 2>&1; then
         if [ ! -f "$EVENTS_FILE" ]; then
@@ -199,8 +202,9 @@ if [ -n "$MOOD" ] && [ -n "$REACTION" ]; then
             *)            KEY="" ;;
         esac
         if [ -n "$KEY" ]; then
-            TMP=$(mktemp)
-            jq --arg k "$KEY" 'if .[$k] then .[$k] += 1 else .[$k] = 1 end' "$EVENTS_FILE" > "$TMP" 2>/dev/null && mv "$TMP" "$EVENTS_FILE"
+            TMP=$(mktemp "$STATE_DIR/.events.patch.XXXXXX")
+            jq --arg k "$KEY" 'if .[$k] then .[$k] += 1 else .[$k] = 1 end' "$EVENTS_FILE" > "$TMP" 2>/dev/null \
+                && mv "$TMP" "$EVENTS_FILE" || rm -f "$TMP"
         fi
     fi
 fi

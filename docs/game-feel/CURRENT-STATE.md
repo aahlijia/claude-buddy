@@ -4,21 +4,19 @@ A single top-level snapshot of the **whole** game-feel system as it stands today
 tying together the arcs that each have their own design/status docs. For the
 per-arc detail, follow the links in [Doc map](#doc-map).
 
-_Last updated: 2026-07-15 · branch `feature/interactive-fight-scene`_
-_Baseline: **798 tests** · `tsc --noEmit` clean · `bash -n` clean. 797 pass; the
-one failure is a known test-isolation bug, not a regression — see
-[Open follow-ups](#open-follow-ups)._
-_Status: everything through the
-[Pending encounter](#pending-encounter--the-standoff-2026-07-08) arc, the
-auto-quiet standoff fix, the fight caption, the
-[Skirmish bouts](#skirmish-bouts--walk-over-attacks--damage-pops-2026-07-10)
-(walk-over attacks + damage pops), and the
-[Dynamic chat bubble](#dynamic-chat-bubble--fit-to-width-2026-07-13)
-(fit-to-width bubble sizing) is **committed and pushed** (through `e18196e`,
-2026-07-13). Newest work, **uncommitted** on top:
+_Last updated: 2026-07-16 · branch `feature/interactive-fight-scene`_
+_Baseline: **802 tests, all pass** · `tsc --noEmit` clean · `bash -n` clean.
+(The long-standing `migrate.test.ts` env-dependent failure is fixed — the local
+suite is fully green for the first time.)_
+_Status: everything through
 [Gear renders on the sprite](#gear-renders-on-the-sprite-2026-07-15), the
 [caption revert](#revert-the-fight-caption-is-its-own-row-again-2026-07-15), and
-the [scene top-row trim](#scene-top-row-trim-2026-07-15). No PR opened yet._
+the [scene top-row trim](#scene-top-row-trim-2026-07-15) is **committed and
+pushed** (through `6211430`, 2026-07-15). Newest on top: the
+[hardening pass](#hardening-pass--bug--statusline-perf-fixes-2026-07-16)
+(mute persistence, commit-swallowing gates, atomic hook writes, statusline fork
+diet, migrate-test isolation), committed together with this doc update. No PR
+opened yet._
 
 > **What "game-feel" is.** A layer of optional juice on top of the buddy
 > companion: celebratory feedback, an expressive idle status line, light RPG
@@ -518,7 +516,7 @@ codepoints into a `*` line, under-measuring text with long repeats (`!!!!!!`, a
 long token) and mis-wrapping the box; added `od -v`. Verified end-to-end
 (shrink/grow/drop rendered through the real script at multiple widths). Tests:
 **777 pass** (+6 dynamic-bubble render cases), `tsc` + `bash -n` clean.
-Uncommitted.
+Committed as `e18196e`.
 
 ---
 
@@ -563,7 +561,7 @@ Files: `art.ts`, `items.ts`, `equipment.ts`, `state.ts`, `index.ts`,
 `combat.ts`, `session.ts` + tests. Verified end-to-end through the real
 `buddy-status.sh` (geared cactus rendered with `†` at the arm, `,>` at the
 feet) and by rendering the full geared standoff flipbook. Tests: **797 pass**
-(+20), `tsc` clean. Uncommitted.
+(+20), `tsc` clean. Committed as `6211430`.
 
 ### Revert: the fight caption is its own row again (2026-07-15)
 
@@ -584,7 +582,7 @@ the render was already byte-identical, so only combined-status mode changes:
 row 0 is metrics alone and the caption returns to the top of the scene block.
 
 Verified through the real `buddy-status.sh` in both modes (combined on/off).
-Tests: **793** (−4), `tsc` + `bash -n` clean. Uncommitted.
+Tests: **793** (−4), `tsc` + `bash -n` clean. Committed as `6211430`.
 
 ### Scene top-row trim (2026-07-15)
 
@@ -612,7 +610,84 @@ that hardcoded the old row offsets now derive the eye row **from the bottom**
 what they always meant; the wyvern case additionally asserts the clash row isn't
 the block center. Verified e2e through the real `buddy-status.sh` (bare, impact,
 and wizard-hat frames). Tests: **798** (+5), `tsc` + `bash -n` clean.
-Uncommitted.
+Committed (with the two sections above) as `6211430`, 2026-07-15.
+
+---
+
+### Hardening pass — bug + statusline perf fixes (2026-07-16)
+
+An `/sc:analyze` (bugs + performance) over the whole system, then `/sc:improve`
+applying everything found. Four bug fixes, four perf fixes, and the
+migrate-test isolation — **802 tests, all pass** (+4 mute regressions, the
+migrate case fixed), `tsc` + `bash -n` clean, all **86 statusline render
+snapshots byte-identical** (the perf work provably changed no output).
+
+**Bugs.**
+
+- **Mute didn't stick** (`state.ts` + new `state_muted.test.ts`). `muted` lives
+  only in `status.json`, and every `writeStatusState` without `opts.muted`
+  reset it to false — so any XP award or bug sighting silently unmuted the
+  buddy, usually within a minute of active coding. The write now carries the
+  on-disk value forward; only `buddy_mute`/`buddy_unmute` set it explicitly.
+- **Commits were swallowed by the reaction cooldown** (`react.sh`). The 30s
+  cooldown (and mute) early-exits ran *before* classification, so a commit
+  landing within 30s of any reaction — the classic error→fix→commit flow —
+  lost the session bonus, the fight, **and** the pending-standoff clear (the
+  G5 "commit dismisses the nudge" invariant). A cheap commit sniff (the
+  classifier's own regex) now runs before the gates; commits always pass.
+  Mute still suppresses the visible bubble writes at the dispatch tail, but
+  lifecycle work runs. Verified e2e in a sandbox: commit-during-cooldown goes
+  through, muted commit stays silent but counts, non-commits still cool down.
+- **Non-atomic hook writes** (`react.sh` + `file-type-react.sh` +
+  `buddy-comment.sh` + `mood-react.sh` + `name-react.sh`). Every jq patch used
+  `mktemp` in `/tmp` — on another filesystem `mv` degrades to copy+unlink, so
+  a concurrent statusline tick could read a torn `status.json`/`events.json`.
+  All temps are now same-dir (`.status.patch.XXXXXX`/`.events.patch.XXXXXX`,
+  cleaned on jq failure, in `TRANSIENT_PREFIXES`); the reaction file write is
+  tmp+mv instead of a bare redirect. *Known-but-unfixed:* `mood-react.sh` and
+  `file-type-react.sh` hardcode `$HOME/.claude-buddy` instead of sourcing
+  `paths.sh` — they miss a custom `CLAUDE_CONFIG_DIR` (follow-up below).
+- **Statusline edge cases** (`buddy-status.sh`). A malformed `rainbowColors`
+  hex hit `16#` arithmetic and spammed stderr every tick — entries are
+  validated now (all-invalid falls back to the default palette). Non-ASCII
+  buddy names are measured with `dwidth` for centering (ASCII names stay
+  fork-free).
+
+**Performance** (the statusline reruns every ~1s; with a visible bubble this
+pass takes a tick from ~60–70 forks to ~8).
+
+- **`dwidth` batch**: bubble word widths were measured one `iconv|od|awk`
+  pipeline *per word*, plus a second per-line pass for padding. New
+  `dwidth_batch()` measures every word in one pipeline (newline codepoint
+  delimits), and the wrap loop records each line's width as it builds it, so
+  padding needs no second measurement at all.
+- **PTY cache**: the terminal-width lookup walked the process tree with up to
+  ten `ps`/`stty` forks per tick. The controlling-TTY *device* never changes
+  within a session — only its size does — so `.tty.$SID` caches
+  `"<ppid> <device>"` and a hit costs one `stty` read (still resize-robust; a
+  PPID mismatch or dead device falls through to the walk, which re-caches).
+- **Fork diet**: `printf -v` replaces `$(printf …)` subshells throughout,
+  `${var// /-}` replaces the `printf|tr` border pair, `$OSTYPE` replaces two
+  `$(uname -s)` forks, and the render loop's blank fillers are precomputed.
+- **`writeStatusState` dedup** (`state.ts`): `loadReaction(cfg?)` takes the
+  already-parsed config so the TTL check doesn't re-parse `config.json`, and
+  `captionFrames` returns `{frames, width}` so `sceneWidth` runs once.
+
+**Migrate-test isolation** (`migrate.test.ts`). The aura_shiny case asserted a
+"no loot store" premise its own process couldn't guarantee — it read the
+developer's real store and failed wherever a shiny cosmetic was owned. It now
+runs in a fresh subprocess with a temp `CLAUDE_CONFIG_DIR` (the same idiom as
+the companion-store suite in the file). Beyond CI hygiene this was quietly
+ruining game-feel on this machine: every local `bun test` printed `1 fail`,
+which the classifier scored as **test-fail** (+5 XP and a fresh bug standoff)
+instead of **all-green** (+20 XP and a celebration) — a large part of why XP
+gains felt dead.
+
+*Side-finding, not fixed:* `xp.json`'s `statProgress.PATIENCE` has banked 114+
+fractional points (the per-session cap banks overflow instead of dropping it,
+and a multi-day session snapshot yields huge elapsed-time gains). Harmless but
+it will drip +2 PATIENCE per commit for dozens of commits; a cap on the bank is
+the likely fix.
 
 ---
 
@@ -635,19 +710,24 @@ bun run install-buddy   # copies the repo script into place
 - ~~Commit the 2026-06-30 fixes~~ **done** — merged into `feature/interactive-menu`
   via `fa8cc6f` on 2026-07-06 (see above). Opening a PR for that branch is the
   next step.
-- Commit the rewards/leveling fix pass **and** the derive-on-read upgrades work
-  (both above) — currently uncommitted on the same branch.
-- **Test-isolation bug in `migrate.test.ts`** (found 2026-07-15, not fixed). The
-  case _"strips the aura_shiny marker when no loot cosmetic protects it"_ asserts
-  on a "no loot store" premise its own process can't guarantee:
-  `migrateUpgradeEffects` → `loadOwnedLootAppearance()` → `loadLoot()` reads the
-  **real** loot store from the ambient config dir. On a machine whose real store
-  owns a shiny-granting cosmetic, `lootShiny` is true ⇒ the marker is correctly
-  kept ⇒ the test fails. It passes only where no loot store exists (CI, fresh
-  checkouts) — so it's environment-dependent, not a code regression. Fix by
-  pointing the test at a temp `CLAUDE_CONFIG_DIR` (fresh-process, like the
-  companion-store cases lower in the same file) rather than trusting the ambient
-  one.
+- ~~Commit the rewards/leveling fix pass **and** the derive-on-read upgrades
+  work~~ **done** — committed by 2026-07-07 (`711103d` and prior).
+- ~~**Test-isolation bug in `migrate.test.ts`**~~ **fixed 2026-07-16** — the
+  aura_shiny case now runs in a fresh subprocess with a temp
+  `CLAUDE_CONFIG_DIR`; the suite is fully green locally. See the
+  [hardening pass](#hardening-pass--bug--statusline-perf-fixes-2026-07-16).
+- **`mood-react.sh` / `file-type-react.sh` hardcode `$HOME/.claude-buddy`**
+  (found 2026-07-16, not fixed): they don't source `scripts/paths.sh`, so a
+  custom `CLAUDE_CONFIG_DIR` profile misses their reactions/counters.
+- **`statProgress.PATIENCE` runaway bank** (found 2026-07-16, not fixed): the
+  per-session stat cap banks overflow indefinitely; multi-day session
+  snapshots yield huge elapsed-time gains (114+ banked on the live store).
+  Likely fix: cap the accumulator (or clamp elapsed time) in
+  `accrueStatProgress`/`computeStatGains`.
+- **react.sh classifier newline weakness** (found 2026-07-09, not fixed):
+  `\b`/`^`-anchored patterns can't match past the first line of a tool
+  response in some shapes; test-fail under-fires. (Tracked in the idle-rpg
+  notes; folding it here so this list is complete.)
 - Leftward-roam magnitude tune (`moodWalkOpts` ranges) — intentionally conservative.
 - Idle-RPG niceties: sell/refund gear (buy-only today), inventory cap, gear-bonus
   delta in `buddy_xp`, post-TTL encounter inspection command.
@@ -659,7 +739,7 @@ bun run install-buddy   # copies the repo script into place
   **done 2026-07-08** — persistent standoff from first error-ish event until
   commit, escalating tier, resolved-phase bubble suppression folded in. See
   [Pending encounter — the standoff](#pending-encounter--the-standoff-2026-07-08).
-  Uncommitted on `feature/interactive-fight-scene`.
+  Committed on `feature/interactive-fight-scene` (`22f6733`).
 - The stale top-level [`status.md`](status.md) is a point-in-time artifact for the
   quick-wins sub-arc (440 tests, `feature/leveling-system`) — superseded by this
   doc for the current picture.

@@ -262,6 +262,53 @@ esac
 
 B=$'\xe2\xa0\x80'  # Braille Blank U+2800
 
+# ─── Display width (emojis count as 2 cols) ──────────────────────────────────
+# iconv turns the input into a stream of UTF-32LE codepoints, then awk sums
+# widths. Rules mirror server/art.ts:displayWidth — the U+2600-U+27BF range
+# is split by Emoji_Presentation (2) vs text-presentation (1), and VS16
+# (U+FE0F) upgrades the previous narrow symbol to 2 cols (e.g. ❤ + VS16).
+# The ambiguous codepoint list comes from emoji-widths.data, loaded lazily by
+# the bubble path below (empty until then — only the U+2600 block is affected).
+#
+# dwidth_batch measures EVERY argument in ONE iconv|od|awk pipeline, printing
+# one width per line: the bubble's per-word measurement would otherwise fork
+# the whole chain once per word, every tick the bubble is visible. Words never
+# contain a newline (they come from IFS splitting), so codepoint 10 delimits.
+# A total pipeline failure prints nothing — callers guard for that.
+EMOJI_PRES_2600=""
+
+dwidth_batch() {
+    printf '%s\n' "$@" | iconv -f UTF-8 -t UTF-32LE 2>/dev/null | od -An -v -tu4 | awk -v pres="$EMOJI_PRES_2600" '
+    BEGIN {
+        n = split(pres, arr)
+        for (k = 1; k <= n; k++) wide[arr[k]] = 1
+    }
+    # Precondition: cp is neither a variation selector (65024-65039) nor ZWJ
+    # (8205); the main loop filters those before calling in.
+    function char_width(cp) {
+        if (cp >= 126976) return 2
+        if (cp >= 9728 && cp <= 10175) return (cp in wide) ? 2 : 1
+        if (cp >= 9472 && cp <= 9631) return 1
+        if (cp >= 12288 && cp <= 40959) return 2
+        if (cp >= 65281 && cp <= 65376) return 2
+        return 1
+    }
+    { for (i = 1; i <= NF; i++) {
+        cp = $i + 0
+        if (cp == 10) { print w+0; w = 0; upgradable = 0; continue }
+        if (cp == 65039) {
+            if (upgradable) { w += 1; upgradable = 0 }
+            continue
+        }
+        if ((cp >= 65024 && cp <= 65038) || cp == 8205) { upgradable = 0; continue }
+        cw = char_width(cp)
+        w += cw
+        upgradable = (cw == 1 && cp >= 9728 && cp <= 10175) ? 1 : 0
+    } }'
+}
+
+dwidth() { dwidth_batch "$1"; }
+
 # ─── Rainbow colors for shiny buddies ────────────────────────────────────────
 # Default ROYGBIV palette; overridden by rainbowColors in config.json
 _hex_to_ansi() {
@@ -280,12 +327,20 @@ RAINBOW=(
 )
 
 # _RAINBOW_CSV (comma-joined rainbowColors) comes from the single config read.
+# Entries must be 6 hex digits (optionally #-prefixed): _hex_to_ansi feeds them
+# to 16# arithmetic, and a garbled value would spam an arithmetic error to
+# stderr every tick. Invalid entries are skipped; if none survive, the default
+# palette above stays in place.
 if [ -n "$_RAINBOW_CSV" ]; then
-    RAINBOW=()
+    _CUSTOM_RAINBOW=()
     IFS=',' read -ra _RAINBOW_HEXES <<< "$_RAINBOW_CSV"
     for _hex in "${_RAINBOW_HEXES[@]}"; do
-        RAINBOW+=("$(_hex_to_ansi "$_hex")")
+        case "${_hex#\#}" in
+            [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F])
+                _CUSTOM_RAINBOW+=("$(_hex_to_ansi "$_hex")") ;;
+        esac
     done
+    [ ${#_CUSTOM_RAINBOW[@]} -gt 0 ] && RAINBOW=("${_CUSTOM_RAINBOW[@]}")
 fi
 
 RAINBOW_LEN=${#RAINBOW[@]}
@@ -306,11 +361,31 @@ COLS=0
 if [ -n "$BUDDY_FAKE_COLS" ]; then
     case "$BUDDY_FAKE_COLS" in ''|*[!0-9]*) ;; *) COLS=$BUDDY_FAKE_COLS ;; esac
 fi
+# Cached controlling-PTY device: the walk below forks ps up to ten times per
+# tick, but a session's terminal DEVICE never changes — only its size does, and
+# stty re-reads that every tick, so resize robustness is preserved. The cache
+# stores "<ppid> <device>"; the PPID guard keeps a second same-SID instance
+# (two non-tmux windows both keyed "default") from adopting the other window's
+# terminal. Any miss or failure falls through to the walk, which re-caches.
+TTY_CACHE_FILE="$BUDDY_STATE_DIR/.tty.$SID"
+_CACHED_DEV=""
+if [ "${COLS:-0}" -lt 40 ] 2>/dev/null && [ -f "$TTY_CACHE_FILE" ]; then
+    read -r _C_PPID _C_DEV < "$TTY_CACHE_FILE" 2>/dev/null
+    if [ "$_C_PPID" = "$PPID" ] && [ -c "$_C_DEV" ] 2>/dev/null; then
+        read -r _ COLS < <(stty size < "$_C_DEV" 2>/dev/null)
+        if [ "${COLS:-0}" -gt 40 ] 2>/dev/null; then
+            _CACHED_DEV=$_C_DEV
+        else
+            COLS=0
+        fi
+    fi
+fi
 _HAS_PROC=0
 [ -d /proc ] && _HAS_PROC=1
 PID=$$
+_FOUND_DEV=""
 for _ in 1 2 3 4 5; do
-    [ "${COLS:-0}" -ge 40 ] 2>/dev/null && break  # forced width ⇒ skip PTY walk
+    [ "${COLS:-0}" -ge 40 ] 2>/dev/null && break  # forced/cached width ⇒ skip walk
     read -r PID < <(ps -o ppid= -p "$PID" 2>/dev/null)
     [ -z "$PID" ] || [ "$PID" = "1" ] && break
 
@@ -319,7 +394,7 @@ for _ in 1 2 3 4 5; do
         PTY=$(readlink "/proc/${PID}/fd/0" 2>/dev/null)
         if [ -c "$PTY" ] 2>/dev/null; then
             read -r _ COLS < <(stty size < "$PTY" 2>/dev/null)
-            [ "${COLS:-0}" -gt 40 ] 2>/dev/null && break
+            if [ "${COLS:-0}" -gt 40 ] 2>/dev/null; then _FOUND_DEV=$PTY; break; fi
         fi
     fi
 
@@ -329,10 +404,15 @@ for _ in 1 2 3 4 5; do
         TTY_DEV="/dev/$TTY_NAME"
         if [ -c "$TTY_DEV" ] 2>/dev/null; then
             read -r _ COLS < <(stty size < "$TTY_DEV" 2>/dev/null)
-            [ "${COLS:-0}" -gt 40 ] 2>/dev/null && break
+            if [ "${COLS:-0}" -gt 40 ] 2>/dev/null; then _FOUND_DEV=$TTY_DEV; break; fi
         fi
     fi
 done
+# Re-cache after a successful walk (cache hits skip the walk, so this only
+# writes on a genuine miss — no per-tick churn on the steady path).
+if [ -n "$_FOUND_DEV" ]; then
+    printf '%s %s\n' "$PPID" "$_FOUND_DEV" > "$TTY_CACHE_FILE" 2>/dev/null
+fi
 [ "${COLS:-0}" -lt 40 ] 2>/dev/null && COLS=${COLUMNS:-0}
 # Windows: /proc and TTY device detection don't exist; use PowerShell as fallback
 if [ "${COLS:-0}" -lt 40 ] 2>/dev/null; then
@@ -444,6 +524,15 @@ case "$MOOD" in
 esac
 NAME_WITH_LEVEL="${NAME_WITH_LEVEL}${MOOD_EMOJI}"
 NAME_LEN=${#NAME_WITH_LEVEL}
+# ${#} counts characters, not display columns — a wide glyph (emoji, CJK) in
+# the name would mis-center it under the art. Only non-ASCII names pay the
+# dwidth pipeline; the common ASCII case stays fork-free.
+case "$NAME_WITH_LEVEL" in
+    *[![:ascii:]]*)
+        NAME_LEN=$(dwidth "$NAME_WITH_LEVEL")
+        case "$NAME_LEN" in ''|*[!0-9]*) NAME_LEN=${#NAME_WITH_LEVEL} ;; esac
+        ;;
+esac
 # Idle art is 12 cols wide ⇒ centre at col 6. The Phase 5 combat scene is wider
 # (server-emitted ART_WIDTH); re-centre the name/title under it. Scoped to the
 # combat path so idle renders keep ART_CENTER=6 byte-identical.
@@ -454,7 +543,7 @@ else
 fi
 NAME_PAD=$(( ART_CENTER - NAME_LEN / 2 ))
 [ "$NAME_PAD" -lt 0 ] && NAME_PAD=0
-NAME_LINE="$(printf '%*s%s' "$NAME_PAD" '' "$NAME_WITH_LEVEL")"
+printf -v NAME_LINE '%*s%s' "$NAME_PAD" '' "$NAME_WITH_LEVEL"
 
 DIM=$'\033[2;3m'
 
@@ -480,7 +569,7 @@ if [ -n "$TITLE" ] && [ "$TITLE" != "null" ]; then
     TITLE_LEN=${#TITLE_TEXT}
     TITLE_PAD=$(( ART_CENTER - TITLE_LEN / 2 ))
     [ "$TITLE_PAD" -lt 0 ] && TITLE_PAD=0
-    TITLE_LINE="$(printf '%*s%s' "$TITLE_PAD" '' "$TITLE_TEXT")"
+    printf -v TITLE_LINE '%*s%s' "$TITLE_PAD" '' "$TITLE_TEXT"
     ALL_LINES+=("$TITLE_LINE"); ALL_COLORS+=("$DIM")
 fi
 
@@ -503,7 +592,7 @@ if [ "$SHOW_PRESTIGE_BADGE" = "true" ]; then
         [ "$STREAK" -gt 0 ] && BADGE_LEN=$(( BADGE_LEN + 1 ))
         BADGE_PAD=$(( ART_CENTER - BADGE_LEN / 2 ))
         [ "$BADGE_PAD" -lt 0 ] && BADGE_PAD=0
-        BADGE_LINE="$(printf '%*s%s' "$BADGE_PAD" '' "$BADGE")"
+        printf -v BADGE_LINE '%*s%s' "$BADGE_PAD" '' "$BADGE"
         ALL_LINES+=("$BADGE_LINE"); ALL_COLORS+=("$DIM")
     fi
 fi
@@ -610,7 +699,7 @@ if [ "$SHOW_STATS" = "true" ] && [ -n "$STATS_TSV" ]; then
                 fi
             fi
             if [ "$_xp_row_w" -gt "$STATS_W" ]; then
-                _XP_EXTRA_PAD=$(printf '%*s' "$(( _xp_row_w - STATS_W ))" '')
+                printf -v _XP_EXTRA_PAD '%*s' "$(( _xp_row_w - STATS_W ))" ''
                 for _bi in "${!STATS_LINES[@]}"; do
                     STATS_LINES[$_bi]="${STATS_LINES[$_bi]}${_XP_EXTRA_PAD}"
                 done
@@ -618,7 +707,7 @@ if [ "$SHOW_STATS" = "true" ] && [ -n "$STATS_TSV" ]; then
             fi
             # Pad the Lv row itself out to the (possibly grown) column width so it
             # matches the stat rows exactly (fixes a latent 1-col under-width).
-            _XP_ROW_PAD=$(printf '%*s' "$(( STATS_W - _xp_row_w ))" '')
+            printf -v _XP_ROW_PAD '%*s' "$(( STATS_W - _xp_row_w ))" ''
             STATS_LINES+=("${_SDIM}${_xp_label}${NC} ${C}${_xp_bar}${NC} ${_SDIM}${_xp_pctstr}${NC}${_xp_toast}${_XP_ROW_PAD}")
             ;;
     esac
@@ -696,51 +785,14 @@ if [ -n "$BUBBLE" ]; then
     BUBBLE_TEXT="${BUBBLE_TEXT#\"}"
 fi
 
-# ─── Display width (emojis count as 2 cols) ──────────────────────────────────
-# iconv turns the string into a stream of UTF-32LE codepoints, then awk sums
-# widths. Rules mirror server/art.ts:displayWidth — the U+2600-U+27BF range
-# is split by Emoji_Presentation (2) vs text-presentation (1), and VS16
-# (U+FE0F) upgrades the previous narrow symbol to 2 cols (e.g. ❤ + VS16).
-# The ambiguous codepoint list comes from emoji-widths.data, generated by
+# Emoji ambiguous-width data (see dwidth_batch above), generated by
 # scripts/gen-emoji-widths.ts from the Unicode Emoji_Presentation property.
-# Loaded only when there's bubble text to measure — dwidth() is called solely
-# from the word-wrap/padding below, so on the bubble-less hot path (the common
-# idle tick) this avoids a grep+tr+dirname fork every second.
-EMOJI_PRES_2600=""
+# Loaded only when there's bubble text to measure, so on the bubble-less hot
+# path (the common idle tick) this avoids a grep+tr+dirname fork every second.
 if [ -n "$BUBBLE_TEXT" ]; then
     EMOJI_WIDTHS_DATA="$(dirname "${BASH_SOURCE[0]}")/emoji-widths.data"
     EMOJI_PRES_2600="$(grep -v '^#' "$EMOJI_WIDTHS_DATA" 2>/dev/null | tr -d '\n')"
 fi
-
-dwidth() {
-    printf '%s' "$1" | iconv -f UTF-8 -t UTF-32LE 2>/dev/null | od -An -v -tu4 | awk -v pres="$EMOJI_PRES_2600" '
-    BEGIN {
-        n = split(pres, arr)
-        for (k = 1; k <= n; k++) wide[arr[k]] = 1
-    }
-    # Precondition: cp is neither a variation selector (65024-65039) nor ZWJ
-    # (8205); the main loop filters those before calling in.
-    function char_width(cp) {
-        if (cp >= 126976) return 2
-        if (cp >= 9728 && cp <= 10175) return (cp in wide) ? 2 : 1
-        if (cp >= 9472 && cp <= 9631) return 1
-        if (cp >= 12288 && cp <= 40959) return 2
-        if (cp >= 65281 && cp <= 65376) return 2
-        return 1
-    }
-    { for (i = 1; i <= NF; i++) {
-        cp = $i + 0
-        if (cp == 65039) {
-            if (upgradable) { w += 1; upgradable = 0 }
-            continue
-        }
-        if ((cp >= 65024 && cp <= 65038) || cp == 8205) { upgradable = 0; continue }
-        cw = char_width(cp)
-        w += cw
-        upgradable = (cw == 1 && cp >= 9728 && cp <= 10175) ? 1 : 0
-    } }
-    END { print w+0 }'
-}
 
 # ─── Cluster geometry (shared by dynamic bubble sizing + the layout below) ───
 # These describe the fixed chrome around the roaming cluster. The dynamic bubble
@@ -786,11 +838,16 @@ if [ -n "$BUBBLE_TEXT" ]; then
     # glob them against the CWD.
     read -ra WORDS <<< "$BUBBLE_TEXT"
     _max_word_w=0
-    for word in "${WORDS[@]}"; do
-        _w=$(dwidth "$word")
+    # One fork chain for ALL words (perf: N dwidth pipelines → 1). A garbled
+    # width degrades to 0, same as the old per-word pipeline's failure mode.
+    while IFS= read -r _w; do
+        case "$_w" in ''|*[!0-9]*) _w=0 ;; esac
         WORD_W+=("$_w")
         [ "$_w" -gt "$_max_word_w" ] && _max_word_w=$_w
-    done
+    done < <(dwidth_batch "${WORDS[@]}")
+    # A total pipeline failure emits fewer widths than words — zero-fill so the
+    # wrap arithmetic below never sees an empty operand.
+    while [ "${#WORD_W[@]}" -lt "${#WORDS[@]}" ]; do WORD_W+=(0); done
     # A box can't be thinner than its widest single word (a word can't wrap
     # inside itself; a thinner box pushes it past the border and clips the
     # cluster). The narrowest USABLE box is that floor, but at least the visual
@@ -813,7 +870,11 @@ if [ -n "$BUBBLE_TEXT" ]; then
 fi
 
 # ─── Word-wrap bubble text ────────────────────────────────────────────────────
+# TEXT_W tracks each wrapped line's display width alongside it: the wrap already
+# sums the word widths (spaces are 1 col and reset no dwidth state), so the
+# padding below needs no second measurement pass.
 TEXT_LINES=()
+TEXT_W=()
 if [ -n "$BUBBLE_TEXT" ]; then
     CUR_LINE=""
     CUR_W=0
@@ -826,11 +887,11 @@ if [ -n "$BUBBLE_TEXT" ]; then
         elif [ $(( CUR_W + 1 + word_w )) -le $INNER_W ]; then
             CUR_LINE="$CUR_LINE $word"; CUR_W=$(( CUR_W + 1 + word_w ))
         else
-            TEXT_LINES+=("$CUR_LINE")
+            TEXT_LINES+=("$CUR_LINE"); TEXT_W+=("$CUR_W")
             CUR_LINE="$word"; CUR_W=$word_w
         fi
     done
-    [ -n "$CUR_LINE" ] && TEXT_LINES+=("$CUR_LINE")
+    [ -n "$CUR_LINE" ] && { TEXT_LINES+=("$CUR_LINE"); TEXT_W+=("$CUR_W"); }
 fi
 
 TEXT_COUNT=${#TEXT_LINES[@]}
@@ -841,15 +902,18 @@ BOX_W=$(( INNER_W + 4 ))
 BUBBLE_LINES=()
 BUBBLE_TYPES=()  # "border" or "text" — determines coloring
 if [ $TEXT_COUNT -gt 0 ]; then
-    # Top border
-    BORDER=$(printf '%*s' "$(( BOX_W - 2 ))" '' | tr ' ' '-')
+    # Top border (parameter substitution beats a printf|tr fork pair)
+    printf -v BORDER '%*s' "$(( BOX_W - 2 ))" ''
+    BORDER=${BORDER// /-}
     BUBBLE_LINES+=(".${BORDER}.")
     BUBBLE_TYPES+=("border")
-    # Text rows: "| text padded |"
+    # Text rows: "| text padded |" — widths were tracked during the wrap.
+    _ti=0
     for tl in "${TEXT_LINES[@]}"; do
-        tpad=$(( INNER_W - $(dwidth "$tl") ))
+        tpad=$(( INNER_W - ${TEXT_W[$_ti]} ))
+        _ti=$(( _ti + 1 ))
         [ "$tpad" -lt 0 ] && tpad=0
-        padding=$(printf '%*s' "$tpad" '')
+        printf -v padding '%*s' "$tpad" ''
         BUBBLE_LINES+=("| ${tl}${padding} |")
         BUBBLE_TYPES+=("text")
     done
@@ -905,12 +969,14 @@ fi
 # which doubles the spacer and pushes content off-screen. Use regular spaces instead.
 # MID_SPACER sits mid-line (never trimmed), so it's always plain spaces — only
 # the line-leading SPACER needs the non-trimmable Braille Blank.
-case "$(uname -s)" in
-    MINGW*|CYGWIN*|MSYS*) SPACER=$(printf '%*s' "$LEAD_PAD" '') ;;
-    *)                     SPACER=$(printf "${B}%${LEAD_PAD}s" "") ;;
+# $OSTYPE is a bash builtin variable (msys on Git Bash/MSYS2, cygwin on Cygwin)
+# — same platforms uname -s matched, without the fork.
+case "$OSTYPE" in
+    msys*|cygwin*) printf -v SPACER '%*s' "$LEAD_PAD" '' ;;
+    *)             printf -v SPACER "${B}%${LEAD_PAD}s" "" ;;
 esac
-MID_SPACER=$(printf '%*s' "$MID_PAD" '')
-STATS_GAP_STR=$(printf '%*s' "$STATS_GAP" '')
+printf -v MID_SPACER '%*s' "$MID_PAD" ''
+printf -v STATS_GAP_STR '%*s' "$STATS_GAP" ''
 
 # ─── Idle wander hop headroom (movement §7.A, flag wanderHop) ───────────────
 # Reserve HOP_RESERVE blank rows above the art ONLY when the server baked a
@@ -970,9 +1036,9 @@ fi
 if [ -n "$METRICS_HEADER" ]; then
     # Same lead idiom as SPACER (B + margin spaces) so the header aligns with the
     # stats column below whether or not the stats panel itself is shown.
-    case "$(uname -s)" in
-        MINGW*|CYGWIN*|MSYS*) _MH_LEAD=$(printf '%*s' "$STATS_LEFT_MARGIN" '') ;;
-        *)                     _MH_LEAD=$(printf "${B}%${STATS_LEFT_MARGIN}s" "") ;;
+    case "$OSTYPE" in
+        msys*|cygwin*) printf -v _MH_LEAD '%*s' "$STATS_LEFT_MARGIN" '' ;;
+        *)             printf -v _MH_LEAD "${B}%${STATS_LEFT_MARGIN}s" "" ;;
     esac
     echo "${_MH_LEAD}${METRICS_HEADER}"
 fi
@@ -983,6 +1049,11 @@ TOTAL_STATS=$(( STATS_START + STATS_COUNT ))
 MAX_LINES=$ART_COUNT_TOTAL
 [ $TOTAL_BUBBLE -gt $MAX_LINES ] && MAX_LINES=$TOTAL_BUBBLE
 [ $TOTAL_STATS -gt $MAX_LINES ] && MAX_LINES=$TOTAL_STATS
+# Blank fillers, built once: the $(printf) form inside the loop forked a
+# subshell per blank row, every tick.
+printf -v _ART_FILL '%*s' "$ART_W" ''
+printf -v _STATS_FILL '%*s' "$STATS_W" ''
+printf -v _BOX_FILL '%*s' "$BOX_W" ''
 for (( i=0; i<MAX_LINES; i++ )); do
     # Art part: actual art line (shifted down by the hop headroom, up by the
     # live hop row) or blank filler.
@@ -990,7 +1061,7 @@ for (( i=0; i<MAX_LINES; i++ )); do
     if [ $ai -ge 0 ] && [ $ai -lt $ART_COUNT ]; then
         art_part="${ALL_COLORS[$ai]}${ALL_LINES[$ai]}${NC}"
     else
-        art_part=$(printf '%*s' "$ART_W" '')
+        art_part=$_ART_FILL
     fi
 
     line_out="$SPACER"
@@ -1001,7 +1072,7 @@ for (( i=0; i<MAX_LINES; i++ )); do
         if [ $si -ge 0 ] && [ $si -lt $STATS_COUNT ]; then
             line_out+="${STATS_LINES[$si]}"
         else
-            line_out+=$(printf '%*s' "$STATS_W" '')
+            line_out+=$_STATS_FILL
         fi
         line_out+="$STATS_GAP_STR"
         line_out+="$MID_SPACER"
@@ -1036,7 +1107,7 @@ for (( i=0; i<MAX_LINES; i++ )); do
                 line_out+="${C}${pipe_l}${NC}${DIM}${inner}${NC}${C}${pipe_r}${NC}${gap}"
             fi
         else
-            line_out+=$(printf '%*s' "$BOX_W" '')
+            line_out+=$_BOX_FILL
             line_out+="   "
         fi
     fi
