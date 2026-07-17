@@ -229,40 +229,62 @@ describe("pickCelebration (award ladder, incl. idle-RPG fight toast)", () => {
   const FIGHT = "🗡 squashed a null-pointer! +3 pt";
 
   test("level-up wins the slot over everything else", () => {
-    const got = pickCelebration(7, true, true, FIGHT, true, "loot", NOW);
+    const got = pickCelebration(7, true, true, FIGHT, true, "loot", null, NOW);
     expect(got.celebration?.kind).toBe("levelup");
     expect(got.celebration?.text).toContain("LEVEL 7");
     expect(got.cause).toBe("levelup");
   });
 
   test("a completed whim beats the fight summary", () => {
-    const got = pickCelebration(3, false, true, FIGHT, false, "loot", NOW);
+    const got = pickCelebration(3, false, true, FIGHT, false, "loot", null, NOW);
     expect(got.celebration?.kind).toBe("whim");
     expect(got.cause).toBe("whim");
   });
 
   test("the fight summary surfaces as a loot-kind toast (the clobber fix)", () => {
-    const got = pickCelebration(3, false, false, FIGHT, false, "loot", NOW);
+    const got = pickCelebration(3, false, false, FIGHT, false, "loot", null, NOW);
     expect(got.celebration).toEqual({ text: FIGHT, kind: "loot", at: NOW });
     expect(got.cause).toBe("loot");
   });
 
   test("the fight summary beats the one-time discovery announce", () => {
-    const got = pickCelebration(3, false, false, FIGHT, true, "loot", NOW);
+    const got = pickCelebration(3, false, false, FIGHT, true, "loot", null, NOW);
     expect(got.celebration?.kind).toBe("loot");
     expect(got.celebration?.text).toBe(FIGHT);
   });
 
   test("discovery surfaces when nothing above claims the bubble", () => {
-    const got = pickCelebration(3, false, false, null, true, "loot", NOW);
+    const got = pickCelebration(3, false, false, null, true, "loot", null, NOW);
     expect(got.celebration?.kind).toBe("discovery");
     expect(got.cause).toBeUndefined();
   });
 
   test("falls back to a null celebration with the caller's cause", () => {
-    const got = pickCelebration(3, false, false, null, false, "loot", NOW);
+    const got = pickCelebration(3, false, false, null, false, "loot", null, NOW);
     expect(got.celebration).toBeNull();
     expect(got.cause).toBe("loot");
+  });
+
+  test("a stat-up surfaces when nothing above claims the bubble (P4)", () => {
+    const up = "📈 DEBUGGING +1";
+    const got = pickCelebration(3, false, false, null, false, "loot", up, NOW);
+    expect(got.celebration).toEqual({ text: up, kind: "statup", at: NOW });
+    // Fallback cause is preserved so a concurrent loot side-channel still scopes.
+    expect(got.cause).toBe("loot");
+  });
+
+  test("the one-time discovery outranks a stat-up (P4 is the lowest rung)", () => {
+    const got = pickCelebration(
+      3,
+      false,
+      false,
+      null,
+      true,
+      "loot",
+      "📈 SNARK +1",
+      NOW,
+    );
+    expect(got.celebration?.kind).toBe("discovery");
   });
 });
 

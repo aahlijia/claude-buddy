@@ -165,6 +165,8 @@ Every buddy has **5 core stats**: `DEBUGGING` · `PATIENCE` · `CHAOS` · `WISDO
 
 High SNARK buddies are sarcastic. High WISDOM ones are insightful. High CHAOS ones are unpredictable. Each buddy has a peak stat and a dump stat.
 
+Stats also **level from how you work**, accrued once per commit (never per keystroke): `DEBUGGING` from bugs worked through, `CHAOS` from sweeping diffs, `PATIENCE` from time in the trenches, `SNARK` from petting your buddy, and `WISDOM` from making *fewer* mistakes than last session. When a stat crosses a whole point you get a `📈` toast and its value flashes in the stat panel. It's all gated by game-feel — `off` disables it entirely.
+
 </details>
 
 ---

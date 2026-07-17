@@ -89,6 +89,9 @@ interface StatusOverrides {
   useCombinedStatus?: boolean;
   /** Raw Claude Code stdin JSON (model/context/rate-limit). Default "". */
   ccInput?: string;
+  /** Stat-up panel flash (stats-leveling-v2 §P4): the raised stat names + how
+   *  many seconds ago, driving the ~10s value-brighten. */
+  statsRaised?: { names: string[]; secondsAgo: number };
 }
 
 /** Write a minimal status.json into a temp config dir and run buddy-status.sh
@@ -160,6 +163,12 @@ function renderStatus(overrides: StatusOverrides): string {
       status.encounterAt =
         (fakeNow - (overrides.encounterSecondsAgo ?? 0)) * 1000;
     }
+  }
+  if (overrides.statsRaised) {
+    status.statsRaised = {
+      names: overrides.statsRaised.names,
+      at: (fakeNow - overrides.statsRaised.secondsAgo) * 1000,
+    };
   }
   if (overrides.wanderSequence) status.wanderSequence = overrides.wanderSequence;
   if (overrides.wanderRowSequence) {
@@ -286,6 +295,27 @@ describe("buddy-status.sh stats panel", () => {
     const out = renderStatus({ showStats: false });
     expect(out).not.toContain("DBG");
     expect(out).not.toContain("▲");
+  });
+
+  test("brightens a freshly-raised stat's value (P4 flash)", () => {
+    // DEBUGGING crossed a point 2s ago → its value renders bold (\x1b[1m), not
+    // the panel's usual dim (\x1b[2m). The fixture DEBUGGING value is 10.
+    const out = renderStatus({
+      showStats: true,
+      statsRaised: { names: ["DEBUGGING"], secondsAgo: 2 },
+    });
+    expect(out).toContain("[1m 10");
+    // Layout is untouched — SGR-only — so the panel still reads normally.
+    expect(stripAnsi(out)).toMatch(/DBG\s+▣+░*\s+10/);
+  });
+
+  test("a stale raise leaves the value dim (flash expired)", () => {
+    const out = renderStatus({
+      showStats: true,
+      statsRaised: { names: ["DEBUGGING"], secondsAgo: 999 },
+    });
+    expect(out).not.toContain("[1m 10"); // no bold value
+    expect(out).toContain("[2m 10"); // dim, the default
   });
 
   test("hides the panel by default (no config.json)", () => {

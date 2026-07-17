@@ -30,7 +30,7 @@ import {
   gameFeelLevel,
   writeStatusState,
 } from "./state.ts";
-import { loadGlobalEvents, type GlobalCounters } from "./achievements.ts";
+import { loadEvents, type EventCounters } from "./achievements.ts";
 import {
   awardXpAmount,
   rarityMultiplier,
@@ -79,11 +79,12 @@ export interface SessionCounters {
   all_green: number; // green test runs
   large_diffs: number; // substantive changes
   errors_seen: number; // errors worked through
-  commits_made: number; // baseline only — not scored
-  tests_failed: number; // combat spawn only — not scored
-  type_errors: number; // combat spawn only — not scored
-  lint_fails: number; // combat spawn only — not scored
-  build_fails: number; // combat spawn only — not scored
+  commits_made: number; // WISDOM denominator; not bonus-scored
+  tests_failed: number; // combat spawn + WISDOM rate — not bonus-scored
+  type_errors: number; // combat spawn + WISDOM rate — not bonus-scored
+  lint_fails: number; // combat spawn + WISDOM rate — not bonus-scored
+  build_fails: number; // combat spawn + WISDOM rate — not bonus-scored
+  pets: number; // SNARK signal (per-slot) — not bonus-scored
 }
 
 export interface SessionSnapshot {
@@ -91,7 +92,7 @@ export interface SessionSnapshot {
   baseline: SessionCounters;
 }
 
-function extractCounters(g: GlobalCounters): SessionCounters {
+function extractCounters(g: EventCounters): SessionCounters {
   return {
     all_green: g.all_green,
     large_diffs: g.large_diffs,
@@ -101,6 +102,7 @@ function extractCounters(g: GlobalCounters): SessionCounters {
     type_errors: g.type_errors,
     lint_fails: g.lint_fails,
     build_fails: g.build_fails,
+    pets: g.pets,
   };
 }
 
@@ -158,6 +160,7 @@ export function counterDelta(
     type_errors: d(current.type_errors, baseline.type_errors),
     lint_fails: d(current.lint_fails, baseline.lint_fails),
     build_fails: d(current.build_fails, baseline.build_fails),
+    pets: d(current.pets, baseline.pets),
   };
 }
 
@@ -205,19 +208,49 @@ export const STAT_FLOOR = 1;
 export const STAT_CAP = 100;
 /** Max whole points any single stat may gain from one session's work. */
 export const STAT_GAIN_PER_SESSION_CAP = 2;
+/**
+ * Ceiling (minutes) on the duration one commit may represent for PATIENCE. A
+ * snapshot spanning days (a session left open over a weekend) must not bank
+ * days of "patience" into one commit — capped here so the +0.05/10min rate
+ * yields at most +2.4, which STAT_GAIN_PER_SESSION_CAP already bounds. Root
+ * cause of the runaway-bank bug (stats-leveling-v2 §P0).
+ */
+export const PATIENCE_MAX_MINUTES = 480;
+/** WISDOM per unit of session-over-session mistake-rate improvement. */
+export const WISDOM_LEARN_RATE = 0.4;
+
+/**
+ * This session's mistake rate: failures per commit, from counters already in
+ * the delta. The denominator is `commits_made` (per commit, not per session —
+ * stats-leveling-v2 §OQ2) floored at 1 so a commit-less session still yields a
+ * finite rate. Pure; the WISDOM learning term compares it to last session's.
+ */
+export function sessionErrorRate(delta: SessionCounters): number {
+  const mistakes =
+    delta.tests_failed +
+    delta.type_errors +
+    delta.lint_fails +
+    delta.build_fails;
+  return mistakes / Math.max(1, delta.commits_made);
+}
 
 /**
  * Fractional stat gains earned by a session's work, derived from the same
- * counter delta that feeds the XP bonus plus the session's elapsed time. Four
- * of the five stats map to signals already captured; SNARK has no clean
- * behavioral proxy and stays manual for now.
+ * counter delta that feeds the XP bonus, the session's elapsed time, and (for
+ * WISDOM) last session's mistake rate. Every stat now maps to a real signal.
  *
  * Tuning is deliberately slow — a stat only ticks up after a stretch of the
  * matching behavior (≈7 bugs worked through for +1 DEBUGGING, etc.).
  *
+ * WISDOM (stats-leveling-v2 §P2) rewards *learning*: a small floor for any
+ * clean run (`all_green`) plus a larger term proportional to how much this
+ * session's mistake rate improved on the last. The first-ever session has no
+ * prior rate, so only the floor applies.
+ *
  * Args:
  *     delta: Per-counter work done since the session baseline.
  *     elapsedSec: Session duration in seconds (now − snapshot.startedAt).
+ *     lastErrorRate: Prior session's mistake rate, or undefined on the first.
  *
  * Returns:
  *     Fractional gains keyed by stat; stats with no gain are omitted.
@@ -225,16 +258,22 @@ export const STAT_GAIN_PER_SESSION_CAP = 2;
 export function computeStatGains(
   delta: SessionCounters,
   elapsedSec: number,
+  lastErrorRate?: number,
 ): Partial<Record<StatName, number>> {
-  const minutes = Math.max(0, elapsedSec) / 60;
+  const minutes = Math.min(PATIENCE_MAX_MINUTES, Math.max(0, elapsedSec) / 60);
   const gains: Partial<Record<StatName, number>> = {};
   const add = (stat: StatName, amount: number): void => {
     if (amount > 0) gains[stat] = (gains[stat] ?? 0) + amount;
   };
   add("DEBUGGING", 0.15 * delta.errors_seen); // bugs worked through
   add("CHAOS", 0.1 * delta.large_diffs); // sweeping changes
-  add("WISDOM", 0.2 * delta.all_green); // clean test runs
+  add("SNARK", 0.25 * delta.pets); // interaction — the more you engage it
   add("PATIENCE", 0.05 * (minutes / 10)); // time in the trenches
+  add("WISDOM", 0.1 * delta.all_green); // floor: any clean run
+  if (typeof lastErrorRate === "number") {
+    const improvement = Math.max(0, lastErrorRate - sessionErrorRate(delta));
+    add("WISDOM", WISDOM_LEARN_RATE * improvement); // learning: fewer mistakes
+  }
   return gains;
 }
 
@@ -278,12 +317,43 @@ export function accrueSessionStats(
   // Opt-out (design-rpg Phase 4): gameFeel=off disables the game mechanics —
   // this is the behavioral-stat gate owed since stat-leveling.
   if (effectiveGameFeel() === "off") return {};
-  const gains = computeStatGains(delta, elapsedSec);
-  if (Object.keys(gains).length === 0) return {};
-  const increments = accrueStatProgress(gains, STAT_GAIN_PER_SESSION_CAP);
+  const thisRate = sessionErrorRate(delta);
+  const gains = computeStatGains(delta, elapsedSec, getXpState().lastErrorRate);
+  // Persist thisRate every session — even a gain-less one — so WISDOM always
+  // has a prior to compare against next time. accrueStatProgress folds the rate
+  // into the same write as the progress accumulators (one XpState save).
+  const increments = accrueStatProgress(
+    gains,
+    STAT_GAIN_PER_SESSION_CAP,
+    thisRate,
+  );
   if (Object.keys(increments).length === 0) return {};
   applyStatIncrements(slot, increments);
   return increments;
+}
+
+/**
+ * Format a stat-up toast from this commit's whole-point increments, or null
+ * when nothing rose (stats-leveling-v2 §P4). Stats appear in canonical order
+ * (`STAT_NAMES`) so the toast is stable: e.g. "📈 DEBUGGING +1 · SNARK +2".
+ */
+export function formatStatUpText(
+  increments: Partial<Record<StatName, number>>,
+): string | null {
+  const parts: string[] = [];
+  for (const stat of STAT_NAMES) {
+    const inc = increments[stat] ?? 0;
+    if (inc > 0) parts.push(`${stat} +${inc}`);
+  }
+  if (parts.length === 0) return null;
+  return `\u{1F4C8} ${parts.join(" · ")}`;
+}
+
+/** The stats that rose this commit, in canonical order — for the panel flash. */
+export function raisedStatNames(
+  increments: Partial<Record<StatName, number>>,
+): StatName[] {
+  return STAT_NAMES.filter((stat) => (increments[stat] ?? 0) > 0);
 }
 
 // ─── Pending encounter (design-pending-encounter): the standoff before combat ─
@@ -334,7 +404,7 @@ export function sightBug(slot?: string): void {
   if (gameFeelLevel() !== "full") return;
 
   const snapshot = loadSnapshot();
-  const current = extractCounters(loadGlobalEvents());
+  const current = extractCounters(loadEvents(slot));
   const baseline = snapshot?.baseline ?? current;
   // A sighting event just fired, so even a missing/older snapshot counts the
   // event that summoned us (floor at 1).
@@ -475,15 +545,17 @@ export function maybeFightBug(
 
 // ─── Lifecycle entry points (called from award-xp.ts) ────────────────────────
 
-/** Capture the baseline at the start of a session (overwrites any stale one). */
-export function startSession(): SessionSnapshot {
+/** Capture the baseline at the start of a session (overwrites any stale one).
+ *  The active slot is threaded in so the per-slot `pets` counter is baselined
+ *  alongside the global ones (the SNARK signal, stats-leveling-v2 §P1). */
+export function startSession(slot?: string): SessionSnapshot {
   // A fresh session re-baselines the counters, so any surviving standoff would
   // resolve against a zero delta — a ghost. Clear it (§4.4, G5) before the new
   // snapshot lands so a sighting is always matched to a live baseline.
   clearPendingEncounter();
   const snapshot: SessionSnapshot = {
     startedAt: nowSeconds(),
-    baseline: extractCounters(loadGlobalEvents()),
+    baseline: extractCounters(loadEvents(slot)),
   };
   saveSnapshot(snapshot);
   return snapshot;
@@ -496,6 +568,9 @@ export interface SessionCompletion {
    *  spawned. The caller folds it into its final status write's celebration
    *  (pickCelebration) — see maybeFightBug for why it isn't written here. */
   fightSummary: string | null;
+  /** Whole-point stat increments applied this commit (stats-leveling-v2 §P4).
+   *  The caller surfaces them as a toast + panel flash. Empty ⇒ nothing rose. */
+  statIncrements: Partial<Record<StatName, number>>;
 }
 
 /**
@@ -508,7 +583,7 @@ export function awardSessionComplete(
   species?: Species,
   rarity?: Rarity,
 ): SessionCompletion {
-  const current = extractCounters(loadGlobalEvents());
+  const current = extractCounters(loadEvents(slot));
   const snapshot = loadSnapshot();
   const baseline = snapshot?.baseline ?? current;
 
@@ -531,7 +606,7 @@ export function awardSessionComplete(
   // Behavioral stat leveling: nudge the companion's stats from the same delta
   // plus the session's elapsed time. Once-per-commit, so no per-event cost.
   const elapsedSec = snapshot ? Math.max(0, nowSeconds() - snapshot.startedAt) : 0;
-  accrueSessionStats(slot, delta, elapsedSec);
+  const statIncrements = accrueSessionStats(slot, delta, elapsedSec);
 
   // Idle-RPG combat (Phase 3): this session's error-ish events (errors, failed
   // tests/lint/type-checks/builds) spawn a bug to fight.
@@ -548,5 +623,5 @@ export function awardSessionComplete(
   // Re-baseline: the next session starts counting from here.
   saveSnapshot({ startedAt: nowSeconds(), baseline: current });
 
-  return { bonus, state, fightSummary };
+  return { bonus, state, fightSummary, statIncrements };
 }

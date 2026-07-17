@@ -154,6 +154,16 @@ _STATUS=$(jq -r --argjson now "$NOW" --arg gf "$GAME_FEEL" '
     | (if $gf == "full" and $celeb_fresh != 1 and $combat_on != 1
        then (((.wanderRowSequence // []) | max) // 0)
        else 0 end) as $wrmax
+    # Stat-up panel flash (stats-leveling-v2 P4): the names of stats that crossed
+    # a whole point recently, filtered to a ~10s TTL (same age idiom as
+    # $celeb_fresh). NOT gameFeel-gated: the field is only ever written when
+    # accrual ran (subtle/full), and the marker is a harmless value brighten.
+    # Empty string once stale, so the panel shows it only while fresh.
+    | ((.statsRaised.at // 0) as $ra
+       | if ($ra | type) == "number" and $ra > 0
+             and ($now - ($ra / 1000 | floor)) >= 0
+             and ($now - ($ra / 1000 | floor)) <= 10
+         then ((.statsRaised.names // []) | join(",")) else "" end) as $raised_names
     | [
         ((.muted // false) | tostring),
         ((.name // "") | gsub("[\\x01-\\x1f\\x7f]"; " ")),
@@ -179,6 +189,7 @@ _STATUS=$(jq -r --argjson now "$NOW" --arg gf "$GAME_FEEL" '
         ($combat_on | tostring),
         ($awidth | tostring),
         ((.enemyGlyph // "") | gsub("[\\x01-\\x1f\\x7f]"; " ")),
+        ($raised_names | gsub("[\\x01-\\x1f\\x7f]"; " ")),
         ($frame | @base64)
       ] | join("")
 ' "$STATE" 2>/dev/null)
@@ -189,7 +200,7 @@ IFS=$'\x1f' read -r \
     STATS_TSV XP_PCT XP_GAIN_TSV CELEB_TSV \
     _HAS_FLOURISH _CELEB_FRESH WANDER_OFF WANDER_ROW WANDER_ROW_MAX \
     _ENC_FRESH _COMBAT_ON ART_WIDTH ENEMY_GLYPH \
-    _FRAME_B64 <<< "$_STATUS"
+    STATS_RAISED _FRAME_B64 <<< "$_STATUS"
 
 [ "$MUTED" = "true" ] && exit 0
 [ -z "$NAME" ] && exit 0
@@ -664,7 +675,15 @@ if [ "$SHOW_STATS" = "true" ] && [ -n "$STATS_TSV" ]; then
                 else
                     _mark="  "
                 fi
-                STATS_LINES+=("${_scolor}${_label}${NC} ${_scolor}${_bar}${NC} ${_SDIM}${_valstr}${NC}${_mark}")
+                # Stat-up flash (stats-leveling-v2 P4): a freshly-raised stat's
+                # value renders bold instead of dim for ~10s. SGR-only — no width
+                # change, so the panel/cluster alignment is untouched. The ▲/▼
+                # peak/dump mark is orthogonal and still shown.
+                _vcolor="$_SDIM"
+                case ",${STATS_RAISED}," in
+                    *",${_sn},"*) _vcolor=$'\033[1m' ;;
+                esac
+                STATS_LINES+=("${_scolor}${_label}${NC} ${_scolor}${_bar}${NC} ${_vcolor}${_valstr}${NC}${_mark}")
             done
 
             # XP progress row, below the 5 stat bars. Same pip style; shows a

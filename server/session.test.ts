@@ -12,9 +12,14 @@ import {
   counterDelta,
   combatErrorCount,
   computeStatGains,
+  sessionErrorRate,
+  formatStatUpText,
+  raisedStatNames,
   pendingAction,
   SESSION_BASE_BONUS,
   SESSION_BONUS_CAP,
+  PATIENCE_MAX_MINUTES,
+  WISDOM_LEARN_RATE,
   type SessionCounters,
 } from "./session.ts";
 
@@ -27,6 +32,7 @@ const ZERO: SessionCounters = {
   type_errors: 0,
   lint_fails: 0,
   build_fails: 0,
+  pets: 0,
 };
 
 describe("computeSessionBonus", () => {
@@ -218,7 +224,10 @@ describe("computeStatGains", () => {
       0.3, // 0.10 × 3
     );
     expect(computeStatGains({ ...ZERO, all_green: 2 }, 0).WISDOM).toBeCloseTo(
-      0.4, // 0.20 × 2
+      0.2, // 0.10 × 2 (the clean-run floor; the learning term is separate)
+    );
+    expect(computeStatGains({ ...ZERO, pets: 4 }, 0).SNARK).toBeCloseTo(
+      1.0, // 0.25 × 4 (stats-leveling-v2 §P1)
     );
   });
 
@@ -241,7 +250,7 @@ describe("computeStatGains", () => {
     expect(computeStatGains({ ...ZERO, commits_made: 50 }, 0)).toEqual({});
   });
 
-  test("SNARK has no behavioral source", () => {
+  test("SNARK accrues only from pet interaction, not other work", () => {
     const flooded: SessionCounters = {
       ...ZERO,
       all_green: 99,
@@ -250,5 +259,61 @@ describe("computeStatGains", () => {
       commits_made: 99,
     };
     expect(computeStatGains(flooded, 9999 * 60).SNARK).toBe(undefined);
+    expect(computeStatGains({ ...ZERO, pets: 2 }, 0).SNARK).toBeCloseTo(0.5);
+  });
+
+  test("PATIENCE from a multi-day session is clamped, not unbounded", () => {
+    // 10 days of elapsed time must not bank 10 days of patience — capped at
+    // PATIENCE_MAX_MINUTES so the +0.05/10min rate tops out (§P0).
+    const tenDays = 10 * 24 * 60 * 60;
+    const capped = 0.05 * (PATIENCE_MAX_MINUTES / 10);
+    expect(computeStatGains(ZERO, tenDays).PATIENCE).toBeCloseTo(capped);
+  });
+
+  test("WISDOM rewards a session-over-session drop in mistake rate", () => {
+    // Last session ran 2 failures/commit; this one runs 0 → improvement of 2.
+    const clean = { ...ZERO, commits_made: 3 };
+    const withPrior = computeStatGains(clean, 0, 2).WISDOM ?? 0;
+    const noPrior = computeStatGains(clean, 0).WISDOM ?? 0;
+    expect(withPrior).toBeGreaterThan(noPrior);
+    expect(withPrior).toBeCloseTo(WISDOM_LEARN_RATE * 2); // no all_green floor here
+  });
+
+  test("WISDOM ignores a session-over-session rise in mistake rate", () => {
+    // This session is worse than last (0 → 2 failures/commit): no learning gain.
+    const worse = { ...ZERO, commits_made: 1, tests_failed: 2 };
+    expect(computeStatGains(worse, 0, 0).WISDOM).toBe(undefined);
+  });
+});
+
+describe("sessionErrorRate", () => {
+  test("is failures per commit, floored at one commit", () => {
+    expect(sessionErrorRate({ ...ZERO, tests_failed: 4, commits_made: 2 })).toBe(
+      2,
+    );
+    // No commits → denominator floors at 1 (the failures still count).
+    expect(sessionErrorRate({ ...ZERO, lint_fails: 3 })).toBe(3);
+    expect(sessionErrorRate(ZERO)).toBe(0);
+  });
+});
+
+describe("formatStatUpText / raisedStatNames", () => {
+  test("no increments yields no toast and no names", () => {
+    expect(formatStatUpText({})).toBe(null);
+    expect(formatStatUpText({ DEBUGGING: 0 })).toBe(null);
+    expect(raisedStatNames({})).toEqual([]);
+  });
+
+  test("a single raise reads as one toast entry", () => {
+    expect(formatStatUpText({ DEBUGGING: 1 })).toBe("📈 DEBUGGING +1");
+    expect(raisedStatNames({ DEBUGGING: 1 })).toEqual(["DEBUGGING"]);
+  });
+
+  test("multiple raises list in canonical order, with amounts", () => {
+    // SNARK is declared after DEBUGGING in STAT_NAMES, so it sorts second
+    // regardless of insertion order.
+    const inc = { SNARK: 2, DEBUGGING: 1 };
+    expect(formatStatUpText(inc)).toBe("📈 DEBUGGING +1 · SNARK +2");
+    expect(raisedStatNames(inc)).toEqual(["DEBUGGING", "SNARK"]);
   });
 });

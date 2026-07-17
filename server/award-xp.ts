@@ -16,7 +16,13 @@ import {
   writeStatusState,
   pickCelebration,
 } from "./state";
-import { startSession, awardSessionComplete, sightBug } from "./session";
+import {
+  startSession,
+  awardSessionComplete,
+  sightBug,
+  formatStatUpText,
+  raisedStatNames,
+} from "./session";
 import { recordSessionStart } from "./streak";
 import { tickWhim } from "./quests";
 import { announceOnce } from "./discovery";
@@ -102,13 +108,13 @@ function main(): void {
     // Break the streak if the previous session never committed, then capture
     // the new baseline (additional-rewards FR2).
     recordSessionStart();
-    startSession();
+    startSession(slot);
     return;
   }
 
   if (event === "session_complete") {
     const prevLevel = getXpState().level;
-    const { bonus, state, fightSummary } = awardSessionComplete(
+    const { bonus, state, fightSummary, statIncrements } = awardSessionComplete(
       slot,
       species,
       rarity,
@@ -122,6 +128,11 @@ function main(): void {
       const discovered = maybeDiscoverWhim(
         leveled || whimRewarded || fightSummary !== null,
       );
+      // Behavioral stat leveling feedback (stats-leveling-v2 §P4): a toast for
+      // any stat that crossed a whole point this commit (the lowest celebration
+      // rung, so it never buries a level-up/fight/discovery) + a brief panel
+      // flash on the raised stats.
+      const statUpText = formatStatUpText(statIncrements);
       // Fallback "loot" so any streak/whim loot drop surfaces as a 🎁 toast.
       const { celebration, cause } = pickCelebration(
         state.level,
@@ -130,6 +141,7 @@ function main(): void {
         fightSummary,
         discovered,
         "loot",
+        statUpText,
       );
       writeStatusState(companion, {
         level: state.level,
@@ -137,6 +149,7 @@ function main(): void {
         xpGain: bonus,
         celebration,
         cause,
+        statsRaised: raisedStatNames(statIncrements),
         // design-sprite-animation-v2 §P5: every real celebration gets its
         // kind-flavored flourish now, not just ascension/shiny. Discovery
         // stays unflourished — a one-time system message, not a performance.

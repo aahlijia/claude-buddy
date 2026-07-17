@@ -701,6 +701,9 @@ export interface StatusState {
   stats: BuddyStats;
   peak: StatName;
   dump: StatName;
+  /** Stats that just crossed a whole point, with the write's timestamp for the
+   *  panel's freshness flash (stats-leveling-v2 §P4). Absent ⇒ no fresh raise. */
+  statsRaised?: { names: StatName[]; at: number };
   /** Level-progress fill ratio, 0-100. 100 at MAX_LEVEL. */
   xpPct: number;
   /** Most recent XP award, for the statusline's transient toast. */
@@ -771,15 +774,19 @@ export interface StatusOpts {
    *  Default off — reserved for the big moments (ascension/shiny), never the
    *  common loot/level-up case. Ignored when gameFeel is off. */
   flourish?: boolean;
+  /** Stats that crossed a whole point this write (stats-leveling-v2 §P4). The
+   *  stats panel briefly brightens their value; empty/absent ⇒ no marker. */
+  statsRaised?: StatName[];
 }
 
 /** Higher wins when several celebrations contend for the single bubble slot. */
 const CELEB_PRIORITY: Record<CelebrationKind, number> = {
-  ascension: 5,
-  shiny: 4,
-  levelup: 3,
-  whim: 2,
-  loot: 1,
+  ascension: 6,
+  shiny: 5,
+  levelup: 4,
+  whim: 3,
+  loot: 2,
+  statup: 1,
   discovery: 0,
 };
 
@@ -831,6 +838,9 @@ export function buildCelebration(
  * @param discovered: Whether the once-ever whim discovery fired this write.
  * @param fallbackCause: Cause to scope the loot side-channel when nothing
  *     above claims the bubble.
+ * @param statUpText: Toast for a stat that crossed a whole point this commit,
+ *     or null. The lowest rung — a common, quiet event never buries a level-up,
+ *     fight, or the one-time discovery (stats-leveling-v2 §P4).
  * @param now: Injected clock for tests; `Date.now()` in production.
  * @returns The celebration to write (or null) and the write's cause.
  */
@@ -841,6 +851,7 @@ export function pickCelebration(
   fightSummary: string | null,
   discovered: boolean,
   fallbackCause: StatusOpts["cause"],
+  statUpText: string | null = null,
   now: number = Date.now(),
 ): { celebration: Celebration | null; cause: StatusOpts["cause"] } {
   if (leveled) {
@@ -869,6 +880,12 @@ export function pickCelebration(
         at: now,
       },
       cause: undefined,
+    };
+  }
+  if (statUpText) {
+    return {
+      celebration: { text: statUpText, kind: "statup", at: now },
+      cause: fallbackCause,
     };
   }
   return { celebration: null, cause: fallbackCause };
@@ -1229,6 +1246,9 @@ export function writeStatusState(
     stats: companion.bones.stats,
     peak: companion.bones.peak,
     dump: companion.bones.dump,
+    ...(opts.statsRaised && opts.statsRaised.length > 0
+      ? { statsRaised: { names: opts.statsRaised, at: Date.now() } }
+      : {}),
     xpPct,
     lastXpGain,
     celebration,

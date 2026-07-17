@@ -581,6 +581,10 @@ export interface XpState {
   // roll over into the companion's bones.stats once they cross 1.0, so a single
   // event nudges a stat fractionally rather than jumping it a full point.
   statProgress: Partial<Record<StatName, number>>;
+  // Last completed session's mistake rate (failures per commit), the prior the
+  // WISDOM learning term compares against (stats-leveling-v2 §P2). Undefined
+  // until the first session completes; refreshed every session-complete.
+  lastErrorRate?: number;
 
   // Prestige identity.
   title: string | null; // equipped prestige title, null if none
@@ -648,7 +652,10 @@ function ownedPointCost(
  */
 /**
  * Coerce a parsed `statProgress` blob into a clean map: only known stat names,
- * only finite non-negative numbers. Legacy state (no field) yields {}.
+ * only finite non-negative numbers, each clamped to `STAT_BANK_CAP`. The clamp
+ * doubles as a one-time migration for stores that banked overflow under the old
+ * rollover (a live store had 114+ banked PATIENCE) — it dissipates on load
+ * instead of dripping for dozens of commits. Legacy state (no field) yields {}.
  */
 function sanitizeStatProgress(
   raw: unknown,
@@ -659,7 +666,7 @@ function sanitizeStatProgress(
   for (const stat of STAT_NAMES) {
     const v = obj[stat];
     if (typeof v === "number" && Number.isFinite(v) && v > 0) {
-      out[stat] = v;
+      out[stat] = Math.min(STAT_BANK_CAP, v);
     }
   }
   return out;
@@ -770,6 +777,10 @@ export function backfillXpState(parsed: Partial<XpState> | null): XpState {
     cosmeticFlags: Array.isArray(p.cosmeticFlags) ? p.cosmeticFlags : [],
     levelUpAchieved: p.levelUpAchieved ?? false,
     statProgress: sanitizeStatProgress(p.statProgress),
+    lastErrorRate:
+      typeof p.lastErrorRate === "number" && Number.isFinite(p.lastErrorRate)
+        ? Math.max(0, p.lastErrorRate)
+        : undefined,
     pointsTotal,
     pointsSpent,
     bonusPoints,
@@ -822,6 +833,16 @@ function saveXpState(state: XpState): void {
 
 // ─── Stat-leveling accrual ───────────────────────────────────────────────────
 
+/**
+ * Ceiling on the fractional stat bank. A bank only ever needs to hold the
+ * sub-1.0 remainder toward the next whole point, so it never legitimately
+ * exceeds 1.0. Capping here discards whole points the per-session cap already
+ * refused instead of banking them forever — the backstop half of the
+ * runaway-bank fix (stats-leveling-v2 §P0); the input clamp
+ * (PATIENCE_MAX_MINUTES) is the other half.
+ */
+export const STAT_BANK_CAP = 1;
+
 /** Result of folding fractional gains into the accumulators. */
 export interface StatRollover {
   /** New fractional accumulators, with whole points removed. */
@@ -835,9 +856,11 @@ export interface StatRollover {
  * whole points that have accrued. Pure: no I/O, no clamping against the
  * companion's current stat — that belongs to the caller (session.ts).
  *
- * Whole points are rate-limited by `perSessionCap`; overflow above the cap is
- * left banked in the accumulator rather than dropped, so a giant session can't
- * spike a stat but the progress still counts toward the next one.
+ * Whole points are rate-limited by `perSessionCap`. Whatever the cap refuses is
+ * *discarded*, not banked: the accumulator is clamped to `STAT_BANK_CAP` so it
+ * only ever carries the sub-1.0 remainder toward the next point. A giant (or
+ * multi-day) session can't spike a stat now *or* leave a hoard that drips for
+ * dozens of later commits (stats-leveling-v2 §P0).
  *
  * Args:
  *     progress: Current fractional accumulators (mutated copy returned).
@@ -860,7 +883,9 @@ export function rolloverStatProgress(
     const acc = (out[stat] ?? 0) + gain;
     let whole = Math.floor(acc);
     if (perSessionCap >= 0 && whole > perSessionCap) whole = perSessionCap;
-    out[stat] = acc - whole; // bank the remainder (and any capped overflow)
+    // Bank only the sub-1.0 remainder; a capped overflow is dropped, never
+    // hoarded (STAT_BANK_CAP is the backstop, PATIENCE_MAX_MINUTES the source clamp).
+    out[stat] = Math.min(STAT_BANK_CAP, acc - whole);
     if (whole > 0) increments[stat] = whole;
   }
   return { progress: out, increments };
@@ -871,10 +896,16 @@ export function rolloverStatProgress(
  * whole-point increments that just rolled over. The XpState side of accrual is
  * encapsulated here (load → fold → save) so the private state I/O stays put;
  * applying the increments to the companion is the caller's job.
+ *
+ * `errorRate`, when given, refreshes `lastErrorRate` in the same write — the
+ * prior the WISDOM learning term reads next session (stats-leveling-v2 §P2).
+ * It is persisted even when `gains` is empty, so a gain-less session still
+ * advances the comparison baseline.
  */
 export function accrueStatProgress(
   gains: Partial<Record<StatName, number>>,
   perSessionCap: number,
+  errorRate?: number,
 ): Partial<Record<StatName, number>> {
   const state = loadXpState();
   const { progress, increments } = rolloverStatProgress(
@@ -883,6 +914,7 @@ export function accrueStatProgress(
     perSessionCap,
   );
   state.statProgress = progress;
+  if (typeof errorRate === "number") state.lastErrorRate = errorRate;
   saveXpState(state);
   return increments;
 }

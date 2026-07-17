@@ -5,15 +5,15 @@ tying together the arcs that each have their own design/status docs. For the
 per-arc detail, follow the links in [Doc map](#doc-map).
 
 _Last updated: 2026-07-17 · branch `feature/interactive-fight-scene`_
-_Baseline: **832 tests, all pass** · `tsc --noEmit` clean · `bash -n` clean._
+_Baseline: **844 tests, all pass** · `tsc --noEmit` clean · `bash -n` clean._
 _Status: everything through the
-[hardening pass](#hardening-pass--bug--statusline-perf-fixes-2026-07-16) is
-**committed and pushed** (through `c134b20`, 2026-07-16). Newest on top: the
 [sprite-animation expansion](#sprite-animation-expansion--idle-emote--dodgeparry-bouts-2026-07-17)
-(idle emote row + dead-row reclaim, dodge/parry bout outcomes) and its
+and its
 [round 2](#sprite-animation-expansion-round-2--bout-variety-celebration-flavor-idle-life-2026-07-17)
-(crit/counter outcomes, per-kind flourish, idle glance, a pilot new art
-frame) — both **uncommitted**. No PR opened yet._
+is **committed** (through `9b0ebba`, "additional animations"). Newest on top:
+[stat-leveling v2](#stat-leveling-v2--every-stat-behavioral-learning-wisdom-visible-gains-2026-07-17)
+(SNARK←pets, learning WISDOM, stat-up feedback, PATIENCE bank fix) —
+**uncommitted**. No PR opened yet._
 
 > **What "game-feel" is.** A layer of optional juice on top of the buddy
 > companion: celebratory feedback, an expressive idle status line, light RPG
@@ -71,9 +71,13 @@ no stat drift and spawns no encounters.
 
 ### 3. Stats & leveling
 - XP/level/title/prestige/streak, surfaced in `buddy_xp` and the status line.
-- **Stat leveling** — five stats (DEBUGGING/PATIENCE/CHAOS/WISDOM/SNARK) rise from
-  coding signals, accrued once per commit at zero per-event cost. Optional stats
-  panel (`showStats` / `buddy-stats`).
+- **Stat leveling** — all five stats (DEBUGGING/PATIENCE/CHAOS/WISDOM/SNARK) rise
+  from coding signals, accrued once per commit at zero per-event cost. Optional
+  stats panel (`showStats` / `buddy-stats`). **v2 (2026-07-17):** SNARK now maps
+  to pet interaction, WISDOM rewards a session-over-session drop in mistake rate
+  (not just raw clean runs), a stat-up toast + panel value-flash surface each
+  whole-point gain, and the PATIENCE runaway-bank bug is fixed. See
+  [stats-leveling-v2.md](../leveling-system/stats-leveling-v2.md).
 - **Cosmetic sets** (C1) grant a flavor title on completion; **achievement
   progress** shows `n/target` fractions.
 
@@ -805,6 +809,39 @@ test pinned to a literal seed is implicitly pinned to the outcome mix, not
 just the RNG stream. Fixed by re-deriving seeds against the new thresholds
 rather than adjusting assertions to match whatever seed 42 now rolls.
 
+### Stat-leveling v2 — every stat behavioral, learning WISDOM, visible gains (2026-07-17)
+
+A follow-up pass on the behavioral stat system (v1 mapped 4 of 5 stats and
+surfaced nothing). Full design + resolved OQs:
+[stats-leveling-v2.md](../leveling-system/stats-leveling-v2.md). Four phases,
+all in the once-per-commit session-complete path (the zero-per-event invariant
+holds):
+
+- **P0 — PATIENCE runaway-bank fix.** The fractional bank hoarded whole points
+  the per-session cap refused, so a multi-day session snapshot banked 100+
+  PATIENCE (114 on the live store) that dripped +2/commit for ~57 commits. Fixed
+  at the source (`elapsedSec` clamped to `PATIENCE_MAX_MINUTES=480`) and with a
+  backstop (`STAT_BANK_CAP=1` — capped overflow is discarded, not banked); a
+  one-time clamp in `sanitizeStatProgress` dissipates the existing hoard on load.
+- **P1 — SNARK ← pets.** The last unmapped stat now rises from interaction
+  (`+0.25`/pet). `pets` is per-slot, so `SessionCounters` sources from
+  `loadEvents(slot)` and `startSession` threads the active slot to baseline it.
+- **P2 — WISDOM learning delta.** Beyond the reduced clean-run floor
+  (`+0.10`/`all_green`), WISDOM now gains proportional to a **drop in mistake
+  rate** (failures per commit) session-over-session — the "reflects learning"
+  idea v1 deferred. One persisted float (`lastErrorRate`), refreshed every
+  session-complete.
+- **P4 — visible gains.** `SessionCompletion.statIncrements` threads the
+  applied whole points out; `award-xp.ts` surfaces a `statup` toast
+  (`📈 DEBUGGING +1 · SNARK +2`, the lowest celebration rung) and a **panel
+  value brighten** (SGR-only, ~10s TTL, no ▲ collision with "peak", no width
+  change).
+
+Verified end-to-end through the real award path (4 pets → SNARK 10→11 + toast;
+two-session WISDOM delta; rate persistence) and the real shell (fresh raise bold,
+stale dim, layout intact). Tests: **844 pass** (+12), `tsc` + `bash -n` clean,
+render snapshots byte-identical. Uncommitted.
+
 ---
 
 ## Going live
@@ -835,11 +872,10 @@ bun run install-buddy   # copies the repo script into place
 - **`mood-react.sh` / `file-type-react.sh` hardcode `$HOME/.claude-buddy`**
   (found 2026-07-16, not fixed): they don't source `scripts/paths.sh`, so a
   custom `CLAUDE_CONFIG_DIR` profile misses their reactions/counters.
-- **`statProgress.PATIENCE` runaway bank** (found 2026-07-16, not fixed): the
-  per-session stat cap banks overflow indefinitely; multi-day session
-  snapshots yield huge elapsed-time gains (114+ banked on the live store).
-  Likely fix: cap the accumulator (or clamp elapsed time) in
-  `accrueStatProgress`/`computeStatGains`.
+- ~~**`statProgress.PATIENCE` runaway bank**~~ **fixed 2026-07-17** (stat-leveling
+  v2 §P0): `elapsedSec` is clamped to `PATIENCE_MAX_MINUTES`, the bank is capped
+  at `STAT_BANK_CAP=1`, and `sanitizeStatProgress` dissipates the existing 114+
+  hoard on load. See [stats-leveling-v2.md](../leveling-system/stats-leveling-v2.md).
 - **react.sh classifier newline weakness** (found 2026-07-09, not fixed):
   `\b`/`^`-anchored patterns can't match past the first line of a tool
   response in some shapes; test-fail under-fires. (Tracked in the idle-rpg

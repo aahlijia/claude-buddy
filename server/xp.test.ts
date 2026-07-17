@@ -16,6 +16,7 @@ import {
   renderXpCardMarkdown,
   backfillXpState,
   rolloverStatProgress,
+  STAT_BANK_CAP,
   formatStatProgressLine,
   availablePoints,
   unlockCost,
@@ -925,11 +926,18 @@ describe("rolloverStatProgress", () => {
     expect(r.progress.WISDOM).toBeCloseTo(0.2);
   });
 
-  test("the per-session cap limits whole points but banks the overflow", () => {
-    // 19.8 of gain → +2 this session, 17.8 left banked for later.
+  test("the per-session cap limits whole points and discards the overflow", () => {
+    // 19.8 of gain → +2 this session; the rest is dropped, not hoarded — the
+    // bank is clamped to STAT_BANK_CAP (stats-leveling-v2 §P0 runaway-bank fix).
     const r = rolloverStatProgress({}, { WISDOM: 19.8 }, CAP);
     expect(r.increments.WISDOM).toBe(2);
-    expect(r.progress.WISDOM).toBeCloseTo(17.8);
+    expect(r.progress.WISDOM).toBe(STAT_BANK_CAP);
+  });
+
+  test("a huge single gain never banks more than STAT_BANK_CAP", () => {
+    const r = rolloverStatProgress({ CHAOS: 0.9 }, { CHAOS: 500 }, CAP);
+    expect(r.increments.CHAOS).toBe(CAP);
+    expect(r.progress.CHAOS).toBeLessThanOrEqual(STAT_BANK_CAP);
   });
 
   test("ignores non-positive gains and leaves the accumulator untouched", () => {
