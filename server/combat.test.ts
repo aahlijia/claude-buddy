@@ -307,6 +307,38 @@ describe("skirmish bouts + damage pops (design-attack-animation)", () => {
   // rng() call picks the opening attacker.
   const firstAttacker = (seed: number): "player" | "enemy" =>
     mulberry32(seed)() < 0.5 ? "player" : "enemy";
+  // Replay the full draw order (first, outA, dmgA, outB, dmgB, …) so tests can
+  // predict each bout's outcome — dodge/parry carry no damage pop, so pop
+  // assertions must be scoped to the hit bouts (design-sprite-animation P2).
+  const bouts = (
+    seed: number,
+  ): { first: "player" | "enemy"; outA: string; outB: string } => {
+    const rng = mulberry32(seed);
+    const first = rng() < 0.5 ? "player" : "enemy";
+    const oc = (): string => {
+      const r = rng();
+      return r < 0.4
+        ? "hit"
+        : r < 0.6
+          ? "dodge"
+          : r < 0.8
+            ? "parry"
+            : r < 0.9
+              ? "crit"
+              : "counter";
+    };
+    const outA = oc();
+    rng(); // dmgA
+    const outB = oc();
+    return { first, outA, outB };
+  };
+  // Frame indices of a bout's [walk, impact, float] within the flipbook: 2
+  // base frames, then 3 per bout.
+  const boutFrames = (n: 0 | 1): [number, number, number] => [
+    2 + n * 3,
+    3 + n * 3,
+    4 + n * 3,
+  ];
 
   test("constant display width AND height across all frames (no jitter)", () => {
     const scene = bakePendingScene("cactus", "·", "dragon", "·", 42, 3);
@@ -321,34 +353,110 @@ describe("skirmish bouts + damage pops (design-attack-animation)", () => {
     expect(heights.size).toBe(1);
   });
 
-  test("base frames carry a blank overlay row; impacts pop a red ✗ -N", () => {
-    const scene = bakePendingScene("cactus", "·", "dragon", "·", 42, 3);
-    for (const i of [0, 1]) {
-      expect(overlayOf(scene.frames[i]).trim()).toBe("");
-    }
-    // Impact frames (2nd of each bout): red SGR + marker + number.
-    for (const i of [3, 6]) {
-      expect(overlayOf(scene.frames[i])).toContain("\x1b[31m");
-      expect(strip(overlayOf(scene.frames[i]))).toMatch(/✗ -\d+/);
-    }
-    // Float frames: the marker is gone, the number lingers.
-    for (const i of [4, 7]) {
-      expect(overlayOf(scene.frames[i])).not.toContain("✗");
-      expect(strip(overlayOf(scene.frames[i]))).toMatch(/-\d+/);
-    }
-    // Walk-in frames have no pop yet.
-    for (const i of [2, 5]) {
-      expect(overlayOf(scene.frames[i]).trim()).toBe("");
+  test("base frames blank; a HIT bout pops ✗ -N, dodge/parry stay pop-less", () => {
+    // seed 2 ⇒ outA=hit, outB=dodge: exercises both a popping and a pop-less
+    // bout in one flipbook.
+    const seed = 2;
+    const scene = bakePendingScene("cactus", "·", "dragon", "·", seed, 3);
+    const { outA, outB } = bouts(seed);
+    expect([outA, outB]).toEqual(["hit", "dodge"]);
+    for (const i of [0, 1]) expect(overlayOf(scene.frames[i]).trim()).toBe("");
+    for (const [n, out] of [[0, outA], [1, outB]] as const) {
+      const [walk, impact, float] = boutFrames(n);
+      expect(overlayOf(scene.frames[walk]).trim()).toBe(""); // walk-in never pops
+      if (out === "hit") {
+        expect(overlayOf(scene.frames[impact])).toContain("\x1b[31m");
+        expect(strip(overlayOf(scene.frames[impact]))).toMatch(/✗ -\d+/);
+        expect(overlayOf(scene.frames[float])).not.toContain("✗");
+        expect(strip(overlayOf(scene.frames[float]))).toMatch(/-\d+/);
+      } else {
+        // dodge/parry deal no damage ⇒ every overlay row stays blank.
+        for (const i of [impact, float]) {
+          expect(strip(overlayOf(scene.frames[i]))).not.toMatch(/✗|-\d+/);
+        }
+      }
     }
   });
 
-  test("attackers alternate: the two bouts pop over different sprites", () => {
-    const scene = bakePendingScene("cactus", "·", "dragon", "·", 42, 3);
+  test("attackers alternate: two hit bouts pop over different sprites", () => {
+    // seed 3 ⇒ both bouts hit (first=enemy, then player), so both pop and the
+    // columns differ.
+    const seed = 3;
+    const scene = bakePendingScene("cactus", "·", "dragon", "·", seed, 3);
+    expect([bouts(seed).outA, bouts(seed).outB]).toEqual(["hit", "hit"]);
     const popCol = (i: number): number =>
       strip(overlayOf(scene.frames[i])).indexOf("✗");
     expect(popCol(3)).toBeGreaterThanOrEqual(0);
     expect(popCol(6)).toBeGreaterThanOrEqual(0);
     expect(popCol(3)).not.toBe(popCol(6));
+  });
+
+  test("dodge: attacker fully lunges, defender slips with O eyes, no pop", () => {
+    // seed 14 ⇒ outA=dodge (first=player).
+    const seed = 14;
+    const scene = bakePendingScene("cactus", "·", "dragon", "·", seed, 3);
+    expect(bouts(seed).outA).toBe("dodge");
+    const [, impact] = boutFrames(0);
+    // No damage anywhere in the dodge bout.
+    for (const i of boutFrames(0)) {
+      expect(strip(overlayOf(scene.frames[i]))).not.toMatch(/✗|-\d+/);
+    }
+    // The defender (enemy, right block) shows the dodging "O" eyes on impact.
+    const eyeRow = strip(scene.frames[impact])
+      .split("\n")
+      .find((l) => l.includes("O"));
+    expect(eyeRow).toBeDefined();
+  });
+
+  test("parry: the blades clash in the gap, no damage dealt", () => {
+    // seed 7 ⇒ outB=parry. A foam_sword-style blade proves the clash uses the
+    // player weapon; bare here ⇒ the default "/\\".
+    const seed = 7;
+    const scene = bakePendingScene("cactus", "·", "dragon", "·", seed, 3);
+    expect(bouts(seed).outB).toBe("parry");
+    const [, clash] = boutFrames(1);
+    // No pop, but the mid-gap clash glyphs appear on the clash frame.
+    for (const i of boutFrames(1)) {
+      expect(strip(overlayOf(scene.frames[i]))).not.toMatch(/✗|-\d+/);
+    }
+    expect(strip(scene.frames[clash])).toContain("/\\");
+  });
+
+  test("crit: same beats as hit, but damage doubles and eyes read heavier", () => {
+    // seed 9, tier 3 ⇒ first=player, outA=crit, raw roll dmgA=2 ⇒ pop reads 4.
+    const seed = 9;
+    const tier = 3;
+    const scene = bakePendingScene("cactus", "·", "dragon", "·", seed, tier);
+    expect(bouts(seed).outA).toBe("crit");
+    const [, impact, float] = boutFrames(0);
+    expect(strip(overlayOf(scene.frames[impact]))).toMatch(/‼ -4\b/);
+    expect(overlayOf(scene.frames[impact])).toContain("\x1b[1m"); // bold: heavier than a plain hit
+    expect(strip(overlayOf(scene.frames[float])).trim()).toBe("-4");
+    // Heavier eyes: attacker spark, defender KO'd-wide (player attacks here).
+    const impactLines = strip(scene.frames[impact]).split("\n");
+    expect(impactLines.some((l) => l.includes("*"))).toBe(true);
+    expect(impactLines.some((l) => l.includes("X"))).toBe(true);
+  });
+
+  test("counter: the defender punishes a parry, pop lands on the attacker", () => {
+    // seed 10, tier 3 ⇒ first=enemy, outA=counter, raw roll dmgA=7 (unscaled —
+    // reuses the bout's already-rolled damage, no new rng draw).
+    const seed = 10;
+    const tier = 3;
+    const scene = bakePendingScene("cactus", "·", "dragon", "·", seed, tier);
+    expect(bouts(seed).outA).toBe("counter");
+    const [, clash, punish] = boutFrames(0);
+    // Lunge + clash beats are pop-less, same as parry.
+    for (const i of boutFrames(0).slice(0, 2)) {
+      expect(strip(overlayOf(scene.frames[i]))).not.toMatch(/‼|✗|-\d+/);
+    }
+    expect(strip(scene.frames[clash])).toContain("/\\"); // the clash still happens
+    // The punish beat's pop lands on the ATTACKER (enemy, first here) — left of
+    // center is the player's span, so the pop sits right of the gap.
+    expect(strip(overlayOf(scene.frames[punish]))).toMatch(/‼ -7\b/);
+    const punishLines = strip(scene.frames[punish]).split("\n");
+    expect(punishLines.some((l) => l.includes("O"))).toBe(true); // attacker: surprised
+    expect(punishLines.some((l) => l.includes("^"))).toBe(true); // defender: triumphant
   });
 
   test("the walk translates the attacker inside the fixed canvas", () => {
@@ -372,19 +480,25 @@ describe("skirmish bouts + damage pops (design-attack-animation)", () => {
     expect(walks.enemy.trimEnd().length).toBe(ready.trimEnd().length - 2);
   });
 
-  test("damage rolls stay in range (buddy 1..9, bug 1..3·tier)", () => {
+  test("hit damage rolls stay in range (buddy 1..9, bug 1..3·tier)", () => {
     const tier = 4;
     for (const seed of [1, 2, 3, 4, 5]) {
       const scene = bakePendingScene("cactus", "·", "dragon", "·", seed, tier);
-      const first = firstAttacker(seed);
+      const { first, outA, outB } = bouts(seed);
       const second = first === "player" ? "enemy" : "player";
       const cap = (attacker: "player" | "enemy"): number =>
         attacker === "player" ? 9 : 3 * tier;
       const popN = (i: number): number =>
         Number(strip(overlayOf(scene.frames[i])).match(/-(\d+)/)![1]);
-      for (const [i, attacker] of [[3, first], [6, second]] as const) {
-        expect(popN(i)).toBeGreaterThanOrEqual(1);
-        expect(popN(i)).toBeLessThanOrEqual(cap(attacker));
+      // Only hit bouts carry a damage number; dodge/parry deal none.
+      for (const [n, out, attacker] of [
+        [0, outA, first],
+        [1, outB, second],
+      ] as const) {
+        if (out !== "hit") continue;
+        const impact = boutFrames(n)[1];
+        expect(popN(impact)).toBeGreaterThanOrEqual(1);
+        expect(popN(impact)).toBeLessThanOrEqual(cap(attacker));
       }
     }
   });
@@ -431,7 +545,9 @@ describe("scene top-row trim (no dead rows above the sprites)", () => {
   const rowsOf = (frame: string): string[] => strip(frame).split("\n");
 
   test("a bare-headed standoff spends no row on the empty hat row", () => {
-    const scene = bakePendingScene("cactus", "·", "dragon", "·", 42, 3);
+    // seed 3 ⇒ both bouts hit, keeping the pop row alive so row 0 stays the
+    // (blank-on-this-frame) pop row rather than being reclaimed outright.
+    const scene = bakePendingScene("cactus", "·", "dragon", "·", 3, 3);
     const rows = rowsOf(scene.frames[0]);
     // Row 0 is the pop row (the bouts use it). The sprites must start directly
     // below it — with no hat worn, the art's reserved hat row is dead space.
@@ -450,7 +566,9 @@ describe("scene top-row trim (no dead rows above the sprites)", () => {
   });
 
   test("keeps the pop row — some bout frame needs it", () => {
-    const scene = bakePendingScene("cactus", "·", "dragon", "·", 42, 3);
+    // seed 3 ⇒ both bouts hit (guaranteed ✗ pop; seed 42 no longer has one
+    // under the P4 crit/counter outcome mix).
+    const scene = bakePendingScene("cactus", "·", "dragon", "·", 3, 3);
     // Blank on the calm frames, but kept for the whole loop because impacts use
     // it. A row any frame uses is never trimmed.
     expect(rowsOf(scene.frames[0])[0].trim()).toBe("");

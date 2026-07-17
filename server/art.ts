@@ -16,6 +16,9 @@ export const SPECIES_ART: Record<Species, string[][]> = {
     ["            ", "    __      ", "  <({E} )___  ", "   (  ._>   ", "    `--'    "],
     ["            ", "    __      ", "  <({E} )___  ", "   (  ._>   ", "    `--'~   "],
     ["            ", "    __      ", "  <({E} )___  ", "   (  .__>  ", "    `--'    "],
+    // stretch (design-sprite-animation-v2 §P7 pilot): row 0 blank (hat-safe),
+    // row 3 col1 + row 4 col0 blank (GEAR_ANCHORS-safe).
+    ["            ", "  ~ __      ", "  <({E} )___  ", "   (  ._>   ", "    `--'  ~ "],
   ],
   goose: [
     ["            ", "     ({E}>    ", "     ||     ", "   _(__)_   ", "    ^^^^    "],
@@ -31,6 +34,9 @@ export const SPECIES_ART: Record<Species, string[][]> = {
     ["            ", "   /\\_/\\    ", "  ( {E}   {E})  ", "  (  \u03c9  )   ", "  (\")_(\")   "],
     ["            ", "   /\\_/\\    ", "  ( {E}   {E})  ", "  (  \u03c9  )   ", "  (\")_(\")~  "],
     ["            ", "   /\\-/\\    ", "  ( {E}   {E})  ", "  (  \u03c9  )   ", "  (\")_(\")   "],
+    // stretch (design-sprite-animation-v2 \u00a7P7 pilot): row 0 blank (hat-safe),
+    // row 3 col10 + row 4 col0 blank (GEAR_ANCHORS-safe).
+    ["            ", "  >/\\_/\\<   ", "  ( {E}   {E})  ", "  (  \u03c9  )   ", "  (\")_(\")~  "],
   ],
   dragon: [
     ["            ", "  /^\\  /^\\  ", " <  {E}  {E}  > ", " (   ~~   ) ", "  `-vvvv-'  "],
@@ -86,6 +92,9 @@ export const SPECIES_ART: Record<Species, string[][]> = {
     ["            ", "   .[||].   ", "  [ {E}  {E} ]  ", "  [ ==== ]  ", "  `------'  "],
     ["            ", "   .[||].   ", "  [ {E}  {E} ]  ", "  [ -==- ]  ", "  `------'  "],
     ["     *      ", "   .[||].   ", "  [ {E}  {E} ]  ", "  [ ==== ]  ", "  `------'  "],
+    // stretch (design-sprite-animation-v2 §P7 pilot): row 0 blank (hat-safe),
+    // row 3 col10 + row 4 col0 blank (GEAR_ANCHORS-safe).
+    ["            ", "   \\[||]/   ", "  [ {E}  {E} ]  ", "  [ ==== ]  ", "  `------'* "],
   ],
   rabbit: [
     ["            ", "   (\\__/)   ", "  ( {E}  {E} )  ", " =(  ..  )= ", "  (\")__(\")" ],
@@ -375,10 +384,105 @@ export function mirrorFrame(lines: string[]): string[] {
   );
 }
 
+/**
+ * A full-width row carrying `text` centered over one span of a wider block.
+ *
+ * Span-addressed rather than sprite-addressed, so both the two-sprite combat
+ * scene (centering a damage pop over the player's or the enemy's column span)
+ * and the single-sprite idle line (centering an emote over the buddy) share one
+ * implementation. `null` text ⇒ an all-space row of the full width: when a
+ * flipbook uses an overlay at all, EVERY frame must carry one so the frame
+ * height stays constant across the loop. Pure.
+ *
+ * @param text: The glyph(s) to center, or null for a blank row.
+ * @param spanStart: Column where the span to center over begins.
+ * @param spanW: Display width of that span.
+ * @param totalW: Display width of the whole row.
+ * @returns The composed row, exactly `totalW` display cells wide.
+ */
+export function overlayRow(
+  text: string | null,
+  spanStart: number,
+  spanW: number,
+  totalW: number,
+): string {
+  if (!text) return " ".repeat(totalW);
+  const w = displayWidth(text);
+  const centered = spanStart + Math.floor((spanW - w) / 2);
+  const col = Math.max(0, Math.min(centered, totalW - w));
+  return " ".repeat(col) + text + " ".repeat(Math.max(0, totalW - col - w));
+}
+
+/**
+ * Drop top rows that NO frame of ANY co-present flipbook uses, applying one
+ * shared drop set to all of them.
+ *
+ * Optional rows collect above a sprite: the species art reserves its row 0 for
+ * the hat (`applyHat` fills it only when one is worn) and callers may unshift an
+ * FX row (damage pop, idle emote) above that. Unused, they render as dead space
+ * — pure waste in a status line where vertical room is the scarcest thing there
+ * is.
+ *
+ * Three properties keep this safe:
+ *
+ * - Only rows blank in *every* frame go, so a row any frame needs (a hat, a
+ *   bout's `✗ -N`) is kept for the whole loop.
+ * - The same rows are dropped from every frame, so the constant-height /
+ *   no-jitter guarantee the cycler depends on still holds.
+ * - The scan stops at the first row every frame uses — the top of the sprite
+ *   bodies — so an intentional blank row *inside* a sprite is never reachable,
+ *   no matter what art is added later.
+ *
+ * Taking *all* co-present flipbooks at once is what extends that guarantee
+ * across a frame-source swap: `buddy-status.sh` picks idle or flourish frames
+ * per tick off `$celeb_fresh`, so trimming them independently would let a
+ * celebration change the line's height mid-loop (they use different art frames,
+ * hence different rows). Every flipbook passed must start at the same height.
+ *
+ * "Blank" means blank of content: a pop's ANSI bytes survive `.trim()`, so an
+ * FX row is never mistaken for an empty one.
+ *
+ * @param flipbooks: The co-present flipbooks, each an array of `\n`-joined
+ *     frames, all of equal height. Empty flipbooks are ignored and passed back
+ *     through.
+ * @returns The flipbooks in the same order, each with the shared drop applied.
+ */
+export function trimSharedBlankTopRows(flipbooks: string[][]): string[][] {
+  const split = flipbooks.map((fb) => fb.map((f) => f.split("\n")));
+  const all = split.flat();
+  const height = all[0]?.length ?? 0;
+  const drop = new Set<number>();
+  // Stop short of the last row: a block always keeps at least one.
+  for (let i = 0; i < height - 1; i++) {
+    if (!all.some((r) => r[i]?.trim())) drop.add(i); // used by no frame ⇒ dead
+    else if (all.every((r) => r[i]?.trim())) break; // sprite bodies start here
+  }
+  if (drop.size === 0) return flipbooks;
+  return split.map((fb) =>
+    fb.map((r) => r.filter((_, i) => !drop.has(i)).join("\n")),
+  );
+}
+
+/** Single-flipbook `trimSharedBlankTopRows`. */
+export function trimBlankTopRows(frames: string[]): string[] {
+  return trimSharedBlankTopRows([frames])[0];
+}
+
 // Original 15-tick cycle [0,0,0,0,1,0,0,0,-1,0,0,2,0,0,0]: -1 (blink) becomes
-// index 3 in the pre-baked frames array.
+// index 3 in the pre-baked frames array. Extended to 18 ticks
+// (design-sprite-animation-v2 §P6) with a glance (index 4) placed well clear
+// of the blink so the two never read as the same beat.
 export const STATUS_FRAME_SEQUENCE: readonly number[] = [
-  0, 0, 0, 0, 1, 0, 0, 0, 3, 0, 0, 2, 0, 0, 0,
+  0, 0, 0, 0, 1, 0, 0, 0, 3, 0, 0, 2, 0, 0, 4, 0, 0, 0,
+];
+
+// Used only by species with a 4th raw art frame (design-sprite-animation-v2
+// §P7 pilot: duck/cat/robot) — one extra beat (index 5) near the end of the
+// loop, the rarest state since it's the most novel pose. Every other species
+// gets the base sequence above; `getStatusFrames` picks between the two based
+// on `SPECIES_ART[species].length`, not a global flag.
+export const STATUS_FRAME_SEQUENCE_STRETCH: readonly number[] = [
+  0, 0, 0, 0, 1, 0, 0, 0, 3, 0, 0, 2, 0, 0, 4, 0, 0, 5, 0, 0, 0,
 ];
 
 // Pre-resolves eye, hat overlay, and blink so the statusline shell does no art
@@ -398,6 +502,22 @@ const EMOTION_EYE: Record<Exclude<Emotion, "neutral">, string> = {
   bored: "-",
   surprised: "O",
 };
+
+/** The idle FX row's glyph, mirroring `EMOTION_EYE` one-for-one: the row
+ *  visualizes what the eyes already say, so it needs no signal of its own.
+ *  Neutral ⇒ null ⇒ a blank row, which `trimSharedBlankTopRows` then reclaims,
+ *  leaving a resting buddy exactly as tall as it would be without the feature. */
+const EMOTION_EMOTE: Record<Exclude<Emotion, "neutral">, string> = {
+  happy: "♪", // ♪
+  angry: "!",
+  bored: "zZz",
+  surprised: "?",
+};
+
+/** The emote glyph for an emotion, or null when neutral. Pure. */
+export function emoteFor(emotion: Emotion): string | null {
+  return emotion === "neutral" ? null : EMOTION_EMOTE[emotion];
+}
 
 // 2 sub-frames (art frames 0/1) on a gentle 6-tick oscillation.
 const EMOTION_FRAME_SEQUENCE: readonly number[] = [0, 0, 0, 1, 1, 1];
@@ -457,47 +577,147 @@ export function getStatusFrames(
     };
   }
 
-  // Neutral: the original idle cycle, byte-identical to before (game-feel R3).
+  // Neutral: the original idle cycle (game-feel R3) plus a rare glance
+  // (design-sprite-animation-v2 §P6) — frame 0 with a distinct eye glyph, the
+  // same derivation blink already uses, so it's unconditionally safe across
+  // every species (all carry `{E}` on frame 0) with zero new art.
+  const hasStretch = SPECIES_ART[bones.species].length > 3;
   return {
     frames: [
       resolveFrame(0, bones.eye),
       resolveFrame(1, bones.eye),
       resolveFrame(2, bones.eye),
-      resolveFrame(0, "-"),
+      resolveFrame(0, "-"), // 3: blink
+      resolveFrame(0, "'"), // 4: glance
+      ...(hasStretch ? [resolveFrame(3, bones.eye)] : []), // 5: stretch (pilot species)
     ],
-    frameSequence: [...STATUS_FRAME_SEQUENCE],
+    frameSequence: [
+      ...(hasStretch ? STATUS_FRAME_SEQUENCE_STRETCH : STATUS_FRAME_SEQUENCE),
+    ],
   };
 }
 
-// ─── Ascension frame flourish (game-feel FR-A3) ──────────────────────────────
-
-// A livelier celebratory eye cycle (joy → pop → spark → joy), reusing the
-// FR-A4 eye-substitution machinery so it needs no new per-species art.
-const FLOURISH_EYES: readonly string[] = ["^", "O", "*", "^"];
-// A quick bob through the four flourish frames.
-const FLOURISH_FRAME_SEQUENCE: readonly number[] = [0, 1, 2, 3, 2, 1];
+/** The widest display row across a set of flipbooks — the sprite block's width,
+ *  which the FX row spans. Species art is nominally 12 cells, but some frames
+ *  are ragged (wyvern's rows differ), so this measures rather than assumes. */
+function blockWidth(flipbooks: string[][]): number {
+  let w = 0;
+  for (const fb of flipbooks) {
+    for (const f of fb) {
+      for (const line of f.split("\n")) w = Math.max(w, displayWidth(line));
+    }
+  }
+  return w;
+}
 
 /**
- * A short, celebratory animation cycle for any species (game-feel FR-A3).
+ * Finalize the idle sprite block: unshift the emote FX row and reclaim every
+ * dead row above the sprite, across the idle and flourish flipbooks *together*.
+ *
+ * Both must be processed in one pass. `buddy-status.sh` picks its frame source
+ * per tick (`combat > flourish while a celebration is fresh > idle`), so the two
+ * flipbooks are co-present in one `status.json` and swap within seconds. They
+ * use different art frames — idle cycles 0/1/2 plus a blink, flourish only 0/1
+ * — so trimming them independently yields different drop sets and the line would
+ * visibly jump a row the moment a celebration fired. One shared drop set over
+ * the union is what keeps the swap seamless.
+ *
+ * Order matters: **trim first, then unshift.** Unlike combat's damage pop —
+ * which is blank on the loop's calm frames — the idle emote is constant across
+ * every frame it appears in, so an FX row added *before* the trim would satisfy
+ * the "row every frame uses" test and break the scan on row 0, stranding the
+ * dead row beneath it. Trimming the bare sprite blocks first gives the scan the
+ * same input shape combat gives it, and the FX row then rides on top.
+ *
+ * The row is added to **both** flipbooks (blank on flourish, which stays bare by
+ * design) so the shared height survives a celebration swap. A neutral buddy gets
+ * no row at all, so it ends up one row *shorter* than before this existed.
+ *
+ * @param idle: The idle flipbook from `getStatusFrames`.
+ * @param flourish: The co-present flourish flipbook, if one was baked.
+ * @param emote: The idle emote glyph (`emoteFor`), or null when neutral.
+ * @returns Both flipbooks, same order, sharing one height.
+ */
+export function finalizeIdleBlock(
+  idle: string[],
+  flourish: string[] | undefined,
+  emote: string | null,
+): { idle: string[]; flourish?: string[] } {
+  const fl = flourish ?? [];
+  const [tIdle, tFl] = trimSharedBlankTopRows([idle, fl]);
+  const pack = (i: string[], f: string[]): { idle: string[]; flourish?: string[] } =>
+    flourish ? { idle: i, flourish: f } : { idle: i };
+  if (!emote) return pack(tIdle, tFl);
+  const w = blockWidth([tIdle, tFl]);
+  const add = (frames: string[], text: string | null): string[] => {
+    const row = overlayRow(text, 0, w, w);
+    return frames.map((f) => `${row}\n${f}`);
+  };
+  return pack(add(tIdle, emote), add(tFl, null));
+}
+
+// ─── Ascension frame flourish (game-feel FR-A3; per-kind since round 2) ──────
+
+/** Mirrors `state.ts`'s `CelebrationKind` — canonical here since flourish is
+ *  the only consumer that varies by kind; `state.ts` re-exports it so every
+ *  other call site is unaffected. */
+export type CelebrationKind =
+  | "levelup"
+  | "loot"
+  | "ascension"
+  | "whim"
+  | "discovery"
+  | "shiny";
+
+interface FlourishCycle {
+  eyes: readonly string[];
+  frameSequence: readonly number[];
+}
+
+/**
+ * Per-kind celebratory eye cycles (design-sprite-animation-v2 §P5), reusing
+ * the FR-A4 eye-substitution machinery so none of them need new per-species
+ * art. `ascension` is the original round-1 cycle, unchanged — still the
+ * biggest. The common cases (levelup/loot/whim) are new: shorter, quieter
+ * bobs that read as a beat rather than a scene. `discovery` stays minimal by
+ * design (a one-time system message, not a buddy performance).
+ */
+const FLOURISH_BY_KIND: Record<CelebrationKind, FlourishCycle> = {
+  ascension: { eyes: ["^", "O", "*", "^"], frameSequence: [0, 1, 2, 3, 2, 1] },
+  shiny: { eyes: ["*", "^", "*", "^"], frameSequence: [0, 1, 2, 3, 2, 1] },
+  levelup: { eyes: ["^", "*", "^"], frameSequence: [0, 1, 2, 1] },
+  loot: { eyes: ["^", "^"], frameSequence: [0, 1] },
+  whim: { eyes: ["^", "-", "^"], frameSequence: [0, 1, 2, 1] },
+  discovery: { eyes: ["^", "^"], frameSequence: [0, 1] },
+};
+
+/**
+ * A short, celebratory animation cycle for any species (game-feel FR-A3,
+ * flavored per `CelebrationKind` since round 2).
  *
  * Produced as a *separate* frame set from the neutral idle frames so the
- * status line can animate it only while the ascension celebration is fresh,
- * then fall back to the co-present neutral `frames`. No new per-species art —
- * each flourish frame is the species body with a celebratory eye glyph and a
+ * status line can animate it only while the celebration is fresh, then fall
+ * back to the co-present neutral `frames`. No new per-species art — each
+ * flourish frame is the species body with a celebratory eye glyph and a
  * one-step body bob.
  *
  * @param bones: The buddy's bones (species + hat).
+ * @param kind: Which celebration this flourish belongs to. Defaults to
+ *     `ascension` (round 1's only caller) so existing call sites are
+ *     unaffected.
  * @returns The flourish frames and their playback sequence.
  */
-export function flourishFrames(bones: BuddyBones): {
+export function flourishFrames(
+  bones: BuddyBones,
+  kind: CelebrationKind = "ascension",
+): {
   frames: string[];
   frameSequence: number[];
 } {
+  const cycle = FLOURISH_BY_KIND[kind];
   return {
-    frames: FLOURISH_EYES.map((eye, i) =>
-      renderSpeciesFrame(bones, i % 2, eye),
-    ),
-    frameSequence: [...FLOURISH_FRAME_SEQUENCE],
+    frames: cycle.eyes.map((eye, i) => renderSpeciesFrame(bones, i % 2, eye)),
+    frameSequence: [...cycle.frameSequence],
   };
 }
 

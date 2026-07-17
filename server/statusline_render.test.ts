@@ -1290,7 +1290,8 @@ describe("skirmish-bout render (design-attack-animation)", () => {
   // Real baked frames, not a fixture: the guard for the taller (+overlay row)
   // and ANSI-bearing flipbook through the real jq + layout path. frames[3] is
   // the first bout's impact pose — attacker adjacent, red ✗ -N pop on top.
-  const scene = bakePendingScene("cactus", "·", "dragon", "·", 42, 3);
+  // seed 3 ⇒ both bouts hit (P4's crit/counter buckets moved seed 42 off hit).
+  const scene = bakePendingScene("cactus", "·", "dragon", "·", 3, 3);
   const W = displayWidth(scene.frames[0].split("\n")[0]);
 
   const renderBout = (o: Partial<StatusOverrides> = {}): string =>

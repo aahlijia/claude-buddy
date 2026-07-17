@@ -4,19 +4,16 @@ A single top-level snapshot of the **whole** game-feel system as it stands today
 tying together the arcs that each have their own design/status docs. For the
 per-arc detail, follow the links in [Doc map](#doc-map).
 
-_Last updated: 2026-07-16 · branch `feature/interactive-fight-scene`_
-_Baseline: **802 tests, all pass** · `tsc --noEmit` clean · `bash -n` clean.
-(The long-standing `migrate.test.ts` env-dependent failure is fixed — the local
-suite is fully green for the first time.)_
-_Status: everything through
-[Gear renders on the sprite](#gear-renders-on-the-sprite-2026-07-15), the
-[caption revert](#revert-the-fight-caption-is-its-own-row-again-2026-07-15), and
-the [scene top-row trim](#scene-top-row-trim-2026-07-15) is **committed and
-pushed** (through `6211430`, 2026-07-15). Newest on top: the
-[hardening pass](#hardening-pass--bug--statusline-perf-fixes-2026-07-16)
-(mute persistence, commit-swallowing gates, atomic hook writes, statusline fork
-diet, migrate-test isolation), committed together with this doc update. No PR
-opened yet._
+_Last updated: 2026-07-17 · branch `feature/interactive-fight-scene`_
+_Baseline: **832 tests, all pass** · `tsc --noEmit` clean · `bash -n` clean._
+_Status: everything through the
+[hardening pass](#hardening-pass--bug--statusline-perf-fixes-2026-07-16) is
+**committed and pushed** (through `c134b20`, 2026-07-16). Newest on top: the
+[sprite-animation expansion](#sprite-animation-expansion--idle-emote--dodgeparry-bouts-2026-07-17)
+(idle emote row + dead-row reclaim, dodge/parry bout outcomes) and its
+[round 2](#sprite-animation-expansion-round-2--bout-variety-celebration-flavor-idle-life-2026-07-17)
+(crit/counter outcomes, per-kind flourish, idle glance, a pilot new art
+frame) — both **uncommitted**. No PR opened yet._
 
 > **What "game-feel" is.** A layer of optional juice on top of the buddy
 > companion: celebratory feedback, an expressive idle status line, light RPG
@@ -691,6 +688,125 @@ the likely fix.
 
 ---
 
+### Sprite-animation expansion — idle emote + dodge/parry bouts (2026-07-17)
+
+More dynamic sprite motion on both surfaces, built entirely on the existing
+"server bakes, bash cycles" machinery — **zero `buddy-status.sh` changes**. Full
+design: [idle-rpg/design-sprite-animation.md](idle-rpg/design-sprite-animation.md).
+Four phases, all **uncommitted**:
+
+**P0 — shared FX primitives.** `overlayRow` (now span-addressed:
+`text, spanStart, spanW, totalW`) and `trimBlankTopRows` moved out of `combat.ts`
+into `art.ts`, beside the other frame geometry. New `trimSharedBlankTopRows`
+takes *all co-present flipbooks at once* and applies one drop set. Combat output
+stayed byte-identical (all render snapshots unchanged).
+
+**P1 — idle emote row + dead-row reclaim.** An emote glyph rides a row above the
+idle sprite, driven by the existing `resolveEmotion` (angry `!` / bored `zZz` /
+happy `♪` / surprised `?` / neutral → blank → trimmed) — a second read of a
+decision already made, so no new signal plumbing. `finalizeIdleBlock` unshifts
+the row and reclaims dead top rows across the **idle *and* flourish** flipbooks
+under one shared drop set, because the shell swaps between them on `$celeb_fresh`
+within seconds — trimming them independently would jump the line a row when a
+celebration fired. Order matters: **trim-then-unshift** (a constant emote would
+otherwise satisfy the "row every frame uses" test and strand the dead row).
+Emote is `full`-only; `subtle` still gets the reclaim. Net effect: the 11
+free-row species render **one row shorter at rest** than before (the reclaim
+the 7/15 combat trim never reached on the idle path), and a neutral buddy never
+pays for the feature. The render snapshots are unaffected — they inject fixed
+frames and test the cycler, not the bake — so this is covered by `art.test.ts`
+unit tests plus an end-to-end render through the real shell (emote centered over
+the sprite; celebration swap holds height; neutral reclaims the row).
+
+**P2 — dodge + parry bouts.** Each skirmish bout now rolls **hit 50% / dodge 25%
+/ parry 25%** from the same `pendingSeed`. Dodge: the attacker over-commits to a
+full lunge that whiffs, defender wears `O` eyes, no damage. Parry: the blades
+clash `/\` in the gap (a real `strike` frame), no damage — the clash sword is the
+player's equipped weapon, read from the `look.gear` the standoff already carries
+(no new call-site plumbing). Two implementation constraints shaped the poses: the
+`shift` primitive only moves a sprite *toward* the gap (so the defender can't
+lean away — the dodge reads through eyes + the absent pop), and the clash glyph
+needs gap width ≥ 3 (so parry lands near center at `shift ≤ 1`). Constant width
+AND height verified across 2160 geared flipbooks; both new outcomes rendered
+through the real shell at 125 cols with no clipping.
+
+**P3 — docs + validation.** This entry, the design doc, and full re-validation.
+Tests: **821 pass** (+19: 17 art-primitive/idle, +2 net combat after the bout
+tests were made outcome-aware), `tsc --noEmit` + `bash -n` clean.
+
+Follow-ups this opens: the 7/15 scene-trim precedent is now generalized, so a
+future FX row (idle sweat/sparks, a "thinking" glyph) is a one-line
+`emoteFor`-style addition. The sub-second tick that would make all of this
+*fluid* rather than 1 fps stop-motion remains deferred (needs the harness
+refresh ceiling measured first, and would respend the `c134b20` fork budget).
+
+### Sprite-animation expansion, round 2 — bout variety, celebration flavor, idle life (2026-07-17)
+
+Same day, same branch, spending the P0–P3 primitives further across four axes
+the user picked together (not a sequential OQ menu this time — all four at
+once). Full design:
+[idle-rpg/design-sprite-animation-v2.md](idle-rpg/design-sprite-animation-v2.md).
+**Uncommitted**, same as round 1.
+
+**P4 — `crit` + `counter` bout outcomes.** `BoutOutcome` grows from
+`hit/dodge/parry` to add two more, mixed **40/20/20/10/10**, with **zero new
+rng draws** — only the bucket boundaries and what `bakeBoutFrames` does with
+the already-rolled damage number changed. `crit`: same beats as `hit`, damage
+doubled, pop reads bold `‼ -N` instead of `✗ -N`, eyes read heavier (attacker
+`*` spark, defender `X` KO'd-wide). `counter`: reuses parry's lunge+clash
+beats, but the third beat lands the *defender's* pop on the *attacker*
+instead of a clean recoil — the first outcome to set the overlay's `over`
+target to the attacker rather than the defender.
+
+**P5 — celebration-kind-specific flourish.** `flourishFrames(bones, kind)`
+now looks up a per-`CelebrationKind` eye cycle instead of one fixed
+`^,O,*,^` cycle for everything. `ascension` keeps the original (still the
+biggest); `shiny` goes sparkle-forward; `levelup`/`whim` get short, snappy
+bobs; `loot` gets a 2-frame happy blink; `discovery` stays unflourished by
+choice. `award-xp.ts`'s level-up and loot/whim writes now opt into flourish
+too (`flourish: celebration != null && kind !== "discovery"`) — round 1 kept
+flourish reserved for the two big moments because it always cost a row;
+`finalizeIdleBlock`'s shared drop set (P1) now makes it free when idle, so
+the common-case exclusion no longer held. `CelebrationKind`'s canonical
+definition moved from `state.ts` to `art.ts` (flourish is its only
+kind-varying consumer); `state.ts` re-exports it, so no other call site
+changed.
+
+**P6 — idle glance.** A second micro-expression alongside the existing blink:
+frame 0 re-rendered with eye glyph `'` instead of `-`, at a new sequence
+index placed well clear of the blink beat. Exactly blink's own derivation
+(eye substitution over frame 0, which every species already carries `{E}`
+on), so it's unconditionally safe across all 20 species with zero new art.
+`STATUS_FRAME_SEQUENCE` grew from 15 to 18 ticks.
+
+**P7 — a real new art frame (pilot: duck/cat/robot).** The one axis that
+deliberately breaks derive-on-read: a genuine 4th `SPECIES_ART` frame
+("stretch") for 3 species, gated on `SPECIES_ART[species].length > 3` so the
+other 17 species are byte-identical to before. Two hard constraints, both
+satisfied by construction and unit-tested: **row 0 stays blank** (a hatted
+buddy would silently lose its hat otherwise — `applyHat` only fills row 0
+when blank) and **the species' `GEAR_ANCHORS` cell stays blank** in whatever
+row it lands on, same contract as frames 0-2. `getStatusFrames` now picks
+between `STATUS_FRAME_SEQUENCE` and a `_STRETCH` variant (one extra, rare
+beat) based on raw art-frame count rather than a global flag.
+
+**Validation.** **832 tests pass** (+11 over round 1's 821: 2 combat outcome
+tests + seed fixups the new bucket boundaries forced, 4 flourish-per-kind
+tests, 2 glance tests, 3 P7 anchor/row0/hat tests), `tsc --noEmit` + `bash -n`
+clean, zero `statusline/` diff. An e2e harness drove real `writeStatusState` →
+the real shell for all four phases (crit/counter bout frames, a hatted duck's
+stretch frame, levelup vs loot flourish cycles) — no clipping, hats render
+correctly on the new frame, deleted after use.
+
+Existing seed-pinned tests (`combat.test.ts`, `statusline_render.test.ts`)
+that hardcoded seed 42 as "hit+dodge" broke, because the new bucket
+boundaries reclassified that seed to dodge+parry — reminder that any bout
+test pinned to a literal seed is implicitly pinned to the outcome mix, not
+just the RNG stream. Fixed by re-deriving seeds against the new thresholds
+rather than adjusting assertions to match whatever seed 42 now rolls.
+
+---
+
 ## Going live
 
 The installed status-line script lags the repo until reinstalled. To see the
@@ -759,6 +875,8 @@ bun run install-buddy   # copies the repo script into place
 | [idle-rpg/design-derive-upgrades.md](idle-rpg/design-derive-upgrades.md) | derive-on-read for upgrades (bones-mutation fix) |
 | [idle-rpg/design-pending-encounter.md](idle-rpg/design-pending-encounter.md) | persistent standoff until commit (**implemented** 2026-07-08, P1–4) |
 | [idle-rpg/design-attack-animation.md](idle-rpg/design-attack-animation.md) | skirmish bouts + damage pops (**implemented** 2026-07-10) |
+| [idle-rpg/design-sprite-animation.md](idle-rpg/design-sprite-animation.md) | idle emote row + dodge/parry bouts (**implemented** 2026-07-17) |
+| [idle-rpg/design-sprite-animation-v2.md](idle-rpg/design-sprite-animation-v2.md) | round 2: crit/counter bouts, per-kind flourish, idle glance, pilot art frame (**implemented** 2026-07-17) |
 | [idle-rpg/testing-guide.md](idle-rpg/testing-guide.md) | hands-on verification harnesses |
 | [menu/](menu/) | interactive menu + nav channel |
 | [anaylsis.md](anaylsis.md) | earlier analysis notes |

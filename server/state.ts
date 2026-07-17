@@ -31,7 +31,9 @@ import {
 } from "fs";
 import { join } from "path";
 import type { Companion, BuddyStats, StatName, Rarity, Hat } from "./engine.ts";
-import type { Emotion } from "./art.ts";
+import type { Emotion, CelebrationKind } from "./art.ts";
+
+export type { CelebrationKind } from "./art.ts";
 import { RARITIES } from "./engine.ts";
 import { grantCollectionReward, xpForLevel } from "./xp.ts";
 import {
@@ -744,14 +746,8 @@ export interface StatusState {
 }
 
 // ─── Celebration channel (game-feel §2 — one transient slot, many producers) ──
-
-export type CelebrationKind =
-  | "levelup"
-  | "loot"
-  | "ascension"
-  | "whim"
-  | "discovery"
-  | "shiny";
+// CelebrationKind lives in art.ts (re-exported above) — flourishFrames is its
+// only kind-varying consumer, so the canonical definition sits there.
 
 export interface Celebration {
   text: string;
@@ -935,7 +931,7 @@ export function writeStatusState(
   }
   const { renderFace, RARITY_STARS } =
     require("./engine.ts") as typeof import("./engine.ts");
-  const { getStatusFrames } =
+  const { getStatusFrames, emoteFor, finalizeIdleBlock } =
     require("./art.ts") as typeof import("./art.ts");
 
   // One config + one reaction read for this whole write; the auto-quiet clamp,
@@ -1097,7 +1093,7 @@ export function writeStatusState(
       // Equipment is optional during first install / version skew.
     }
   }
-  const { frames, frameSequence } = getStatusFrames(
+  const { frames: rawFrames, frameSequence } = getStatusFrames(
     displayBones,
     emotion,
     seasonalHat,
@@ -1147,21 +1143,44 @@ export function writeStatusState(
     // Best-effort: a celebration must never break the status write.
   }
 
-  // Ascension frame flourish (game-feel FR-A3): opt-in, gate-gated. Written as a
-  // *separate* frame set; the status line animates it only while the celebration
-  // is fresh, then falls back to the neutral `frames` above (self-reverting, no
-  // second server write). Omitted entirely when off / not requested.
+  // Celebration frame flourish (game-feel FR-A3; per-kind since round 2):
+  // opt-in, gate-gated. Written as a *separate* frame set; the status line
+  // animates it only while the celebration is fresh, then falls back to the
+  // neutral `frames` above (self-reverting, no second server write). Omitted
+  // entirely when off / not requested. Flavored by `celebration.kind` (built
+  // above) so a level-up reads as a snappier pop than an ascension; falls
+  // back to `ascension`'s cycle if a caller opts in with no celebration to
+  // key off (round 1's contract, preserved).
   let flFrames: string[] | undefined;
   let flSequence: number[] | undefined;
   if (opts.flourish && gate !== "off") {
     try {
       const { flourishFrames } = require("./art.ts") as typeof import("./art.ts");
-      const fl = flourishFrames(companion.bones);
+      const fl = flourishFrames(companion.bones, celebration?.kind ?? "ascension");
       flFrames = fl.frames;
       flSequence = fl.frameSequence;
     } catch {
       // Flourish is a best-effort delighter; never break the write.
     }
+  }
+
+  // Idle FX row + dead-row reclaim (design-sprite-animation §4). Must run after
+  // the flourish bake: the shell swaps frame source on $celeb_fresh, so both
+  // flipbooks need ONE shared drop set or a celebration would jump the line a
+  // row. The emote is `full`-only — it's a new visual element that can cost a
+  // row, and `subtle` is the quiet tier (which still gets the reclaim, since a
+  // null emote leaves the row blank and the trim then takes it).
+  let frames = rawFrames;
+  try {
+    const finalized = finalizeIdleBlock(
+      rawFrames,
+      flFrames,
+      gate === "full" ? emoteFor(emotion) : null,
+    );
+    frames = finalized.idle;
+    flFrames = finalized.flourish;
+  } catch {
+    // Best-effort: fall back to the untrimmed frames rather than break the write.
   }
 
   // Idle wander (movement design-movement §4): gate-gated + opt-out, built via a

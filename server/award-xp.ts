@@ -137,6 +137,10 @@ function main(): void {
         xpGain: bonus,
         celebration,
         cause,
+        // design-sprite-animation-v2 §P5: every real celebration gets its
+        // kind-flavored flourish now, not just ascension/shiny. Discovery
+        // stays unflourished — a one-time system message, not a performance.
+        flourish: celebration != null && celebration.kind !== "discovery",
       });
     }
     console.log(
@@ -170,6 +174,7 @@ function main(): void {
       xpGain: gained,
       celebration,
       cause,
+      flourish: celebration != null && celebration.kind !== "discovery",
     });
   }
   console.log(

@@ -16,6 +16,11 @@ import {
   rectFrame,
   getArtFrame,
   applyGear,
+  overlayRow,
+  trimBlankTopRows,
+  trimSharedBlankTopRows,
+  emoteFor,
+  finalizeIdleBlock,
   renderCompanionCard,
   renderCompanionCardMarkdown,
   STATUS_FRAME_SEQUENCE,
@@ -23,6 +28,11 @@ import {
   activeSeasonal,
 } from "./art.ts";
 import { SPECIES, type BuddyBones } from "./engine.ts";
+
+const heights = (frames: string[]): Set<number> =>
+  new Set(frames.map((f) => f.split("\n").length));
+const maxWidth = (frames: string[]): number =>
+  Math.max(...frames.flatMap((f) => f.split("\n").map(displayWidth)));
 
 describe("displayWidth", () => {
   test("ASCII has width equal to character count", () => {
@@ -88,16 +98,21 @@ describe("getStatusFrames", () => {
     ...overrides,
   });
 
-  test("produces 4 frames and a 15-tick sequence", () => {
+  // design-sprite-animation-v2 §P7 pilot: these 3 species carry a genuine 4th
+  // raw art frame (stretch), so their neutral flipbook is one entry longer
+  // than everyone else's.
+  const STRETCH_SPECIES = new Set(["duck", "cat", "robot"]);
+
+  test("produces 5 frames (idle ×3 + blink + glance) and an 18-tick sequence", () => {
     const { frames, frameSequence } = getStatusFrames(bones());
-    expect(frames).toHaveLength(4);
+    expect(frames).toHaveLength(5); // capybara has no stretch frame
     expect(frameSequence).toEqual([...STATUS_FRAME_SEQUENCE]);
   });
 
-  test("every species produces 4 frames, each with 5-6 lines", () => {
+  test("every species produces 5-6 frames, each with 5-6 lines", () => {
     for (const species of SPECIES) {
       const { frames } = getStatusFrames(bones({ species }));
-      expect(frames).toHaveLength(4);
+      expect(frames).toHaveLength(STRETCH_SPECIES.has(species) ? 6 : 5);
       for (const body of frames) {
         const lines = body.split("\n").length;
         expect(lines).toBeGreaterThanOrEqual(5);
@@ -116,6 +131,33 @@ describe("getStatusFrames", () => {
     const { frames } = getStatusFrames(bones({ species: "capybara", eye: "@" }));
     expect(frames[3]).not.toContain("@");
     expect(frames[3]).toContain("-");
+  });
+
+  test("glance frame (index 4) replaces the configured eye with \"'\", distinct from blink (design-sprite-animation-v2 §P6)", () => {
+    const { frames } = getStatusFrames(bones({ species: "capybara", eye: "@" }));
+    expect(frames[4]).not.toContain("@");
+    expect(frames[4]).toContain("'");
+    expect(frames[4]).not.toBe(frames[3]); // reads as a different beat than blink
+  });
+
+  test("stretch species (duck/cat/robot) get a 6th frame; a worn hat still shows on it", () => {
+    const { frames } = getStatusFrames(
+      bones({ species: "duck", hat: "crown" }),
+      "neutral",
+    );
+    expect(frames).toHaveLength(6);
+    expect(frames[5]).toContain("\\^^^/"); // crown art on the stretch frame's row 0
+  });
+
+  test("every species' glance frame is anchor-safe (reuses frame 0's layout)", () => {
+    // Same code path blink already relies on (frame 0, eye substitution) —
+    // gear anchors are already validated for frame 0, so this is mechanical.
+    for (const species of SPECIES) {
+      const { frames } = getStatusFrames(bones({ species }));
+      const glance = frames[4].split("\n");
+      const idle0 = getArtFrame(species, "°", 0);
+      expect(glance.length).toBe(idle0.length);
+    }
   });
 
   test("hat overlays line 0 when the species frame has no line-0 content", () => {
@@ -251,6 +293,57 @@ describe("flourishFrames (game-feel FR-A3)", () => {
     flourishFrames(bones());
     expect(getStatusFrames(bones())).toEqual(before);
   });
+
+  // ── Per-kind cycles (design-sprite-animation-v2 §P5) ──────────────────────
+  describe("per-CelebrationKind cycles", () => {
+    const KINDS = [
+      "ascension",
+      "shiny",
+      "levelup",
+      "loot",
+      "whim",
+      "discovery",
+    ] as const;
+
+    test("every kind yields a valid, non-empty flipbook for every species", () => {
+      for (const kind of KINDS) {
+        for (const species of SPECIES) {
+          const { frames, frameSequence } = flourishFrames(
+            bones({ species }),
+            kind,
+          );
+          expect(frames.length).toBeGreaterThan(0);
+          expect(frameSequence.length).toBeGreaterThan(0);
+          for (const idx of frameSequence) {
+            expect(idx).toBeGreaterThanOrEqual(0);
+            expect(idx).toBeLessThan(frames.length);
+          }
+        }
+      }
+    });
+
+    test("ascension stays the biggest cycle; the common kinds are shorter", () => {
+      const lenOf = (kind: (typeof KINDS)[number]): number =>
+        flourishFrames(bones(), kind).frames.length;
+      expect(lenOf("ascension")).toBeGreaterThan(lenOf("levelup"));
+      expect(lenOf("levelup")).toBeGreaterThan(lenOf("loot"));
+    });
+
+    test("no kind arg defaults to ascension (round-1 call sites unaffected)", () => {
+      expect(flourishFrames(bones())).toEqual(flourishFrames(bones(), "ascension"));
+    });
+
+    test("distinct kinds bake distinct eye sequences", () => {
+      const eyesOf = (kind: (typeof KINDS)[number]): string =>
+        flourishFrames(bones(), kind).frames.join("|");
+      const ascension = eyesOf("ascension");
+      const levelup = eyesOf("levelup");
+      const loot = eyesOf("loot");
+      expect(levelup).not.toBe(ascension);
+      expect(loot).not.toBe(ascension);
+      expect(loot).not.toBe(levelup);
+    });
+  });
 });
 
 describe("rectFrame / mirrorFrame (idle-RPG Phase 5)", () => {
@@ -366,6 +459,27 @@ describe("applyGear (gear overlays)", () => {
     }
   });
 
+  test("the P7 stretch frame's anchors are also clear (duck/cat/robot)", () => {
+    // design-sprite-animation-v2 §P7: frame 3 must satisfy the same
+    // anchor-blank contract as frames 0-2.
+    for (const species of ["duck", "cat", "robot"] as const) {
+      const art = getArtFrame(species, "°", 3);
+      applyGear(species, art, GEAR);
+      const joined = art.join("\n");
+      expect(joined).toContain(GEAR.weapon);
+      expect(joined).toContain(GEAR.trinket);
+    }
+  });
+
+  test("the P7 stretch frame's row 0 stays blank (hats must still render)", () => {
+    // applyHat only writes row 0 when it's currently blank; a non-blank row 0
+    // on the stretch frame would silently drop the hat while it plays.
+    for (const species of ["duck", "cat", "robot"] as const) {
+      const art = getArtFrame(species, "°", 3);
+      expect(art[0].trim()).toBe("");
+    }
+  });
+
   test("overlays only ever fill blank cells — body pixels are never clobbered", () => {
     for (const species of SPECIES) {
       for (let f = 0; f < 3; f++) {
@@ -398,7 +512,7 @@ describe("applyGear (gear overlays)", () => {
 
   test("getStatusFrames threads gear into every idle frame, incl. blink", () => {
     const { frames } = getStatusFrames(bones(), "neutral", undefined, GEAR);
-    expect(frames).toHaveLength(4);
+    expect(frames).toHaveLength(5); // cactus has no stretch frame
     for (const body of frames) {
       expect(body).toContain(GEAR.weapon);
       expect(body).toContain(GEAR.trinket);
@@ -448,5 +562,167 @@ describe("applyGear (gear overlays)", () => {
     const ansi = renderCompanionCard(bones(), "Waffle", "spiky", undefined, 0, 40, GEAR);
     expect(ansi).toContain(GEAR.weapon);
     expect(ansi).toContain(GEAR.trinket);
+  });
+});
+
+// ─── Shared frame-geometry primitives (design-sprite-animation P0) ───────────
+
+describe("overlayRow (span-addressed FX row)", () => {
+  test("null text ⇒ a full-width blank row", () => {
+    expect(overlayRow(null, 0, 12, 12)).toBe(" ".repeat(12));
+    expect(overlayRow(null, 5, 4, 20)).toBe(" ".repeat(20));
+  });
+
+  test("row is always exactly totalW display cells wide", () => {
+    for (const [t, s, w, tot] of [
+      ["!", 0, 12, 12],
+      ["zZz", 0, 12, 14],
+      ["✗ -9", 8, 12, 20],
+    ] as const) {
+      expect(displayWidth(overlayRow(t, s, w, tot))).toBe(tot);
+    }
+  });
+
+  test("text is centered over its span", () => {
+    // span [0,12): a 1-wide glyph centers at col floor((12-1)/2)=5.
+    expect(overlayRow("!", 0, 12, 12)).toBe(" ".repeat(5) + "!" + " ".repeat(6));
+    // enemy span in a two-sprite scene: start 16, width 12 ⇒ col 16+5=21.
+    const r = overlayRow("!", 16, 12, 28);
+    expect([...r].indexOf("!")).toBe(21);
+  });
+
+  test("a glyph wider than its span is clamped inside the row", () => {
+    const r = overlayRow("wide!", 0, 2, 5);
+    expect(displayWidth(r)).toBe(5);
+    expect(r).toBe("wide!");
+  });
+});
+
+describe("trimSharedBlankTopRows / trimBlankTopRows", () => {
+  test("drops a row blank across every frame of every flipbook", () => {
+    const a = ["   \nbody", "   \nbody"];
+    const b = ["   \narms", "   \narms"];
+    const [ta, tb] = trimSharedBlankTopRows([a, b]);
+    expect(heights(ta)).toEqual(new Set([1]));
+    expect(heights(tb)).toEqual(new Set([1]));
+  });
+
+  test("keeps a row any single frame of any flipbook uses", () => {
+    // The dead row is used by exactly one frame of the second flipbook ⇒ kept
+    // for BOTH, so the swap-time height contract holds.
+    const a = ["   \nbody", "   \nbody"];
+    const b = ["!  \narms", "   \narms"];
+    const [ta, tb] = trimSharedBlankTopRows([a, b]);
+    expect(heights(ta)).toEqual(new Set([2]));
+    expect(heights(tb)).toEqual(new Set([2]));
+  });
+
+  test("stops at the first row every frame uses (inner blanks unreachable)", () => {
+    // Row 0 dead, row 1 always used, row 2 blank-in-all but BELOW a used row.
+    const f = ["   \nXXX\n   \nYYY", "   \nXXX\n   \nZZZ"];
+    const t = trimBlankTopRows(f);
+    expect(heights(t)).toEqual(new Set([3])); // only row 0 dropped
+  });
+
+  test("ANSI-only rows count as used (a pop is never mistaken for blank)", () => {
+    const f = ["\x1b[31m-9\x1b[0m\nbody", "        \nbody"];
+    const t = trimBlankTopRows(f);
+    expect(heights(t)).toEqual(new Set([2])); // pop row kept
+  });
+
+  test("all-dead input keeps at least the last row", () => {
+    expect(trimBlankTopRows(["   \n   ", "   \n   "])).toEqual(["   ", "   "]);
+  });
+});
+
+// ─── Idle FX row + shared trim (design-sprite-animation P1) ──────────────────
+
+describe("emoteFor", () => {
+  test("neutral ⇒ null, each emotion ⇒ its glyph", () => {
+    expect(emoteFor("neutral")).toBeNull();
+    expect(emoteFor("angry")).toBe("!");
+    expect(emoteFor("bored")).toBe("zZz");
+    expect(emoteFor("happy")).toBe("♪");
+    expect(emoteFor("surprised")).toBe("?");
+  });
+});
+
+describe("finalizeIdleBlock", () => {
+  const bones = (o: Partial<BuddyBones> = {}): BuddyBones => ({
+    rarity: "common",
+    species: "duck",
+    eye: "°",
+    hat: "none",
+    shiny: false,
+    stats: { DEBUGGING: 50, PATIENCE: 50, CHAOS: 50, WISDOM: 50, SNARK: 50 },
+    peak: "DEBUGGING",
+    dump: "PATIENCE",
+    ...o,
+  });
+
+  test("neutral, no flourish: reclaims the dead row for a free-row species", () => {
+    const idle = getStatusFrames(bones(), "neutral").frames;
+    const r = finalizeIdleBlock(idle, undefined, null);
+    expect(heights(idle)).toEqual(new Set([5]));
+    expect(heights(r.idle)).toEqual(new Set([4])); // duck row 0 is dead
+    expect(r.flourish).toBeUndefined();
+  });
+
+  test("emote is net-free for a free-row species (trim −1, FX +1)", () => {
+    const idle = getStatusFrames(bones(), "angry").frames;
+    const r = finalizeIdleBlock(idle, undefined, emoteFor("angry"));
+    expect(heights(r.idle)).toEqual(new Set([5]));
+    expect(r.idle[0].split("\n")[0]).toContain("!");
+  });
+
+  test("the emote sits on the top row, centered over the sprite", () => {
+    const idle = getStatusFrames(bones(), "bored").frames;
+    const r = finalizeIdleBlock(idle, undefined, emoteFor("bored"));
+    for (const f of r.idle) expect(f.split("\n")[0]).toContain("zZz");
+  });
+
+  test("shared drop set: idle and flourish keep one height across all species", () => {
+    for (const species of SPECIES) {
+      for (const hat of ["none", "wizard"] as const) {
+        for (const emo of ["neutral", "angry", "bored", "happy", "surprised"] as const) {
+          const b = bones({ species, hat });
+          const r = finalizeIdleBlock(
+            getStatusFrames(b, emo).frames,
+            flourishFrames(b).frames,
+            emoteFor(emo),
+          );
+          const all = [...r.idle, ...(r.flourish ?? [])];
+          expect(heights(all).size).toBe(1);
+        }
+      }
+    }
+  });
+
+  test("never widens the block past the raw art (trim/FX add no columns)", () => {
+    for (const species of SPECIES) {
+      const idle = getStatusFrames(bones({ species }), "angry").frames;
+      const r = finalizeIdleBlock(idle, undefined, emoteFor("angry"));
+      expect(maxWidth(r.idle)).toBe(maxWidth(idle));
+    }
+  });
+
+  test("null emote is pure trim — no FX row added", () => {
+    const idle = getStatusFrames(bones({ species: "cactus" }), "neutral").frames;
+    const r = finalizeIdleBlock(idle, undefined, null);
+    // cactus draws into row 0 (frame 2), so nothing is reclaimed and no row added.
+    expect(heights(r.idle)).toEqual(heights(idle));
+  });
+
+  test("wyvern: structural row 0 is never dropped, emote stacks above it", () => {
+    const idle = getStatusFrames(bones({ species: "wyvern" }), "surprised").frames;
+    const neutral = finalizeIdleBlock(
+      getStatusFrames(bones({ species: "wyvern" }), "neutral").frames,
+      undefined,
+      null,
+    );
+    expect(heights(neutral.idle)).toEqual(new Set([6])); // unchanged
+    const r = finalizeIdleBlock(idle, undefined, emoteFor("surprised"));
+    expect(heights(r.idle)).toEqual(new Set([7])); // +1 for the emote row
+    for (const f of r.idle) expect(f.split("\n")[0]).toContain("?");
   });
 });
