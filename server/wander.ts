@@ -202,3 +202,50 @@ export function gaitWalkOpts(
   const gait = EMOTION_GAIT[emotion];
   return gait ? { ...base, ...gait } : base;
 }
+
+/** Event-choreography stingers (living-world P1): one-shot offset arcs
+ *  spliced into the baked wander track, anchored to the wall-clock index the
+ *  shell will reach after any celebration/scene freshness lapses. */
+export type StingerKind = "victory" | "lootdash" | "walkon";
+
+/** Ticks past the write before an anchored arc begins — safely beyond the
+ *  10s celebration/scene freshness window during which the shell suppresses
+ *  wander offsets entirely. */
+export const STINGER_DELAY_TICKS = 12;
+
+/** The arc shape for a kind, spanning [0, max(range, 3)]. Ends at 0 so the
+ *  hand-off back to the surrounding walk can't teleport the sprite. */
+export function stingerArc(kind: StingerKind, range: number): number[] {
+  const r = Math.max(3, Math.floor(range));
+  const out: number[] = [];
+  if (kind === "victory") {
+    for (let lap = 0; lap < 2; lap++) {
+      for (let p = 1; p <= r; p++) out.push(p);
+      for (let p = r - 1; p >= 0; p--) out.push(p);
+    }
+  } else if (kind === "lootdash") {
+    for (let p = 1; p <= r; p++) out.push(p);
+    out.push(r, r, r); // inspect pause
+    for (let p = r - 1; p >= 0; p--) out.push(p);
+  } else {
+    // walkon: enter from the far edge, two ticks per cell (a deliberate walk).
+    for (let p = r; p >= 0; p--) out.push(p, p);
+  }
+  return out;
+}
+
+/** Copy `horizontal` with `kind`'s arc written at `atTick` (modulo length). */
+export function spliceStingerArc(
+  horizontal: number[],
+  kind: StingerKind,
+  atTick: number,
+): number[] {
+  const len = horizontal.length;
+  if (len === 0) return horizontal;
+  const arc = stingerArc(kind, Math.max(...horizontal, 3));
+  const out = [...horizontal];
+  for (let k = 0; k < arc.length && k < len; k++) {
+    out[(atTick + k) % len] = arc[k];
+  }
+  return out;
+}

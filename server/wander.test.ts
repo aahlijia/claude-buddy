@@ -12,6 +12,8 @@ import {
   buildWanderSequence,
   moodWalkOpts,
   gaitWalkOpts,
+  stingerArc,
+  spliceStingerArc,
   type WanderOpts,
 } from "./wander.ts";
 
@@ -341,5 +343,30 @@ describe("gait profiles (living-world P1)", () => {
     const b = buildWanderSequence({ ...opts, stepSize: 1 });
     expect(a.horizontal).toEqual(b.horizontal);
     expect(a.vertical).toEqual(b.vertical);
+  });
+});
+
+// ─── stinger arcs (living-world P1) ──────────────────────────────────────────
+
+describe("stinger arcs (living-world P1)", () => {
+  test("every arc kind starts after home and ends at 0 (no teleport snap)", () => {
+    for (const kind of ["victory", "lootdash", "walkon"] as const) {
+      const arc = stingerArc(kind, 5);
+      expect(arc.length).toBeGreaterThan(4);
+      expect(arc[arc.length - 1]).toBe(0);
+      for (const v of arc) expect(v).toBeGreaterThanOrEqual(0);
+    }
+  });
+  test("splice writes the arc at the anchor, modulo-wrapped, others untouched", () => {
+    const base = new Array(20).fill(1);
+    const out = spliceStingerArc(base, "walkon", 15);
+    const arc = stingerArc("walkon", Math.max(...base, 3));
+    for (let k = 0; k < Math.min(arc.length, 20); k++) {
+      expect(out[(15 + k) % 20]).toBe(arc[k]);
+    }
+    expect(base.every((v) => v === 1)).toBe(true); // input not mutated
+  });
+  test("empty walk is a no-op", () => {
+    expect(spliceStingerArc([], "victory", 3)).toEqual([]);
   });
 });
