@@ -1241,7 +1241,11 @@ export function writeStatusState(
         // Event-choreography stinger (living-world P1): a one-shot arc spliced
         // into the baked track at the tick this write's celebration/scene
         // freshness lapses — "walkon" is the exception, anchoring immediately
-        // since a session start carries no celebration to wait out.
+        // since a session start carries no celebration to wait out. The gait
+        // frameSequence above is NOT re-derived for the arc, so body frames
+        // play the walk's baked gait while the arc moves the sprite —
+        // intentional: at 1 fps the horizontal sweep is the dominant read,
+        // and the mismatched frames are subtle eye/bob variants.
         if (opts.stinger && wanderSequence.length > 0) {
           const delay = opts.stinger === "walkon" ? 0 : STINGER_DELAY_TICKS;
           const at = (Math.floor(Date.now() / 1000) + delay) % wanderSequence.length;
