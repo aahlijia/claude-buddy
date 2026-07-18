@@ -4,16 +4,17 @@ A single top-level snapshot of the **whole** game-feel system as it stands today
 tying together the arcs that each have their own design/status docs. For the
 per-arc detail, follow the links in [Doc map](#doc-map).
 
-_Last updated: 2026-07-17 · branch `feature/interactive-fight-scene`_
-_Baseline: **844 tests, all pass** · `tsc --noEmit` clean · `bash -n` clean._
-_Status: everything through the
-[sprite-animation expansion](#sprite-animation-expansion--idle-emote--dodgeparry-bouts-2026-07-17)
-and its
-[round 2](#sprite-animation-expansion-round-2--bout-variety-celebration-flavor-idle-life-2026-07-17)
-is **committed** (through `9b0ebba`, "additional animations"). Newest on top:
+_Last updated: 2026-07-18 · branch `feature/interactive-fight-scene`_
+_Baseline: **874 tests, all pass** · `tsc --noEmit` clean · `bash -n` clean._
+_Status: everything through
 [stat-leveling v2](#stat-leveling-v2--every-stat-behavioral-learning-wisdom-visible-gains-2026-07-17)
-(SNARK←pets, learning WISDOM, stat-up feedback, PATIENCE bank fix) —
-**uncommitted**. No PR opened yet._
+is **committed**. Newest on top:
+[living-world arc — P1 movement vocabulary](#living-world-arc--p1-movement-vocabulary-2026-07-18)
+(mood gaits, event-choreography stingers, edge/panel lean/peek posture, plus
+the same-day D14 fix reviving the angry gait and the sprite-animation-round-1
+`!` emote from an auto-quiet coupling that made them unreachable) —
+**committed** through `cb7d061`; this docs pass is the remaining piece. No PR
+opened yet._
 
 > **What "game-feel" is.** A layer of optional juice on top of the buddy
 > companion: celebratory feedback, an expressive idle status line, light RPG
@@ -842,6 +843,69 @@ two-session WISDOM delta; rate persistence) and the real shell (fresh raise bold
 stale dim, layout intact). Tests: **844 pass** (+12), `tsc` + `bash -n` clean,
 render snapshots byte-identical. Uncommitted.
 
+### Living-world arc — P1 movement vocabulary (2026-07-18)
+
+Ships the first phase of the living-world arc's motion vocabulary — mood
+gaits, event-choreography stingers, edge/panel lean/peek posture — entirely
+on the existing "server bakes, bash cycles" machinery: **zero
+`buddy-status.sh` changes**. Full design + resolved decisions:
+[living-world/design.md](living-world/design.md); phased plan:
+[living-world/plan-p0-p1.md](living-world/plan-p0-p1.md).
+
+- **Mood gaits** (`wander.ts` `gaitWalkOpts`/`EMOTION_GAIT`; `art.ts`
+  `gaitFrameSequence` + lean `~`/peek `<` posture frames via
+  `getStatusFrames(..., gaitVariants)`): angry = tight rapid pacing, bored =
+  long-dwell shuffle, happy = 2-cell skip steps. Body frames stay in
+  lockstep with the walk — `frameSequence` is remapped to the walk's length
+  and indexed by the same `NOW` as `wanderSequence`. Lean posture fires at
+  the roam edge; peek `<` at long home dwells when the stats panel is on.
+  Lean is `~`, not `>` — `>` is the angry emotion's own eye glyph, and a
+  colliding posture glyph would go invisible during the one gait that needs
+  it most.
+- **Stingers** (`wander.ts` `stingerArc`/`spliceStingerArc`,
+  `STINGER_DELAY_TICKS=12`; `award-xp.ts` triggers): phase-anchored one-shot
+  arcs spliced into `wanderSequence` at the wall-clock index the shell
+  reaches once celebration freshness lapses. **victory** (a won fight — a
+  fled fight fires nothing), **lootdash** (a genuine loot toast only),
+  **walkon** (session start, anchors immediately at delay 0 via a new
+  `writeStatusState` call on that path).
+- **Startle beat** (`combat.ts` `bakePendingScene`): the standoff flipbook
+  opens with 3 ticks of an O-eyed recoil pose, recurring each loop as a
+  re-glare.
+- **D14 — angry gait/emote pierce the auto-quiet spike clamp (same-day fix,
+  `cb7d061`).** Found by this task's own e2e pass, not by any unit test:
+  `REASON_EMOTION` maps the `error`/`test-fail` reasons to angry emotion, and
+  `SPIKE_REASONS` (the pre-existing auto-quiet clamp, FR-E1) contains the
+  *identical* reasons — so a live error reaction always clamped a configured
+  `full` down to `subtle` before the full-only gait/emote could bake. Angry
+  gait, and the sprite-animation-round-1 `!` emote it shares the gate with,
+  were unreachable by construction, for any `reactionTTL`. Fixed by having
+  the angry idle expression read the *configured* level instead of the
+  clamped one — mirroring the standoff's existing auto-quiet exemption
+  (`sightBug`, 2026-07-09): an error-born expression must survive the clamp
+  the error itself causes. Every other producer (celebrations, flourish,
+  combat) still respects the clamp. See design.md's D14 decision row.
+
+**Verified end-to-end** through the real award path (temp
+`CLAUDE_CONFIG_DIR`, no shell changes): **walkon** — `session_start` enters
+from the arc head (offset 3 descending to 0) anchored at the write's own
+wall-clock second; **angry gait + `!` emote** — a persisted `error`-reason
+reaction at configured `full` now bakes the 180-tick gaited walk and the
+emote row (previously silently absent — the D14 bug caught mid-task);
+**victory lap** — a real won fight (subprocess seed search, reusing
+`session.test.ts`'s fresh-process technique) stays celebration-frozen for
+the first ~10s, then sweeps the two-lap victory arc (offsets
+`1,2,3,2,1,0,1,2,3,2,1,0`) once the toast fades. Tests: **874 pass** (+3
+over the 871 baseline: 1 pinned lean-posture render test, 2 D14 regression
+tests), `tsc --noEmit` + `bash -n` clean, zero `statusline/` diff.
+
+Commits: `eec901d`/`69ec9a9` (gait profiles), `c9abc33`/`b6a9708`/`584d52a`
+(lean/peek posture), `420b369`/`c064faa` (gaitFrameSequence wiring),
+`6f9400e`/`3d7c7e7` (gait remap + frameSequence contract),
+`1359653`/`6d0211d` (phase-anchored stinger arcs), `1598f96`/`0c09750`/
+`8457e39` (stinger triggers), `6b11d28` (startle beat), `cb7d061` (D14 fix).
+This docs pass is the remaining uncommitted piece.
+
 ---
 
 ## Going live
@@ -892,6 +956,13 @@ bun run install-buddy   # copies the repo script into place
   commit, escalating tier, resolved-phase bubble suppression folded in. See
   [Pending encounter — the standoff](#pending-encounter--the-standoff-2026-07-08).
   Committed on `feature/interactive-fight-scene` (`22f6733`).
+- **Living-world arc**: P1 (movement vocabulary) is implemented and committed
+  (see above). Task 1's tick-ceiling measurement (P0 — how fast Claude Code
+  actually repaints the status line) is still pending and needs a
+  user-in-the-loop capture session; Task 10 (the one sanctioned
+  `buddy-status.sh` sub-second-tick change) is gated on that finding reading
+  PASS. P2 (encounter variety — boss bugs, wild buddy visitors) is the next
+  planned phase; no plan doc for it yet.
 - The stale top-level [`status.md`](status.md) is a point-in-time artifact for the
   quick-wins sub-arc (440 tests, `feature/leveling-system`) — superseded by this
   doc for the current picture.
@@ -914,5 +985,7 @@ bun run install-buddy   # copies the repo script into place
 | [idle-rpg/design-sprite-animation.md](idle-rpg/design-sprite-animation.md) | idle emote row + dodge/parry bouts (**implemented** 2026-07-17) |
 | [idle-rpg/design-sprite-animation-v2.md](idle-rpg/design-sprite-animation-v2.md) | round 2: crit/counter bouts, per-kind flourish, idle glance, pilot art frame (**implemented** 2026-07-17) |
 | [idle-rpg/testing-guide.md](idle-rpg/testing-guide.md) | hands-on verification harnesses |
+| [living-world/design.md](living-world/design.md) | idle-RPG + animation + movement arc, P0-P4 (**P1 implemented** 2026-07-18, P0 measurement pending) |
+| [living-world/plan-p0-p1.md](living-world/plan-p0-p1.md) | phased P0/P1 implementation plan + task-by-task tracker |
 | [menu/](menu/) | interactive menu + nav channel |
 | [anaylsis.md](anaylsis.md) | earlier analysis notes |

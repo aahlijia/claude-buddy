@@ -63,6 +63,10 @@ interface StatusOverrides {
   /** Override the server-rendered art frames (e.g. a tall frame to exercise the
    *  hop height-budget degrade). */
   frames?: string[];
+  /** Override the idle frameSequence (default [0]) — living-world P1 gait
+   *  fixtures pin a walk-length sequence with a gait-variant index at a
+   *  known tick. */
+  frameSequence?: number[];
   /** Writes reaction.<SID>.json (the persistent per-session reaction file) so the
    *  sticky-bubble fallback can be exercised. SID is "default" outside tmux. */
   persistedReaction?: { reaction: string; secondsAgo?: number };
@@ -115,7 +119,7 @@ function renderStatus(overrides: StatusOverrides): string {
     frames: overrides.frames ?? [
       "            \n    (··)    \n    (  )    \n            \n            ",
     ],
-    frameSequence: [0],
+    frameSequence: overrides.frameSequence ?? [0],
   };
   if (!overrides.omitStats) {
     status.stats = {
@@ -994,6 +998,92 @@ describe("buddy-status.sh idle wander (free-roam in-window clamp)", () => {
     for (const columns of [80, 70, 60]) {
       const out = render(columns, [0, 4, 8], columns % 3);
       expect(maxW(out)).toBeLessThanOrEqual(columns);
+      expect(out).toContain("Waffle");
+    }
+  });
+});
+
+// ─── Gait posture — lean frame in lockstep with its wander offset ────────────
+// (living-world P1). `gaitFrameSequence` (art.ts) maps a walk's per-tick
+// phases onto frame indices at BAKE time, replacing frameSequence so it's the
+// same length and NOW-indexed as wanderSequence — the lean/peek posture and
+// the horizontal offset that provoked it always land on the identical tick.
+// This pins that lockstep through the real shell with a walk-length (180-tick,
+// matching wander.ts's DEFAULT_LENGTH) fixture.
+describe("buddy-status.sh gait lean posture (living-world P1)", () => {
+  test("renders the lean posture in lockstep with its wander offset, no clipping", () => {
+    const NEUTRAL =
+      "            \n    (··)    \n    (  )    \n            \n            ";
+    const LEAN =
+      "            \n    (~~)    \n    (  )    \n            \n            ";
+    const LEAN_TICK = 42;
+    const OFFSET = 3;
+    const frameSequence = new Array(180).fill(0);
+    frameSequence[LEAN_TICK] = 1; // index into `frames`: 0 neutral, 1 lean
+    const wanderSequence = new Array(180).fill(0);
+    wanderSequence[LEAN_TICK] = OFFSET;
+
+    const nameCol = (s: string): number =>
+      s.split("\n").find((l) => l.includes("Waffle"))!.indexOf("Waffle");
+
+    const atLeanTick = stripAnsi(
+      renderStatus({
+        name: "Waffle",
+        gameFeel: "full",
+        frames: [NEUTRAL, LEAN],
+        frameSequence,
+        wanderSequence,
+        fakeNow: LEAN_TICK,
+      }),
+    );
+    expect(atLeanTick).toContain("~~"); // lean posture selected at the gaited tick
+    expect(atLeanTick).not.toContain("··"); // ...not the neutral frame
+
+    // Same tick drives the offset too (lockstep): the art shifts left by
+    // exactly that tick's wanderSequence value relative to home (tick 0).
+    const atHome = stripAnsi(
+      renderStatus({
+        name: "Waffle",
+        gameFeel: "full",
+        frames: [NEUTRAL, LEAN],
+        frameSequence,
+        wanderSequence,
+        fakeNow: 0,
+      }),
+    );
+    expect(nameCol(atHome) - nameCol(atLeanTick)).toBe(OFFSET);
+
+    // A neighboring tick (no gait beat baked) is back to the neutral frame —
+    // the lean is a one-tick posture, not a sticky state.
+    const neighbor = stripAnsi(
+      renderStatus({
+        name: "Waffle",
+        gameFeel: "full",
+        frames: [NEUTRAL, LEAN],
+        frameSequence,
+        wanderSequence,
+        fakeNow: LEAN_TICK + 1,
+      }),
+    );
+    expect(neighbor).toContain("··");
+    expect(neighbor).not.toContain("~~");
+
+    // Layout invariant (no clipping) at the gaited tick across widths.
+    for (const columns of [125, 100, 80]) {
+      const out = stripAnsi(
+        renderStatus({
+          name: "Waffle",
+          gameFeel: "full",
+          columns,
+          frames: [NEUTRAL, LEAN],
+          frameSequence,
+          wanderSequence,
+          fakeNow: LEAN_TICK,
+        }),
+      );
+      for (const line of out.split("\n")) {
+        expect([...line].length).toBeLessThanOrEqual(columns);
+      }
       expect(out).toContain("Waffle");
     }
   });

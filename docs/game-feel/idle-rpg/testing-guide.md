@@ -390,6 +390,121 @@ looks like.
 
 ---
 
+## 8. Living-world P1 — mood gaits, stingers, and the D14 exemption
+
+The living-world arc's P1 phase ([living-world/design.md](../living-world/design.md))
+adds gait profiles (angry/bored/happy walk personalities), event-choreography
+stingers (victory-lap, loot-dash, walk-on), and lean/peek edge posture — all
+baked server-side, zero `buddy-status.sh` changes. These harnesses drive the
+real award path in a throwaway profile; always export `CLAUDE_CONFIG_DIR` for
+every process below, including the shell renders.
+
+**Setup (once):**
+```bash
+cd /Users/austinahlijian/Projects/claude-buddy
+export CLAUDE_CONFIG_DIR=$(mktemp -d)
+bun -e '
+import { saveConfig, loadConfig, saveCompanion } from "./server/state.ts";
+saveCompanion({
+  name: "Waffle", personality: "",
+  bones: {
+    species: "cactus", rarity: "common", eye: "·", hat: "none",
+    shiny: false, peak: "SNARK", dump: "WISDOM",
+    stats: { DEBUGGING: 50, PATIENCE: 10, CHAOS: 10, WISDOM: 10, SNARK: 10 },
+  },
+});
+saveConfig({ ...loadConfig(), gameFeel: "full" });
+'
+```
+
+### a. Walk-on stinger (session start)
+```bash
+W=$(date +%s)
+bun run server/award-xp.ts session_start
+jq '.wanderSequence[('"$W"'%180):('"$W"'%180+8)]' \
+  "$CLAUDE_CONFIG_DIR/buddy-state/status.json"   # → 3,3,2,2,1,1,0,0 (arc head to home)
+for n in 0 1 2 3 4; do
+  BUDDY_FAKE_NOW=$((W+n)) bash statusline/buddy-status.sh < /dev/null
+done
+```
+**Expect:** the arc head (offset ≥3) is spliced at index `W % 180` (walk-on
+anchors immediately, `STINGER_DELAY_TICKS` doesn't apply to it); the buddy's
+art column advances tick over tick as the offset descends toward home.
+
+### b. Angry gait + `!` emote (D14 — reads the configured level, not the clamp)
+```bash
+bun -e '
+import { saveReaction } from "./server/state.ts";
+saveReaction("ugh, another error", "error");
+'
+bun run server/award-xp.ts errors_spotted
+jq '{wanderLen: (.wanderSequence|length), frameSeqLen: (.frameSequence|length)}' \
+  "$CLAUDE_CONFIG_DIR/buddy-state/status.json"   # → both 180 (the gaited walk)
+BUDDY_FAKE_NOW=$(date +%s) bash statusline/buddy-status.sh < /dev/null
+```
+**Expect:** `wanderSequence`/`frameSequence` are both the 180-tick gaited
+walk (not the classic 6-tick emotion micro-cycle), and the rendered line
+carries a `!` row above the sprite. Before D14 this reason ("error") *always*
+clamped a configured `full` to `subtle` first — the same reason that selects
+angry emotion is also an auto-quiet spike reason — so both fields came back
+absent/short and the emote never showed. D14 exempts the angry idle
+expression from that clamp; every other reaction reason is unaffected.
+
+### c. Victory lap (a real won fight, deterministic seed search)
+Reuses `session.test.ts`'s fresh-process win/flee search technique, inlined
+so the same process both finds the seed and performs the real award-path
+write (`writeStatusState` + `pickCelebration` + `stingerForCompletion`,
+exactly what `award-xp.ts session_complete` calls):
+```bash
+bun -e '
+import { saveConfig, loadConfig, loadCompanion, writeStatusState, pickCelebration } from "./server/state.ts";
+import { awardSessionComplete, saveSnapshot, stingerForCompletion, formatStatUpText, raisedStatNames } from "./server/session.ts";
+import { incrementEvent } from "./server/achievements.ts";
+
+saveConfig({ ...loadConfig(), gameFeel: "full" });
+const ZERO = { all_green:0, large_diffs:0, errors_seen:0, commits_made:0, tests_failed:0, type_errors:0, lint_fails:0, build_fails:0, pets:0 };
+incrementEvent("errors_seen", 10); // tier 4 (DEBUGGING 50 vs t4 ⇒ ~30% win chance)
+
+let found = null;
+for (let t = 0; t < 300 && !found; t++) {
+  saveSnapshot({ startedAt: t, baseline: ZERO });
+  const completion = awardSessionComplete(undefined, "cactus", "common");
+  if (completion.fightWon) found = { t, completion };
+}
+const { completion } = found;
+const companion = loadCompanion();
+const statUpText = formatStatUpText(completion.statIncrements);
+const { celebration, cause } = pickCelebration(
+  completion.state.level, false, false, completion.fightSummary, false, "loot", statUpText,
+);
+const stinger = stingerForCompletion(completion.fightWon, completion.fightSummary, celebration?.kind);
+writeStatusState(companion, {
+  level: completion.state.level, xp: completion.state.totalXp, xpGain: completion.bonus,
+  celebration, cause, statsRaised: raisedStatNames(completion.statIncrements),
+  flourish: celebration != null && celebration.kind !== "discovery", stinger,
+});
+console.log(JSON.stringify({ t: found.t, at: Math.floor(Date.now()/1000), stinger }));
+'
+```
+Note the printed `at` (the write's wall-clock second) as `W`, then sweep:
+```bash
+for n in 0 3 6 9; do   # celebration-fresh window: wander suppressed
+  BUDDY_FAKE_NOW=$((W+n)) bash statusline/buddy-status.sh < /dev/null
+done
+for n in 12 13 14 15 16 17; do   # STINGER_DELAY_TICKS past the write
+  BUDDY_FAKE_NOW=$((W+n)) bash statusline/buddy-status.sh < /dev/null
+done
+```
+**Expect:** `W..W+9` renders identically each tick — the win toast showing,
+buddy planted at home (celebration freshness suppresses wander). From `W+12`
+the buddy sweeps the two-lap victory arc (`1,2,3,2,1,0,1,2,3,2,1,0`) as the
+toast fades, confirmed by the art column moving in that exact pattern.
+
+**Cleanup:** `rm -rf "$CLAUDE_CONFIG_DIR"` when done — never run these
+against your real profile.
+
+---
+
 ## Gotchas
 
 - **Nothing animates?** Confirm `gameFeel=full` (`buddy_gamefeel`), and that

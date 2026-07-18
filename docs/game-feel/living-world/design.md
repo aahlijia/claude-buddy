@@ -2,7 +2,7 @@
 
 _Drafted 2026-07-17 · branch `feature/interactive-fight-scene` · baseline 844
 tests, all pass._
-_Status: **spec approved in brainstorm, not yet implemented.**_
+_Status: **P1 implemented (2026-07-18); P0 measurement pending.**_
 
 One cohesive, phased expansion across three threads the user asked for
 together: **more idle-RPG features, more interactive animations/scenes, more

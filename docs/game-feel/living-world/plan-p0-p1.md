@@ -271,8 +271,8 @@ describe("gait frame variants (living-world P1)", () => {
     expect(g.gaitIdx).toEqual({
       bob: 1, lean: base.frames.length, peek: base.frames.length + 1,
     });
-    expect(g.frames[g.gaitIdx!.lean]).toContain(">");
-    expect(g.frames[g.gaitIdx!.peek]).toContain("<");
+    expect(g.frames[g.gaitIdx!.lean]).toBe(renderSpeciesFrame(bones, 0, "~"));
+    expect(g.frames[g.gaitIdx!.peek]).toBe(renderSpeciesFrame(bones, 0, "<"));
     // Base frames + sequence untouched by the two appended variants.
     expect(g.frames.slice(0, base.frames.length)).toEqual(base.frames);
     expect(g.frameSequence).toEqual(base.frameSequence);
@@ -310,7 +310,7 @@ export function getStatusFrames(
 } {
 ```
 
-At the end of **each** branch (emotion and neutral), before returning, when `gaitVariants` is true append `resolveFrame(0, ">")` and `resolveFrame(0, "<")` to the frames array and set `gaitIdx = { bob: 1, lean: <index of ">">, peek: <index of "<"> }`. Factor with a small local helper so both branches share it:
+At the end of **each** branch (emotion and neutral), before returning, when `gaitVariants` is true append `resolveFrame(0, "~")` and `resolveFrame(0, "<")` to the frames array and set `gaitIdx = { bob: 1, lean: <index of "~">, peek: <index of "<"> }`. (Lean is `~`, not `>` — `>` is `EMOTION_EYE.angry`, and a colliding glyph would make the lean pose invisible during the angry pacing gait.) Factor with a small local helper so both branches share it:
 
 ```ts
   const withGait = (r: { frames: string[]; frameSequence: number[] }) => {
@@ -318,7 +318,7 @@ At the end of **each** branch (emotion and neutral), before returning, when `gai
     const lean = r.frames.length;
     return {
       ...r,
-      frames: [...r.frames, resolveFrame(0, ">"), resolveFrame(0, "<")],
+      frames: [...r.frames, resolveFrame(0, "~"), resolveFrame(0, "<")],
       gaitIdx: { bob: 1, lean, peek: lean + 1 },
     };
   };
@@ -802,7 +802,7 @@ git commit -m "feat(living-world): startle opening beat in the bug standoff"
 
 - [ ] **Step 1: Add a pinned render test for the gait path**
 
-Follow the file's fixture idiom (inject a `status.json`, run the real script with `BUDDY_FAKE_NOW`): craft a fixture whose `frameSequence` is walk-length with a lean index at a known `BUDDY_FAKE_NOW % len`, assert the rendered line contains the `>` posture and the layout invariants the file already asserts (no clipping, stats column intact).
+Follow the file's fixture idiom (inject a `status.json`, run the real script with `BUDDY_FAKE_NOW`): craft a fixture whose `frameSequence` is walk-length with a lean index at a known `BUDDY_FAKE_NOW % len`, assert the rendered line contains the `~` posture and the layout invariants the file already asserts (no clipping, stats column intact).
 
 - [ ] **Step 2: Manual e2e through the real award path**
 
@@ -839,6 +839,8 @@ git commit -m "docs(living-world): P1 shipped — snapshot, harness, render pin"
 ### Task 10 (GATED on Task 1: PASS): sub-second frame indexing
 
 **Skip entirely — and say so in the completion report — unless Task 1's findings line reads PASS.** This is the arc's one sanctioned `buddy-status.sh` change.
+
+> Carried note from Task 5's review: gait dwell ticks render `baseSeq[i % baseSeq.length]`, and 180 is an exact multiple of the 6- and 18-tick base cycles but NOT of the 21-tick stretch cycle — a one-frame seam at the 180-tick loop boundary, negligible at 1 fps because status.json reseeds first. If this task lengthens effective loop exposure (faster ticks ⇒ more loops per bake), re-check that seam before shipping.
 
 **Files:**
 - Modify: `statusline/buddy-status.sh:30` (clock) + the jq sequence-index sites

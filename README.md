@@ -269,6 +269,8 @@ Default on; toggle with `/buddy wander [on|off]`. `/buddy wander hop` adds a sma
 
 > The old `wide` / `bubble` sub-modes are now folded into free-roam (the whole line is the lane, and the bubble always travels with the buddy), so they're no longer separate toggles.
 
+The walk itself reflects mood — happy skips in quick two-cell hops, angry paces a tight span fast, bored settles into a long, slow shuffle — and reacts to events with a one-off flourish: a quick victory lap after a won fight, a dart-and-inspect after a loot drop, a walk-on entrance at the start of a session.
+
 **Motion feels distracting?** Stop the amble with `/buddy wander off`, or dial all the celebratory animation down with `/buddy gamefeel subtle` (brief toasts only) or `/buddy gamefeel off` (silent — the classic status line). Both are read live, no restart needed.
 
 ### Bug fights
