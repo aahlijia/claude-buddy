@@ -26,6 +26,7 @@ import {
   STATUS_FRAME_SEQUENCE,
   ageTell,
   activeSeasonal,
+  renderSpeciesFrame,
 } from "./art.ts";
 import { SPECIES, type BuddyBones } from "./engine.ts";
 
@@ -278,8 +279,8 @@ describe("getStatusFrames", () => {
         lean: base.frames.length,
         peek: base.frames.length + 1,
       });
-      expect(g.frames[g.gaitIdx!.lean]).toContain(">");
-      expect(g.frames[g.gaitIdx!.peek]).toContain("<");
+      expect(g.frames[g.gaitIdx!.lean]).toBe(renderSpeciesFrame(bones(), 0, ">"));
+      expect(g.frames[g.gaitIdx!.peek]).toBe(renderSpeciesFrame(bones(), 0, "<"));
       expect(g.frames.slice(0, base.frames.length)).toEqual(base.frames);
       expect(g.frameSequence).toEqual(base.frameSequence);
     });

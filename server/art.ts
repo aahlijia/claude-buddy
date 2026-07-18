@@ -538,7 +538,7 @@ const EMOTION_FRAME_SEQUENCE: readonly number[] = [0, 0, 0, 1, 1, 1];
  *     anchors (weapon held beside the body, trinket at the feet).
  * @returns The rendered frame as a newline-joined string.
  */
-function renderSpeciesFrame(
+export function renderSpeciesFrame(
   bones: BuddyBones,
   frameIdx: number,
   eye: string,
