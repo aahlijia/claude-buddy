@@ -689,6 +689,9 @@ export interface StatusState {
   muted: boolean;
   achievement: string;
   frames: string[];
+  /** Playback indices into `frames` (NOW % len). Classic short idle cycle
+   *  (18/21 ticks) — or, at full+wander, a walk-length sequence in lockstep
+   *  with `wanderSequence` (living-world P1). */
   frameSequence: number[];
   level: number;
   xp: number;

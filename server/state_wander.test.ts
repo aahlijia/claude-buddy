@@ -142,12 +142,18 @@ describe("writeStatusState — gait lockstep (living-world P1)", () => {
     // Every index in the gait sequence points inside frames.
     const max = Math.max(...frameSequence);
     expect(max).toBeLessThan(frames.length);
+    // Indices ≥5 are the appended lean/peek variants, so their presence
+    // proves the phase→frame injection actually ran rather than just
+    // passing through the base cycle.
+    expect(frameSequence.some((f) => f >= 5)).toBe(true);
   });
 
   test("subtle keeps the classic short frameSequence (no gait remap)", () => {
     const state = render({ config: { gameFeel: "subtle", wanderEnabled: true } });
     expect(state!.wanderSequence).toBeUndefined();
-    expect((state!.frameSequence as number[]).length).toBeLessThanOrEqual(18);
+    // Classic idle cycle is 18 ticks (21 for stretch pilot species) — the
+    // point is it's NOT the 180-tick walk-length remap.
+    expect((state!.frameSequence as number[]).length).toBeLessThanOrEqual(21);
   });
 });
 
