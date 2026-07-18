@@ -109,16 +109,18 @@ function main(): void {
     // the new baseline (additional-rewards FR2).
     recordSessionStart();
     startSession(slot);
+    // living-world P1: a fresh session gets a walk-on stinger — the buddy
+    // enters the corridor instead of just picking up mid-wander.
+    if (companion) {
+      writeStatusState(companion, { stinger: "walkon" });
+    }
     return;
   }
 
   if (event === "session_complete") {
     const prevLevel = getXpState().level;
-    const { bonus, state, fightSummary, statIncrements } = awardSessionComplete(
-      slot,
-      species,
-      rarity,
-    );
+    const { bonus, state, fightSummary, fightWon, statIncrements } =
+      awardSessionComplete(slot, species, rarity);
     // A commit ticks the daily whim (commits_made was bumped before this runs).
     const whimRewarded = safeTickWhim(slot);
     if (companion) {
@@ -154,6 +156,14 @@ function main(): void {
         // kind-flavored flourish now, not just ascension/shiny. Discovery
         // stays unflourished — a one-time system message, not a performance.
         flourish: celebration != null && celebration.kind !== "discovery",
+        // living-world P1: a won fight gets a victory-lap wander stinger; a
+        // fled fight (or any other loot-kind celebration) gets the quieter
+        // loot-dash instead.
+        stinger: fightWon
+          ? "victory"
+          : celebration?.kind === "loot"
+            ? "lootdash"
+            : undefined,
       });
     }
     console.log(

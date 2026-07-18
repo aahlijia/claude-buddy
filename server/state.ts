@@ -780,6 +780,10 @@ export interface StatusOpts {
   /** Stats that crossed a whole point this write (stats-leveling-v2 §P4). The
    *  stats panel briefly brightens their value; empty/absent ⇒ no marker. */
   statsRaised?: StatName[];
+  /** Event-choreography stinger to splice into the wander track (living-world
+   *  P1). Anchored past the celebration freshness window ("walkon" anchors
+   *  immediately — its write carries no celebration). Ignored below full. */
+  stinger?: import("./wander.ts").StingerKind;
 }
 
 /** Higher wins when several celebrations contend for the single bubble slot. */
@@ -1217,7 +1221,7 @@ export function writeStatusState(
   if (gate === "full") {
     try {
       if (cfg.wanderEnabled) {
-        const { buildWanderSequence, gaitWalkOpts } =
+        const { buildWanderSequence, gaitWalkOpts, spliceStingerArc, STINGER_DELAY_TICKS } =
           require("./wander.ts") as typeof import("./wander.ts");
         const walkOpts = gaitWalkOpts(emotion, moodStr, xpLevel, Date.now());
         if (!cfg.wanderHop) walkOpts.hopHeight = 0; // §7.A opt-in
@@ -1233,6 +1237,15 @@ export function writeStatusState(
             gaitIdx,
             cfg.showStats === true,
           );
+        }
+        // Event-choreography stinger (living-world P1): a one-shot arc spliced
+        // into the baked track at the tick this write's celebration/scene
+        // freshness lapses — "walkon" is the exception, anchoring immediately
+        // since a session start carries no celebration to wait out.
+        if (opts.stinger && wanderSequence.length > 0) {
+          const delay = opts.stinger === "walkon" ? 0 : STINGER_DELAY_TICKS;
+          const at = (Math.floor(Date.now() / 1000) + delay) % wanderSequence.length;
+          wanderSequence = spliceStingerArc(wanderSequence, opts.stinger, at);
         }
       }
     } catch {

@@ -507,12 +507,16 @@ function resolveFightBug(
  * awardSessionComplete returns, and a toast written here was overwritten by
  * that write before it ever rendered — leaving `subtle` users (whose only
  * combat surface is the toast) with an invisible fight.
+ *
+ * Returns both the summary and whether the fight resolved as a win — the
+ * latter lets the caller anchor a victory-lap wander stinger (living-world
+ * P1) without re-deriving it from the summary text.
  */
 export function maybeFightBug(
   slot: string | undefined,
   errorsSeen: number,
   startedAt: number,
-): string | null {
+): { summary: string; won: boolean } | null {
   // Read the pinned standoff, then dismiss it unconditionally (§4.3, G5): the
   // commit resolves the nudge regardless of gate or delta.
   const pending = readPendingEncounter();
@@ -540,7 +544,7 @@ export function maybeFightBug(
   );
   applyCombatDrops(result.drop);
   writeEncounter(result, currentProject());
-  return result.summary;
+  return { summary: result.summary, won: result.outcome === "win" };
 }
 
 // ─── Lifecycle entry points (called from award-xp.ts) ────────────────────────
@@ -568,6 +572,9 @@ export interface SessionCompletion {
    *  spawned. The caller folds it into its final status write's celebration
    *  (pickCelebration) — see maybeFightBug for why it isn't written here. */
   fightSummary: string | null;
+  /** True when this commit's fight resolved as a win (living-world P1) — the
+   *  caller anchors a victory-lap stinger on it. */
+  fightWon: boolean;
   /** Whole-point stat increments applied this commit (stats-leveling-v2 §P4).
    *  The caller surfaces them as a toast + panel flash. Empty ⇒ nothing rose. */
   statIncrements: Partial<Record<StatName, number>>;
@@ -610,11 +617,13 @@ export function awardSessionComplete(
 
   // Idle-RPG combat (Phase 3): this session's error-ish events (errors, failed
   // tests/lint/type-checks/builds) spawn a bug to fight.
-  const fightSummary = maybeFightBug(
+  const fight = maybeFightBug(
     slot,
     combatErrorCount(delta),
     snapshot?.startedAt ?? 0,
   );
+  const fightSummary = fight?.summary ?? null;
+  const fightWon = fight?.won ?? false;
 
   // A non-zero streak reward means a streak milestone just landed — roll loot
   // on top of the deterministic bonus (additional-rewards FR4.1).
@@ -623,5 +632,5 @@ export function awardSessionComplete(
   // Re-baseline: the next session starts counting from here.
   saveSnapshot({ startedAt: nowSeconds(), baseline: current });
 
-  return { bonus, state, fightSummary, statIncrements };
+  return { bonus, state, fightSummary, fightWon, statIncrements };
 }

@@ -7,6 +7,10 @@
  */
 
 import { describe, test, expect } from "bun:test";
+import { spawnSync } from "child_process";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import {
   computeSessionBonus,
   counterDelta,
@@ -315,5 +319,84 @@ describe("formatStatUpText / raisedStatNames", () => {
     const inc = { SNARK: 2, DEBUGGING: 1 };
     expect(formatStatUpText(inc)).toBe("📈 DEBUGGING +1 · SNARK +2");
     expect(raisedStatNames(inc)).toEqual(["DEBUGGING", "SNARK"]);
+  });
+});
+
+// ─── awardSessionComplete: fightWon (living-world P1, fresh-process) ─────────
+//
+// state.ts/achievements.ts freeze their STATE_DIR at module load (see the
+// state_wander.test.ts and combat.test.ts fresh-process precedents), so
+// exercising the real awardSessionComplete → maybeFightBug path needs a
+// subprocess with CLAUDE_CONFIG_DIR set before any import. The script fixes
+// errorsSeen at a tier-4 spawn (DEBUGGING 50 vs tier 4 ⇒ ~30% win chance,
+// from combat.ts's WIN_BASE/TIER_STEP), then only varies the snapshot's
+// startedAt per iteration — that value feeds maybeFightBug's seed hash, so a
+// short search deterministically turns up both a win and a flee.
+
+describe("awardSessionComplete — fightWon (fresh process)", () => {
+  test("reports fightWon true for a winning seed and false for a flee", () => {
+    const cfgDir = mkdtempSync(join(tmpdir(), "buddy-fightwon-proc-"));
+    const script = `
+      const { saveConfig, saveCompanion } = await import("./server/state.ts");
+      const { incrementEvent } = await import("./server/achievements.ts");
+      const { awardSessionComplete, saveSnapshot } = await import("./server/session.ts");
+
+      saveConfig({ gameFeel: "full" });
+      saveCompanion({
+        name: "fighttest",
+        personality: "",
+        bones: {
+          species: "cactus", rarity: "common", eye: "\\u00b7", hat: "none",
+          shiny: false, peak: "SNARK", dump: "WISDOM",
+          stats: { DEBUGGING: 50, PATIENCE: 10, CHAOS: 10, WISDOM: 10, SNARK: 10 },
+        },
+      });
+
+      const ZERO = {
+        all_green: 0, large_diffs: 0, errors_seen: 0, commits_made: 0,
+        tests_failed: 0, type_errors: 0, lint_fails: 0, build_fails: 0, pets: 0,
+      };
+      // One bump to a tier-4 errorsSeen delta; the baseline is pinned to ZERO
+      // every iteration below, so this stays constant while startedAt varies.
+      incrementEvent("errors_seen", 10);
+
+      let win = null;
+      let flee = null;
+      for (let t = 0; t < 300 && (win === null || flee === null); t++) {
+        saveSnapshot({ startedAt: t, baseline: ZERO });
+        const completion = awardSessionComplete();
+        if (completion.fightSummary === null) continue;
+        if (completion.fightWon && win === null) win = completion;
+        if (!completion.fightWon && flee === null) flee = completion;
+      }
+
+      console.log(JSON.stringify({ win, flee }));
+    `;
+    try {
+      const env: Record<string, string | undefined> = {
+        ...process.env,
+        CLAUDE_CONFIG_DIR: cfgDir,
+      };
+      delete env.TMUX_PANE; // pin SID to "default" so the snapshot file agrees
+      const res = spawnSync("bun", ["-e", script], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        encoding: "utf8",
+      });
+      expect(res.stderr).toBe("");
+      expect(res.status).toBe(0);
+      const { win, flee } = JSON.parse(res.stdout.trim().split("\n").pop()!);
+      expect(win).not.toBeNull();
+      expect(flee).not.toBeNull();
+      // Non-tautological: cross-check against the fight's own summary text
+      // (combat.ts: a win's summary contains "squashed", a flee's "scuttled
+      // off") rather than re-deriving fightWon from itself.
+      expect(win.fightWon).toBe(true);
+      expect(win.fightSummary).toContain("squashed");
+      expect(flee.fightWon).toBe(false);
+      expect(flee.fightSummary).toContain("scuttled off");
+    } finally {
+      rmSync(cfgDir, { recursive: true, force: true });
+    }
   });
 });

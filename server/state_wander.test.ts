@@ -34,6 +34,9 @@ interface RenderCase {
   config: Record<string, unknown>;
   /** Force buildWanderSequence to throw (via a child-local loader plugin). */
   throwWander?: boolean;
+  /** Opts passed straight through to writeStatusState (living-world P1
+   *  stinger tests). */
+  opts?: Record<string, unknown>;
 }
 
 /** Run writeStatusState in a fresh subprocess under a temp config dir and return
@@ -68,7 +71,7 @@ const companion = {
   hatchedAt: Date.now(),
   userId: "smoke",
 };
-writeStatusState(companion);
+writeStatusState(companion, ${JSON.stringify(c.opts ?? {})});
 `;
   const childPath = join(cfgDir, "child.mjs");
   writeFileSync(childPath, childSrc);
@@ -154,6 +157,44 @@ describe("writeStatusState — gait lockstep (living-world P1)", () => {
     // Classic idle cycle is 18 ticks (21 for stretch pilot species) — the
     // point is it's NOT the 180-tick walk-length remap.
     expect((state!.frameSequence as number[]).length).toBeLessThanOrEqual(21);
+  });
+});
+
+describe("writeStatusState — stinger opt (living-world P1)", () => {
+  test("a walkon stinger splices an arc into wanderSequence", () => {
+    // walkon anchors immediately (no celebration to wait out), so its arc
+    // head lands at the tick the subprocess's own write-time clock reaches —
+    // bracket the child's spawn window with the *test's* clock (before/after
+    // spawnSync) rather than trusting the two processes' clocks to agree to
+    // the second, so this can't flake on spawn latency.
+    const before = Math.floor(Date.now() / 1000);
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true },
+      opts: { stinger: "walkon" },
+    });
+    const after = Math.floor(Date.now() / 1000);
+    const seq = state!.wanderSequence as number[];
+    expect(Array.isArray(seq)).toBe(true);
+    const len = seq.length;
+    expect(len).toBeGreaterThan(0);
+    // The ambient focused-mood walk (range 2, level 1 ⇒ no nudge) never
+    // reaches 3, so a hit here can only be the stinger's arc head (which
+    // floors at max(range, 3) = 3 per spliceStingerArc).
+    let hit = false;
+    for (let t = before; t <= after + 2 && !hit; t++) {
+      const at = ((t % len) + len) % len;
+      if (seq[at] >= 3) hit = true;
+    }
+    expect(hit).toBe(true);
+  });
+
+  test("no stinger opt leaves the ambient walk unmodified (control)", () => {
+    const state = render({ config: { gameFeel: "full", wanderEnabled: true } });
+    const seq = state!.wanderSequence as number[];
+    // Same focused-mood/level-1 ambient walk as above, with no stinger —
+    // range 2 never reaches 3, confirming the hit above isn't just ambient
+    // wander noise.
+    expect(seq.every((v) => v < 3)).toBe(true);
   });
 });
 
