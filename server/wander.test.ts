@@ -279,13 +279,41 @@ describe("gait profiles (living-world P1)", () => {
       dwellMax: 8,
       stepEvery: 1,
       hopHeight: 0,
-      seed: 3,
+      seed: 1,
     });
     const atEdge = walk.horizontal
       .map((p, i) => [p, walk.phases![i]] as const)
       .filter(([p]) => p === 2);
     expect(atEdge.some(([, ph]) => ph === 2)).toBe(true);
     expect(walk.phases!.includes(3)).toBe(true);
+
+    // Pin the i>=4 boundary: every maximal run of consecutive dwell ticks
+    // at home (pos === 0, phase !== 1) with length >= 5 must have phases 0
+    // for the first 4 ticks and at least one phase 3 from tick 4 onward.
+    let i = 0;
+    while (i < walk.horizontal.length) {
+      if (walk.horizontal[i] === 0 && walk.phases![i] !== 1) {
+        // Start of a home dwell run.
+        const runStart = i;
+        while (i < walk.horizontal.length && walk.horizontal[i] === 0 && walk.phases![i] !== 1) {
+          i++;
+        }
+        const runLength = i - runStart;
+        // Check that first 4 ticks of the run (if they exist) use phase 0.
+        for (let j = runStart; j < Math.min(runStart + 4, i); j++) {
+          expect(walk.phases![j]).toBe(0);
+        }
+        // If run is long enough, verify phase 3 appears from tick 4 onward.
+        if (runLength >= 5) {
+          const hasPhase3 = walk.phases!
+            .slice(runStart + 4, i)
+            .some((p) => p === 3);
+          expect(hasPhase3).toBe(true);
+        }
+      } else {
+        i++;
+      }
+    }
   });
 
   test("gaitWalkOpts: angry/bored/happy override, neutral falls back to mood", () => {

@@ -43,8 +43,8 @@ export interface WanderWalk {
   /** Per-tick vertical offset (rows) → `wanderRowSequence`; `undefined`
    *  when `hopHeight === 0`. */
   vertical: number[] | undefined;
-  /** Per-tick gait phase: 0 dwell · 1 step · 2 edge-dwell · 3 home-linger.
-   *  Same length/index as `horizontal` (living-world P1). */
+  /** Per-tick gait phase (see GaitPhase). Same length/index as `horizontal`
+   *  (living-world P1). */
   phases?: GaitPhase[];
 }
 
@@ -108,6 +108,9 @@ export function buildWanderSequence(opts: WanderOpts): WanderWalk {
     // Dwell at the current waypoint.
     const dwell = randInt(rng, dwellMin, dwellMax);
     for (let i = 0; i < dwell && horizontal.length < length; i++) {
+      // Phase 2 (edge-dwell) at range boundary; phase 3 (home-linger) at home
+      // after 4+ ticks; phase 0 (dwell) otherwise. Range guard: home and edge
+      // are the same cell (0) when range is 0.
       phases.push(pos === range && range > 0 ? 2 : pos === 0 && i >= 4 ? 3 : 0);
       horizontal.push(pos);
     }
@@ -174,7 +177,11 @@ export function moodWalkOpts(
 /** Emotion-keyed gait overrides (living-world P1). Keyed by the transient
  *  emotion `resolveEmotion` already derives — a second read of a decision
  *  already made, like the emote row. Unlisted emotions (incl. neutral,
- *  surprised) fall back to the mood personality unchanged. */
+ *  surprised) fall back to the mood personality unchanged.
+ *
+ *  Angry and bored pin a tight pacing corridor regardless of level: they set
+ *  explicit `range` values that clobber moodWalkOpts' level-based nudge.
+ *  Happy preserves the level nudge by omitting `range`. */
 const EMOTION_GAIT: Record<
   string,
   Partial<Pick<WanderOpts, "range" | "dwellMin" | "dwellMax" | "stepEvery" | "stepSize">>
