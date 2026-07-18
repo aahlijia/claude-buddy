@@ -250,6 +250,45 @@ describe("getStatusFrames", () => {
     );
     expect(seasonal.frames[0].split("\n")[0]).toBe("} (___) {");
   });
+
+  describe("gait frame variants (living-world P1)", () => {
+    const bones = (overrides: Partial<BuddyBones> = {}): BuddyBones => ({
+      rarity: "common",
+      species: "cactus",
+      eye: "°",
+      hat: "none",
+      shiny: false,
+      stats: { DEBUGGING: 50, PATIENCE: 50, CHAOS: 50, WISDOM: 50, SNARK: 50 },
+      peak: "DEBUGGING",
+      dump: "PATIENCE",
+      ...overrides,
+    });
+
+    test("absent unless requested; stable base output", () => {
+      const base = getStatusFrames(bones());
+      expect((base as { gaitIdx?: unknown }).gaitIdx).toBeUndefined();
+    });
+
+    test("appends lean (>) and peek (<) frames and reports indices", () => {
+      const base = getStatusFrames(bones());
+      const g = getStatusFrames(bones(), "neutral", undefined, undefined, true);
+      expect(g.frames.length).toBe(base.frames.length + 2);
+      expect(g.gaitIdx).toEqual({
+        bob: 1,
+        lean: base.frames.length,
+        peek: base.frames.length + 1,
+      });
+      expect(g.frames[g.gaitIdx!.lean]).toContain(">");
+      expect(g.frames[g.gaitIdx!.peek]).toContain("<");
+      expect(g.frames.slice(0, base.frames.length)).toEqual(base.frames);
+      expect(g.frameSequence).toEqual(base.frameSequence);
+    });
+
+    test("emotion branch also carries variants when requested", () => {
+      const g = getStatusFrames(bones(), "angry", undefined, undefined, true);
+      expect(g.gaitIdx).toEqual({ bob: 1, lean: 2, peek: 3 });
+    });
+  });
 });
 
 describe("flourishFrames (game-feel FR-A3)", () => {

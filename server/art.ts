@@ -561,20 +561,38 @@ export function getStatusFrames(
   emotion: Emotion = "neutral",
   seasonalHat?: Hat,
   gear?: GearArt,
+  gaitVariants = false,
 ): {
   frames: string[];
   frameSequence: number[];
+  /** Indices of the gait posture frames (living-world P1); present only when
+   *  `gaitVariants` was requested. bob = existing frame 1 (no new art). */
+  gaitIdx?: { bob: number; lean: number; peek: number };
 } {
   const resolveFrame = (frameIdx: number, eye: string): string =>
     renderSpeciesFrame(bones, frameIdx, eye, seasonalHat, gear);
 
+  // Append lean/peek as eye-substituted postures for the walk's edge/home beats,
+  // keeping existing indices stable.
+  const withGait = (
+    r: { frames: string[]; frameSequence: number[] },
+  ): ReturnType<typeof getStatusFrames> => {
+    if (!gaitVariants) return r;
+    const lean = r.frames.length;
+    return {
+      ...r,
+      frames: [...r.frames, resolveFrame(0, ">"), resolveFrame(0, "<")],
+      gaitIdx: { bob: 1, lean, peek: lean + 1 },
+    };
+  };
+
   // Emotion: swap in the emotion's eye and run a 2-frame micro-cycle.
   if (emotion !== "neutral") {
     const eye = EMOTION_EYE[emotion];
-    return {
+    return withGait({
       frames: [resolveFrame(0, eye), resolveFrame(1, eye)],
       frameSequence: [...EMOTION_FRAME_SEQUENCE],
-    };
+    });
   }
 
   // Neutral: the original idle cycle (game-feel R3) plus a rare glance
@@ -582,7 +600,7 @@ export function getStatusFrames(
   // same derivation blink already uses, so it's unconditionally safe across
   // every species (all carry `{E}` on frame 0) with zero new art.
   const hasStretch = SPECIES_ART[bones.species].length > 3;
-  return {
+  return withGait({
     frames: [
       resolveFrame(0, bones.eye),
       resolveFrame(1, bones.eye),
@@ -594,7 +612,7 @@ export function getStatusFrames(
     frameSequence: [
       ...(hasStretch ? STATUS_FRAME_SEQUENCE_STRETCH : STATUS_FRAME_SEQUENCE),
     ],
-  };
+  });
 }
 
 /** The widest display row across a set of flipbooks — the sprite block's width,
