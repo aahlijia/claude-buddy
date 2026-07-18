@@ -88,6 +88,9 @@ export interface EncounterRecord {
    *  "Bug fight in <project>!" says where it came from. Absent on records
    *  written before the field existed. */
   project?: string;
+  /** Caption line rendered above the scene (living-world P2). Absent ⇒ the
+   *  classic "Bug fight in <project>!" built from `project` (back-compat). */
+  caption?: string;
 }
 
 /**
@@ -112,6 +115,9 @@ export interface PendingEncounter {
   /** Project the standoff belongs to (hook cwd basename) — see
    *  `EncounterRecord.project`. Absent on records written before the field. */
   project?: string;
+  /** Caption line rendered above the scene (living-world P2). Absent ⇒ the
+   *  classic "Bug fight in <project>!" built from `project` (back-compat). */
+  caption?: string;
 }
 
 // ─── Win odds ─────────────────────────────────────────────────────────────────

@@ -1013,17 +1013,26 @@ export function writeStatusState(
       // (centered over the scene) so the shell needs no layout change: art
       // height and width already come from the frames themselves. Re-stripped
       // here because frame art is exempt from the shell-side jq sanitizer.
+      // `caption` overrides the classic text (living-world P2: boss pips,
+      // visitor greets) — threaded from `enc.caption` / `pending.caption`
+      // below. Absent ⇒ back-compat "Bug fight in <project>!", byte-identical
+      // to the pre-override render. Stripped the same as `project`: it
+      // crosses the same jq-sanitizer-exempt frame channel.
       const captionFrames = (
         frs: string[],
         project?: string,
+        caption?: string,
       ): { frames: string[]; width: number } => {
         const w = sceneWidth(frs);
         const name = (project ?? "").replace(/[\x00-\x1f\x7f]/g, "").trim();
-        if (!name) return { frames: frs, width: w };
-        const caption = `Bug fight in ${name}!`;
-        const captionW = displayWidth(caption);
+        const capOverride = (caption ?? "")
+          .replace(/[\x00-\x1f\x7f]/g, "")
+          .trim();
+        const text = capOverride || (name ? `Bug fight in ${name}!` : null);
+        if (!text) return { frames: frs, width: w };
+        const captionW = displayWidth(text);
         const pad = Math.max(0, Math.floor((w - captionW) / 2));
-        const line = " ".repeat(pad) + caption;
+        const line = " ".repeat(pad) + text;
         return {
           frames: frs.map((frame) => line + "\n" + frame),
           width: Math.max(w, pad + captionW),
@@ -1039,7 +1048,7 @@ export function writeStatusState(
         enemyGlyph = enc.enemyGlyph;
         encounterAt = enc.at;
         if (Array.isArray(enc.frames) && enc.frames.length > 0) {
-          const scene = captionFrames(enc.frames, enc.project);
+          const scene = captionFrames(enc.frames, enc.project, enc.caption);
           combatFrames = scene.frames;
           combatSequence = enc.sequence;
           artWidth = scene.width;
@@ -1059,7 +1068,11 @@ export function writeStatusState(
             require("./session.ts") as typeof import("./session.ts");
           const snap = loadSnapshot();
           if (snap && snap.startedAt === pending.startedAt) {
-            const scene = captionFrames(pending.frames, pending.project);
+            const scene = captionFrames(
+              pending.frames,
+              pending.project,
+              pending.caption,
+            );
             combatFrames = scene.frames;
             combatSequence = pending.sequence;
             artWidth = scene.width;

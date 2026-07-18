@@ -776,6 +776,138 @@ describe("sightBug under auto-quiet error spike (fresh process)", () => {
   });
 });
 
+// ─── Caption override (living-world P2) ────────────────────────────────────
+//
+// PendingEncounter/EncounterRecord both gained an optional `caption` field
+// (combat.ts). Present ⇒ state.ts's captionFrames renders it verbatim
+// (control chars stripped, same as `project`) instead of the classic
+// "Bug fight in <project>!" text. Absent ⇒ unchanged, byte-identical to the
+// pre-override render (back-compat).
+
+describe("caption override on encounter records (living-world P2)", () => {
+  function runCaptionScript(script: string): { caption: string | null } {
+    const cfgDir = mkdtempSync(join(tmpdir(), "buddy-caption-proc-"));
+    try {
+      const env: Record<string, string | undefined> = {
+        ...process.env,
+        CLAUDE_CONFIG_DIR: cfgDir,
+      };
+      delete env.TMUX_PANE; // pin SID to "default" so session files agree
+      const res = spawnSync("bun", ["-e", script], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        encoding: "utf8",
+      });
+      expect(res.stderr).toBe("");
+      expect(res.status).toBe(0);
+      return JSON.parse(res.stdout.trim());
+    } finally {
+      rmSync(cfgDir, { recursive: true, force: true });
+    }
+  }
+
+  const COMPANION_SETUP = `
+      const { saveConfig, saveCompanion } = await import("./server/state.ts");
+      saveConfig({ gameFeel: "full" });
+      saveCompanion({
+        name: "captiontest",
+        personality: "",
+        bones: {
+          species: "cactus", rarity: "common", eye: "\\u00b7", hat: "none",
+          shiny: false, peak: "SNARK", dump: "WISDOM",
+          stats: { DEBUGGING: 10, PATIENCE: 10, CHAOS: 10, WISDOM: 10, SNARK: 10 },
+        },
+      });
+  `;
+  const READ_CAPTION = `
+      const { readFileSync } = await import("fs");
+      const { join } = await import("path");
+      const status = JSON.parse(readFileSync(
+        join(process.env.CLAUDE_CONFIG_DIR, "buddy-state", "status.json"),
+        "utf8",
+      ));
+      console.log(JSON.stringify({
+        caption: status.combatFrames?.[0]?.split("\\n")[0]?.trim() ?? null,
+      }));
+  `;
+
+  test("pending standoff: caption override renders verbatim", () => {
+    const script = `
+      ${COMPANION_SETUP}
+      const { startSession } = await import("./server/session.ts");
+      const { writePendingEncounter } = await import("./server/combat.ts");
+      const { loadCompanion, writeStatusState } = await import("./server/state.ts");
+      const snap = startSession();
+      writePendingEncounter({
+        bugId: "x", tier: 1, frames: ["AA", "BB"], sequence: [0, 0, 0, 1],
+        sightedAt: Date.now(), startedAt: snap.startedAt,
+        project: "demo", caption: "BOSS in demo! \\u25b0\\u25b1",
+      });
+      writeStatusState(loadCompanion(), {});
+      ${READ_CAPTION}
+    `;
+    const out = runCaptionScript(script);
+    expect(out.caption).toBe("BOSS in demo! ▰▱");
+  });
+
+  test("pending standoff: caption-less record renders the classic text (back-compat pin)", () => {
+    const script = `
+      ${COMPANION_SETUP}
+      const { startSession } = await import("./server/session.ts");
+      const { writePendingEncounter } = await import("./server/combat.ts");
+      const { loadCompanion, writeStatusState } = await import("./server/state.ts");
+      const snap = startSession();
+      writePendingEncounter({
+        bugId: "x", tier: 1, frames: ["AA", "BB"], sequence: [0, 0, 0, 1],
+        sightedAt: Date.now(), startedAt: snap.startedAt,
+        project: "demo",
+      });
+      writeStatusState(loadCompanion(), {});
+      ${READ_CAPTION}
+    `;
+    const out = runCaptionScript(script);
+    expect(out.caption).toBe("Bug fight in demo!");
+  });
+
+  test("resolved encounter: caption override renders verbatim", () => {
+    const script = `
+      ${COMPANION_SETUP}
+      const { writeFileSync, mkdirSync } = await import("fs");
+      const path = await import("path");
+      const { buddyStateDir } = await import("./server/path.ts");
+      const { loadCompanion, writeStatusState } = await import("./server/state.ts");
+      mkdirSync(buddyStateDir(), { recursive: true });
+      writeFileSync(path.join(buddyStateDir(), "encounter.json"), JSON.stringify({
+        frames: ["AA", "BB"], sequence: [0, 0, 0, 1], enemyGlyph: "x",
+        at: Date.now(), project: "demo", caption: "BOSS in demo! \\u25b0\\u25b1",
+      }));
+      writeStatusState(loadCompanion(), {});
+      ${READ_CAPTION}
+    `;
+    const out = runCaptionScript(script);
+    expect(out.caption).toBe("BOSS in demo! ▰▱");
+  });
+
+  test("resolved encounter: caption-less record renders the classic text (back-compat pin)", () => {
+    const script = `
+      ${COMPANION_SETUP}
+      const { writeFileSync, mkdirSync } = await import("fs");
+      const path = await import("path");
+      const { buddyStateDir } = await import("./server/path.ts");
+      const { loadCompanion, writeStatusState } = await import("./server/state.ts");
+      mkdirSync(buddyStateDir(), { recursive: true });
+      writeFileSync(path.join(buddyStateDir(), "encounter.json"), JSON.stringify({
+        frames: ["AA", "BB"], sequence: [0, 0, 0, 1], enemyGlyph: "x",
+        at: Date.now(), project: "demo",
+      }));
+      writeStatusState(loadCompanion(), {});
+      ${READ_CAPTION}
+    `;
+    const out = runCaptionScript(script);
+    expect(out.caption).toBe("Bug fight in demo!");
+  });
+});
+
 // ─── Gear renders in fight scenes (weapon/trinket/hat on the player sprite) ──
 
 describe("gear in combat scenes (PlayerLook)", () => {
