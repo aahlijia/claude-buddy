@@ -20,11 +20,14 @@ import {
   formatStatUpText,
   raisedStatNames,
   pendingAction,
+  bossStages,
   stingerForCompletion,
   SESSION_BASE_BONUS,
   SESSION_BONUS_CAP,
   PATIENCE_MAX_MINUTES,
   WISDOM_LEARN_RATE,
+  BOSS_THRESHOLD,
+  BOSS_STAGE2_AT,
   type SessionCounters,
 } from "./session.ts";
 
@@ -213,6 +216,22 @@ describe("pendingAction (design-pending-encounter §4.1)", () => {
   test("tier 0 (no spawn) is always a no-op, even with no existing file", () => {
     expect(pendingAction(0, null)).toBe("noop");
     expect(pendingAction(0, { tier: 2 })).toBe("noop");
+  });
+});
+
+describe("boss decisions (living-world P2)", () => {
+  test("count >= BOSS_THRESHOLD upgrades a standoff to a boss", () => {
+    expect(pendingAction(4, { tier: 4 }, 12)).toBe("boss");
+    expect(pendingAction(4, { tier: 4 }, 11)).toBe("noop");
+  });
+
+  test("an existing boss never re-upgrades or de-escalates", () => {
+    expect(pendingAction(4, { tier: 4, kind: "boss" }, 20)).toBe("noop");
+  });
+
+  test("boss stage count scales with severity", () => {
+    expect(bossStages(12)).toBe(2);
+    expect(bossStages(18)).toBe(3);
   });
 });
 

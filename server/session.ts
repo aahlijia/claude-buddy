@@ -360,19 +360,35 @@ export function raisedStatNames(
 
 // ─── Pending encounter (design-pending-encounter): the standoff before combat ─
 
+/** Encounter error count that qualifies for a boss upgrade (living-world P2). */
+export const BOSS_THRESHOLD = 12;
+
+/** Encounter error count at which boss stage count upgrades to 3 (living-world P2). */
+export const BOSS_STAGE2_AT = 18;
+
+/** Stage count for a boss (living-world P2): 2 below 18, 3 at/above. */
+export function bossStages(count: number): number {
+  return count >= BOSS_STAGE2_AT ? 3 : 2;
+}
+
 /** What a sighting event should do to the current pending file. Pure. */
-export type PendingDecision = "spawn" | "escalate" | "noop";
+export type PendingDecision = "spawn" | "escalate" | "noop" | "boss";
 
 /**
  * Decide a sighting's action from the tier it implies and any existing pending
  * standoff at the *same* session. No pending ⇒ spawn; a strictly higher tier ⇒
  * escalate (a fresh roll at the bigger tier); otherwise no-op — repeated
- * same-tier errors don't re-bake, keeping the per-event cost zero.
+ * same-tier errors don't re-bake, keeping the per-event cost zero. At or above
+ * BOSS_THRESHOLD count upgrades to a boss (living-world P2). Existing boss is
+ * immutable (returns noop).
  */
 export function pendingAction(
   tier: 0 | BugTier,
-  existing: { tier: BugTier } | null,
+  existing: { tier: BugTier; kind?: "boss" } | null,
+  count = 0,
 ): PendingDecision {
+  if (existing && "kind" in existing && existing.kind === "boss") return "noop";
+  if (tier > 0 && count >= BOSS_THRESHOLD) return "boss";
   if (tier === 0) return "noop";
   if (!existing) return "spawn";
   if (tier > existing.tier) return "escalate";

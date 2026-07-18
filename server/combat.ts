@@ -118,6 +118,11 @@ export interface PendingEncounter {
   /** Caption line rendered above the scene (living-world P2). Absent ⇒ the
    *  classic "Bug fight in <project>!" built from `project` (back-compat). */
   caption?: string;
+  /** Boss upgrade (living-world P2, D13): present only on a boss standoff. */
+  kind?: "boss";
+  /** Total stages (2-3, severity-scaled) and stages already won. */
+  stages?: number;
+  stagesCleared?: number;
 }
 
 // ─── Win odds ─────────────────────────────────────────────────────────────────
