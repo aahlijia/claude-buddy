@@ -20,6 +20,7 @@ import {
   formatStatUpText,
   raisedStatNames,
   pendingAction,
+  stingerForCompletion,
   SESSION_BASE_BONUS,
   SESSION_BONUS_CAP,
   PATIENCE_MAX_MINUTES,
@@ -319,6 +320,35 @@ describe("formatStatUpText / raisedStatNames", () => {
     const inc = { SNARK: 2, DEBUGGING: 1 };
     expect(formatStatUpText(inc)).toBe("📈 DEBUGGING +1 · SNARK +2");
     expect(raisedStatNames(inc)).toEqual(["DEBUGGING", "SNARK"]);
+  });
+});
+
+describe("stingerForCompletion (living-world P1)", () => {
+  test("a won fight always fires the victory stinger", () => {
+    expect(stingerForCompletion(true, "you squashed the bug", "loot")).toBe(
+      "victory",
+    );
+    expect(stingerForCompletion(true, "you squashed the bug", null)).toBe(
+      "victory",
+    );
+  });
+
+  test("a fled fight fires no stinger, even though it shares celebration kind loot", () => {
+    // Regression: pickCelebration's fight branch emits kind "loot" for BOTH
+    // win and flee — a flee must not fall through into the lootdash branch
+    // just because the kind matches a genuine loot toast.
+    expect(
+      stingerForCompletion(false, "the bug scuttled off", "loot"),
+    ).toBeUndefined();
+  });
+
+  test("a genuine loot celebration (no fight this commit) fires lootdash", () => {
+    expect(stingerForCompletion(false, null, "loot")).toBe("lootdash");
+  });
+
+  test("no fight and no loot celebration fires no stinger", () => {
+    expect(stingerForCompletion(false, null, "levelup")).toBeUndefined();
+    expect(stingerForCompletion(false, null, undefined)).toBeUndefined();
   });
 });
 

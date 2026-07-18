@@ -29,7 +29,9 @@ import {
   effectiveGameFeel,
   gameFeelLevel,
   writeStatusState,
+  type CelebrationKind,
 } from "./state.ts";
+import type { StingerKind } from "./wander.ts";
 import { loadEvents, type EventCounters } from "./achievements.ts";
 import {
   awardXpAmount,
@@ -563,6 +565,25 @@ export function startSession(slot?: string): SessionSnapshot {
   };
   saveSnapshot(snapshot);
   return snapshot;
+}
+
+/**
+ * Pure: derive the wander stinger (living-world P1) for a session-completion
+ * status write. A win gets the victory lap. A fight's own toast rides
+ * celebration kind "loot" (see pickCelebration in state.ts — it doesn't
+ * distinguish win from flee), so a lootdash — the celebratory dart-and-inspect
+ * for a genuine loot drop — must require the ABSENCE of a fight summary: a
+ * fled fight loses its combat slot and gets no stinger at all. Exported for
+ * unit tests; award-xp.ts is the only production caller.
+ */
+export function stingerForCompletion(
+  fightWon: boolean,
+  fightSummary: string | null,
+  celebrationKind: CelebrationKind | null | undefined,
+): StingerKind | undefined {
+  if (fightWon) return "victory";
+  if (!fightSummary && celebrationKind === "loot") return "lootdash";
+  return undefined;
 }
 
 export interface SessionCompletion {

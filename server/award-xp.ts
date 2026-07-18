@@ -22,6 +22,7 @@ import {
   sightBug,
   formatStatUpText,
   raisedStatNames,
+  stingerForCompletion,
 } from "./session";
 import { recordSessionStart } from "./streak";
 import { tickWhim } from "./quests";
@@ -157,13 +158,12 @@ function main(): void {
         // stays unflourished — a one-time system message, not a performance.
         flourish: celebration != null && celebration.kind !== "discovery",
         // living-world P1: a won fight gets a victory-lap wander stinger; a
-        // fled fight (or any other loot-kind celebration) gets the quieter
-        // loot-dash instead.
-        stinger: fightWon
-          ? "victory"
-          : celebration?.kind === "loot"
-            ? "lootdash"
-            : undefined,
+        // genuine loot toast (no fight consumed the celebration slot) gets
+        // the quieter loot-dash. A fled fight also rides celebration kind
+        // "loot" (pickCelebration doesn't distinguish win/flee), so the
+        // helper requires an absent fightSummary before firing lootdash —
+        // running away earns no stinger.
+        stinger: stingerForCompletion(fightWon, fightSummary, celebration?.kind),
       });
     }
     console.log(
