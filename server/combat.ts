@@ -563,6 +563,22 @@ export function bakePendingScene(
     ...bout(second, dmgB, outB),
   ];
 
+  // Startle beat (living-world P1): the standoff's opening pose — the player
+  // recoils with O eyes before settling into the ready/glare loop. Appended
+  // (not inserted) so no existing frame index shifts; recurs each loop as a
+  // re-glare, matching the periodic bout grammar. pendingPoses with the eye
+  // substituted reuses the exact ready-pose geometry.
+  const startle = composePose(
+    playerSpecies,
+    enemySpecies,
+    pendingPoses(asEye("O"), enemyEye)[0],
+    DEFAULT_SWORD,
+    { overlay: { text: null, over: "enemy" } },
+    look,
+  );
+  const startleIdx = frames.length;
+  frames.push(startle);
+
   // The calm rhythm keeps the classic mostly-ready/periodic-glare beat; each
   // bout plays walk → impact ×2 → float ×2, then falls back to ready. The
   // whole loop repeats every `sequence.length` seconds (§4.4).
@@ -570,6 +586,7 @@ export function bakePendingScene(
     Array.from({ length: n }, (_, i) => [0, 0, 0, 1][i % 4]);
   const boutTicks = (f: number): number[] => [f, f + 1, f + 1, f + 2, f + 2];
   const sequence = [
+    startleIdx, startleIdx, startleIdx,
     ...calm(g1),
     ...boutTicks(2),
     ...calm(g2),

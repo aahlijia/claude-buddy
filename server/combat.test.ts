@@ -236,9 +236,9 @@ describe("two-sprite combat scene (Phase 5)", () => {
 });
 
 describe("pending standoff scene (Phase 1: bakePendingScene)", () => {
-  test("bakes ready/glare plus two 3-frame bouts (8 frames)", () => {
+  test("bakes ready/glare plus two 3-frame bouts plus the startle (9 frames)", () => {
     const scene = bakePendingScene("cactus", "·", "dragon", "·");
-    expect(scene.frames.length).toBe(8);
+    expect(scene.frames.length).toBe(9);
     // Every sequence tick indexes a real frame.
     for (const i of scene.sequence) {
       expect(i).toBeGreaterThanOrEqual(0);
@@ -249,7 +249,23 @@ describe("pending standoff scene (Phase 1: bakePendingScene)", () => {
     const seq = scene.sequence.join(",");
     expect(seq).toContain("2,3,3,4,4");
     expect(seq).toContain("5,6,6,7,7");
-    expect(scene.sequence[0]).toBe(0); // loop opens on the calm ready pose
+    // The loop now opens on the startle beat (the appended 9th frame), not
+    // the calm ready pose directly.
+    expect(scene.sequence[0]).toBe(8);
+  });
+
+  test("standoff opens with a startle beat: O-eyed player pose, 3 ticks", () => {
+    const scene = bakePendingScene("cactus", "·", "dragon", "·");
+    const startleIdx = scene.sequence[0];
+    expect(scene.sequence[0]).toBe(scene.sequence[1]);
+    expect(scene.sequence[1]).toBe(scene.sequence[2]);
+    expect(scene.frames[startleIdx]).toContain("O");
+    // The startle frame obeys the constant-geometry contract with the rest.
+    const dims = (f: string): number => f.split("\n").length;
+    expect(dims(scene.frames[startleIdx])).toBe(dims(scene.frames[0]));
+    // Prepended, not replacing: the old calm opening now starts right after
+    // the 3 startle ticks, unshifted (calm rhythm: [0, 0, 0, 1, ...]).
+    expect(scene.sequence.slice(3, 7)).toEqual([0, 0, 0, 1]);
   });
 
   test("every line of every frame is the same display width (no jitter)", () => {
