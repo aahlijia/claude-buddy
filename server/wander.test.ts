@@ -369,4 +369,24 @@ describe("stinger arcs (living-world P1)", () => {
   test("empty walk is a no-op", () => {
     expect(spliceStingerArc([], "victory", 3)).toEqual([]);
   });
+  test("arc shapes match the per-kind contract wired to distinct events", () => {
+    // Shapes are the per-kind contract Task 7 wires to distinct events.
+    const r = 3;
+    const victory = stingerArc("victory", r);
+    expect(victory).toEqual([1, 2, 3, 2, 1, 0, 1, 2, 3, 2, 1, 0]);
+    const lootdash = stingerArc("lootdash", r);
+    expect(lootdash).toEqual([1, 2, 3, 3, 3, 3, 2, 1, 0]);
+    const walkon = stingerArc("walkon", r);
+    expect(walkon).toEqual([3, 3, 2, 2, 1, 1, 0, 0]);
+  });
+  test("truncation guard forces the final written cell to 0", () => {
+    const short = new Array(6).fill(2);
+    const out = spliceStingerArc(short, "victory", 4);
+    // victory at r=2 is [1,2,2,1,0,1,2,2,1,0,1,2,2,1,0,...], length 12.
+    // Spliced at anchor 4 into len=6: cells [4,5,0,1,2,3] get [1,2,2,1,0,1].
+    // Truncation guard forces out[(4+5)%6] = out[3] to 0.
+    expect(out[(4 + 5) % 6]).toBe(0);
+    // All values remain non-negative (no negative or NaN corruption).
+    for (const v of out) expect(v).toBeGreaterThanOrEqual(0);
+  });
 });

@@ -234,7 +234,12 @@ export function stingerArc(kind: StingerKind, range: number): number[] {
   return out;
 }
 
-/** Copy `horizontal` with `kind`'s arc written at `atTick` (modulo length). */
+/** Copy `horizontal` with `kind`'s arc written at `atTick` (modulo length).
+ *  The arc's reach is the walk's observed extent with a 3-cell floor (from
+ *  Math.max(...horizontal, 3)), so sedentary moods still get a legible sweep
+ *  while active walks' arcs match their roam. A track shorter than the arc
+ *  truncates it, with the last written cell forced to 0 to preserve the
+ *  no-teleport hand-off invariant. */
 export function spliceStingerArc(
   horizontal: number[],
   kind: StingerKind,
@@ -246,6 +251,11 @@ export function spliceStingerArc(
   const out = [...horizontal];
   for (let k = 0; k < arc.length && k < len; k++) {
     out[(atTick + k) % len] = arc[k];
+  }
+  // If arc was truncated, force the final written cell to 0 to ensure
+  // no teleport snap on hand-off back to the surrounding walk.
+  if (arc.length > len && len > 0) {
+    out[(atTick + len - 1) % len] = 0;
   }
   return out;
 }
