@@ -1017,7 +1017,11 @@ export function writeStatusState(
       // visitor greets) — threaded from `enc.caption` / `pending.caption`
       // below. Absent ⇒ back-compat "Bug fight in <project>!", byte-identical
       // to the pre-override render. Stripped the same as `project`: it
-      // crosses the same jq-sanitizer-exempt frame channel.
+      // crosses the same jq-sanitizer-exempt frame channel. Length is the
+      // PRODUCER's job (same contract as `currentProject()`'s 24-char clamp
+      // on `project`) — an unclamped caption grows `artWidth` and clips at
+      // narrow widths. `caption: ""` deliberately falls back to the classic
+      // text (`||`), matching how an all-control-char caption degrades.
       const captionFrames = (
         frs: string[],
         project?: string,
