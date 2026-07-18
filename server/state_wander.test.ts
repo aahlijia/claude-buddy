@@ -41,6 +41,12 @@ interface RenderCase {
    *  living-world P1 D14: drives the active-reason coupling between the
    *  angry-emotion map and the auto-quiet spike clamp under test. */
   reaction?: { reaction: string; reason: string };
+  /** Pin mood.json's `current` before the write. Absent mood.json falls back
+   *  to getTimeOfDayMood() (mood.ts), which is wall-clock dependent — several
+   *  hours map to "happy" (range 4) or "excited" (range 6), both past any
+   *  assertion that assumes the tight "focused" (range 2) corridor. Any test
+   *  that reasons about specific wander-range values MUST set this. */
+  mood?: string;
 }
 
 /** Run writeStatusState in a fresh subprocess under a temp config dir and return
@@ -56,6 +62,22 @@ function render(c: RenderCase): Record<string, unknown> | null {
     writeFileSync(
       join(stateDir, "reaction.default.json"),
       JSON.stringify({ ...c.reaction, timestamp: Date.now() }),
+    );
+  }
+  if (c.mood) {
+    // Without this file, getMood() (mood.ts) falls back to the wall-clock
+    // getTimeOfDayMood() — pinning it here removes that nondeterminism for
+    // any test that reasons about a specific wander range.
+    writeFileSync(
+      join(stateDir, "mood.json"),
+      JSON.stringify({
+        current: c.mood,
+        since: Date.now(),
+        intensity: 1,
+        recentErrors: 0,
+        recentTests: 0,
+        recentDiffs: 0,
+      }),
     );
   }
 
@@ -204,6 +226,15 @@ describe("writeStatusState — angry-gait auto-quiet exemption (D14)", () => {
 });
 
 describe("writeStatusState — stinger opt (living-world P1)", () => {
+  // Both tests below reason about the ambient wander never reaching 3, which
+  // only holds for the "focused" mood profile (MOOD_WALK.focused: range 2 —
+  // see wander.ts). Without an explicit mood.json, getMood() (mood.ts) falls
+  // back to getTimeOfDayMood(), a wall-clock lookup: 12:00–16:59 local time
+  // maps to "happy" (range 4) and 17:00–19:59 to "excited" (range 6), both of
+  // which legitimately reach ≥3 with no stinger at all — the prior version of
+  // this suite pinned nothing here and flaked in exactly those hours. Pin the
+  // mood explicitly so the ≥3 / <3 assertions test the stinger, not the
+  // clock.
   test("a walkon stinger splices an arc into wanderSequence", () => {
     // walkon anchors immediately (no celebration to wait out), so its arc
     // head lands at the tick the subprocess's own write-time clock reaches —
@@ -214,6 +245,7 @@ describe("writeStatusState — stinger opt (living-world P1)", () => {
     const state = render({
       config: { gameFeel: "full", wanderEnabled: true },
       opts: { stinger: "walkon" },
+      mood: "focused", // pinned dependency: MOOD_WALK.focused range=2 < 3
     });
     const after = Math.floor(Date.now() / 1000);
     const seq = state!.wanderSequence as number[];
@@ -232,7 +264,10 @@ describe("writeStatusState — stinger opt (living-world P1)", () => {
   });
 
   test("no stinger opt leaves the ambient walk unmodified (control)", () => {
-    const state = render({ config: { gameFeel: "full", wanderEnabled: true } });
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true },
+      mood: "focused", // pinned dependency: MOOD_WALK.focused range=2 < 3
+    });
     const seq = state!.wanderSequence as number[];
     // Same focused-mood/level-1 ambient walk as above, with no stinger —
     // range 2 never reaches 3, confirming the hit above isn't just ambient
