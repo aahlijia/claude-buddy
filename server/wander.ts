@@ -29,7 +29,12 @@ export interface WanderOpts {
   hopHeight: number;
   /** Injected seed; `Date.now()` in prod, fixed in tests. */
   seed: number;
+  /** Cells per step (gait "skip"); default 1. |Δ| per tick ≤ stepSize. */
+  stepSize?: number;
 }
+
+/** Per-tick gait phase: 0 dwell · 1 step · 2 edge-dwell · 3 home-linger. */
+export type GaitPhase = 0 | 1 | 2 | 3;
 
 /** A baked walk: index both arrays by `NOW % length`, like `frameSequence`. */
 export interface WanderWalk {
@@ -38,6 +43,9 @@ export interface WanderWalk {
   /** Per-tick vertical offset (rows) → `wanderRowSequence`; `undefined`
    *  when `hopHeight === 0`. */
   vertical: number[] | undefined;
+  /** Per-tick gait phase: 0 dwell · 1 step · 2 edge-dwell · 3 home-linger.
+   *  Same length/index as `horizontal` (living-world P1). */
+  phases?: GaitPhase[];
 }
 
 /** §7.D mood → walk personality (range / dwell / step). */
@@ -89,15 +97,18 @@ export function buildWanderSequence(opts: WanderOpts): WanderWalk {
   const dwellMin = Math.max(1, Math.floor(opts.dwellMin));
   const dwellMax = Math.max(dwellMin, Math.floor(opts.dwellMax));
   const hopHeight = Math.max(0, Math.floor(opts.hopHeight));
+  const stepSize = Math.max(1, Math.floor(opts.stepSize ?? 1));
 
   const rng = mulberry32(opts.seed >>> 0);
   const horizontal: number[] = [];
+  const phases: GaitPhase[] = [];
   let pos = 0;
 
   while (horizontal.length < length) {
     // Dwell at the current waypoint.
     const dwell = randInt(rng, dwellMin, dwellMax);
     for (let i = 0; i < dwell && horizontal.length < length; i++) {
+      phases.push(pos === range && range > 0 ? 2 : pos === 0 && i >= 4 ? 3 : 0);
       horizontal.push(pos);
     }
     if (horizontal.length >= length) break;
@@ -107,9 +118,10 @@ export function buildWanderSequence(opts: WanderOpts): WanderWalk {
     const dir = target > pos ? 1 : -1;
     while (pos !== target && horizontal.length < length) {
       for (let s = 0; s < stepEvery && horizontal.length < length; s++) {
+        phases.push(1);
         horizontal.push(pos);
       }
-      pos += dir;
+      pos += dir * Math.min(stepSize, Math.abs(target - pos));
     }
   }
 
@@ -126,7 +138,7 @@ export function buildWanderSequence(opts: WanderOpts): WanderWalk {
     }
   }
 
-  return { horizontal, vertical };
+  return { horizontal, vertical, phases };
 }
 
 /**
@@ -157,4 +169,29 @@ export function moodWalkOpts(
     hopHeight: lvl >= 20 ? 2 : 1,
     seed,
   };
+}
+
+/** Emotion-keyed gait overrides (living-world P1). Keyed by the transient
+ *  emotion `resolveEmotion` already derives — a second read of a decision
+ *  already made, like the emote row. Unlisted emotions (incl. neutral,
+ *  surprised) fall back to the mood personality unchanged. */
+const EMOTION_GAIT: Record<
+  string,
+  Partial<Pick<WanderOpts, "range" | "dwellMin" | "dwellMax" | "stepEvery" | "stepSize">>
+> = {
+  angry: { range: 3, dwellMin: 2, dwellMax: 4, stepEvery: 1 },
+  bored: { range: 2, dwellMin: 8, dwellMax: 14, stepEvery: 2 },
+  happy: { stepSize: 2, dwellMin: 4, dwellMax: 10, stepEvery: 1 },
+};
+
+/** Mood personality with the current emotion's gait folded over it. */
+export function gaitWalkOpts(
+  emotion: string,
+  mood: string,
+  level: number,
+  seed: number,
+): WanderOpts {
+  const base = moodWalkOpts(mood, level, seed);
+  const gait = EMOTION_GAIT[emotion];
+  return gait ? { ...base, ...gait } : base;
 }

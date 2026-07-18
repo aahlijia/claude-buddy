@@ -11,6 +11,7 @@ import { describe, test, expect } from "bun:test";
 import {
   buildWanderSequence,
   moodWalkOpts,
+  gaitWalkOpts,
   type WanderOpts,
 } from "./wander.ts";
 
@@ -230,5 +231,87 @@ describe("moodWalkOpts", () => {
     const { horizontal } = buildWanderSequence(opts);
     expect(horizontal.length).toBe(opts.length);
     expect(Math.max(...horizontal)).toBeLessThanOrEqual(opts.range);
+  });
+});
+
+// ─── gait profiles (living-world P1) ──────────────────────────────────────────
+
+describe("gait profiles (living-world P1)", () => {
+  test("stepSize 2 moves at most 2 cells per step and still lands on target", () => {
+    const walk = buildWanderSequence({
+      range: 6,
+      length: 120,
+      dwellMin: 2,
+      dwellMax: 4,
+      stepEvery: 1,
+      hopHeight: 0,
+      seed: 7,
+      stepSize: 2,
+    });
+    for (let i = 1; i < walk.horizontal.length; i++) {
+      expect(Math.abs(walk.horizontal[i] - walk.horizontal[i - 1])).toBeLessThanOrEqual(2);
+    }
+  });
+
+  test("phases align with movement: phase 1 exactly on travel ticks", () => {
+    const walk = buildWanderSequence({
+      range: 4,
+      length: 120,
+      dwellMin: 2,
+      dwellMax: 4,
+      stepEvery: 1,
+      hopHeight: 0,
+      seed: 11,
+    });
+    expect(walk.phases).toHaveLength(walk.horizontal.length);
+    for (let i = 0; i < walk.horizontal.length - 1; i++) {
+      if (walk.horizontal[i + 1] !== walk.horizontal[i]) {
+        expect(walk.phases![i]).toBe(1);
+      }
+    }
+  });
+
+  test("edge dwell tags phase 2 at range, home linger tags 3 after 4 ticks", () => {
+    const walk = buildWanderSequence({
+      range: 2,
+      length: 300,
+      dwellMin: 6,
+      dwellMax: 8,
+      stepEvery: 1,
+      hopHeight: 0,
+      seed: 3,
+    });
+    const atEdge = walk.horizontal
+      .map((p, i) => [p, walk.phases![i]] as const)
+      .filter(([p]) => p === 2);
+    expect(atEdge.some(([, ph]) => ph === 2)).toBe(true);
+    expect(walk.phases!.includes(3)).toBe(true);
+  });
+
+  test("gaitWalkOpts: angry/bored/happy override, neutral falls back to mood", () => {
+    const neutral = gaitWalkOpts("neutral", "focused", 5, 42);
+    expect(neutral).toEqual(moodWalkOpts("focused", 5, 42));
+    const angry = gaitWalkOpts("angry", "focused", 5, 42);
+    expect(angry.dwellMax).toBeLessThan(neutral.dwellMax);
+    const happy = gaitWalkOpts("happy", "focused", 5, 42);
+    expect(happy.stepSize).toBe(2);
+    const bored = gaitWalkOpts("bored", "focused", 5, 42);
+    expect(bored.stepEvery).toBe(2);
+  });
+
+  test("identical output to pre-gait bake for stepSize-less opts (regression)", () => {
+    const opts = {
+      range: 4,
+      length: 60,
+      dwellMin: 3,
+      dwellMax: 6,
+      stepEvery: 1,
+      hopHeight: 2,
+      seed: 99,
+    };
+    const a = buildWanderSequence(opts);
+    const b = buildWanderSequence({ ...opts, stepSize: 1 });
+    expect(a.horizontal).toEqual(b.horizontal);
+    expect(a.vertical).toEqual(b.vertical);
   });
 });
