@@ -120,6 +120,36 @@ regardless). If measurement shows idle repaints are event-driven only, that
 finding is documented as a "how is wander even working" note — no redesign in
 this arc.
 
+### P0 findings (measured 2026-07-18)
+
+Shim-logged 2,457 real invocations across active + idle use (perl
+ms-timestamps, deltas bucketed; 8 session gaps >10s excluded):
+
+| Bucket | Share | Shape |
+| --- | --- | --- |
+| 0.9–1.1s "heartbeat" | 64.9% | mean **0.9954s ± 21ms**; longest uninterrupted run **455 ticks (~7.5 min)** — this is the idle regime |
+| <0.9s "event bursts" | 34.9% | mean 0.42s, scattered — streaming/tool activity only |
+| >1.1s stalls | 0.2% | negligible |
+
+The 1.000s idle cadence is not an accident of this machine — it is the
+**platform floor**. Per the official statusline docs: `refreshInterval`
+"re-runs your command every N **seconds** … **the minimum is 1**", and
+event-driven updates (assistant messages, mode changes) are debounced at
+300ms but go quiet at idle. So sub-second repaints exist only during
+activity, never in the idle regime where all wander/gait animation lives.
+
+**Task 10 gate: FAIL — permanently.** Sub-second indexing cannot buy idle
+animation anything; Task 10 is dropped (not deferred). The arc stays at
+1 fps by design, which every P1 sequence was already built to read well at.
+
+**Load-bearing side-finding:** `statusLine.refreshInterval: 1` is what keeps
+idle animation alive at all — without it the statusline only repaints on
+conversation events and the buddy would freeze between messages. The installer
+already sets it (`setBuddyStatusLine` in `state.ts`, `cli/install.ts`, pinned
+by `statusline.test.ts`), but this measurement upgrades its status from
+"sensible default" to **hard requirement**: removing it silently kills every
+wander/gait/scene animation at idle.
+
 ---
 
 ## P1 — Movement vocabulary
