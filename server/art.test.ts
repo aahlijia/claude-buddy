@@ -27,8 +27,10 @@ import {
   ageTell,
   activeSeasonal,
   renderSpeciesFrame,
+  gaitFrameSequence,
 } from "./art.ts";
 import { SPECIES, type BuddyBones } from "./engine.ts";
+import type { GaitPhase } from "./wander.ts";
 
 const heights = (frames: string[]): Set<number> =>
   new Set(frames.map((f) => f.split("\n").length));
@@ -766,5 +768,24 @@ describe("finalizeIdleBlock", () => {
     const r = finalizeIdleBlock(idle, undefined, emoteFor("surprised"));
     expect(heights(r.idle)).toEqual(new Set([7])); // +1 for the emote row
     for (const f of r.idle) expect(f.split("\n")[0]).toContain("?");
+  });
+});
+
+describe("gaitFrameSequence (living-world P1)", () => {
+  const idx = { bob: 1, lean: 5, peek: 6 };
+  const baseSeq = [0, 0, 1, 0, 2];
+  test("dwell ticks follow the base cycle; length matches phases", () => {
+    const seq = gaitFrameSequence([0, 0, 0, 0, 0, 0] as GaitPhase[], baseSeq, idx, false);
+    expect(seq).toEqual([0, 0, 1, 0, 2, 0]);
+  });
+  test("step ticks alternate base and bob", () => {
+    const seq = gaitFrameSequence([1, 1, 1, 1] as GaitPhase[], baseSeq, idx, false);
+    expect(seq).toEqual([0, 1, 1, 1]); // parity: base[0], bob, base[2](=1), bob
+    expect(seq.filter((f) => f === idx.bob).length).toBeGreaterThan(0);
+  });
+  test("edge dwell leans; home linger peeks only with the panel on", () => {
+    expect(gaitFrameSequence([2, 2] as GaitPhase[], baseSeq, idx, false)).toEqual([5, 5]);
+    expect(gaitFrameSequence([3, 3] as GaitPhase[], baseSeq, idx, true)).toEqual([6, 6]);
+    expect(gaitFrameSequence([3] as GaitPhase[], baseSeq, idx, false)).toEqual([0]);
   });
 });

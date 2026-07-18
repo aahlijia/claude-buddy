@@ -8,6 +8,7 @@
 
 import type { Species, Eye, Hat, Rarity, StatName, BuddyBones } from "./engine.ts";
 import { getRarityColor } from "./theme.ts";
+import type { GaitPhase } from "./wander.ts";
 
 // ─── Species art: 3 frames × 5 lines each ──────────────────────────────────
 
@@ -614,6 +615,25 @@ export function getStatusFrames(
     frameSequence: [
       ...(hasStretch ? STATUS_FRAME_SEQUENCE_STRETCH : STATUS_FRAME_SEQUENCE),
     ],
+  });
+}
+
+/** Map a walk's per-tick phases onto frame indices (living-world P1). The
+ *  result replaces `frameSequence` for the write, same length as the walk, so
+ *  body frames and offsets stay in lockstep with zero shell changes — both are
+ *  indexed by the same NOW. */
+export function gaitFrameSequence(
+  phases: GaitPhase[],
+  baseSeq: number[],
+  idx: { bob: number; lean: number; peek: number },
+  showStats: boolean,
+): number[] {
+  let stepParity = 0;
+  return phases.map((p, i) => {
+    if (p === 1) return stepParity++ % 2 === 1 ? idx.bob : baseSeq[i % baseSeq.length];
+    if (p === 2) return idx.lean;
+    if (p === 3 && showStats) return idx.peek;
+    return baseSeq[i % baseSeq.length];
   });
 }
 
