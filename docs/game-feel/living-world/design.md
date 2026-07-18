@@ -32,6 +32,7 @@ All resolved with the user during brainstorming, 2026-07-17:
 | D11 | Stinger vs flourish collision | Priority ladder picks **one** (no queueing): combat scene > stinger > flourish > idle |
 | D12 | Boss lifecycle | A boss does **not** survive `startSession` — lifecycle consistency (G5) over drama; multi-commit sessions resolve most bosses naturally |
 | D13 | Boss entry | **Deterministic by threshold**, never rolled — a boss is earned |
+| D14 | Angry gait/emote vs auto-quiet spike clamp | Exempt — the angry idle expression reads the **configured** level (sightBug precedent): an error-born expression must survive the clamp the error causes. Found by Task 9's e2e; the clamp made angry+full unsatisfiable |
 
 ---
 
@@ -50,7 +51,8 @@ All resolved with the user during brainstorming, 2026-07-17:
    event kinds (visitor, expedition, boss) are not even *resolved* at `off`,
    matching combat today. The standoff's auto-quiet exemption carries over to
    the boss standoff (it exists *because* of errors); every other new producer
-   respects the clamp.
+   respects the clamp (the angry idle expression shares the standoff's
+   exemption, D14).
 5. **Zero per-event cost.** All new rolls/accrual ride existing write moments
    (award-xp events, `session_complete`, `session_start`). Nothing touches the
    per-keystroke path.

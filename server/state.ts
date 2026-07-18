@@ -979,6 +979,11 @@ export function writeStatusState(
 
   // Emotion frames (FR-A4): derived from the active reaction's reason.
   const emotion: Emotion = resolveEmotion(activeReason, gate);
+  // Error-born expression pierces the auto-quiet spike clamp (living-world
+  // P1, D14): the angry gait/emote exist BECAUSE of errors, so the clamp the
+  // error itself causes must not silence them — the sightBug precedent
+  // (2026-07-09). Every other producer keeps the clamped gate.
+  const idleGate: GameFeel = emotion === "angry" ? cfg.gameFeel : gate;
   // Idle-RPG encounter (design-rpg Phase 4): a fresh fight biases the face angry
   // and surfaces the enemy glyph. Render is gated to `full` in the status line;
   // `off` produced no encounter.json in the first place (opt-out, session.ts).
@@ -1120,7 +1125,7 @@ export function writeStatusState(
   // Gait variants (living-world P1) are only worth baking when the wander
   // branch below will actually consume them — every other tier bakes the
   // classic byte-identical frames.
-  const wantGait = gate === "full" && cfg.wanderEnabled;
+  const wantGait = idleGate === "full" && cfg.wanderEnabled;
   const {
     frames: rawFrames,
     frameSequence: bakedSequence,
@@ -1203,7 +1208,7 @@ export function writeStatusState(
     const finalized = finalizeIdleBlock(
       rawFrames,
       flFrames,
-      gate === "full" ? emoteFor(emotion) : null,
+      idleGate === "full" ? emoteFor(emotion) : null,
     );
     frames = finalized.idle;
     flFrames = finalized.flourish;
@@ -1218,7 +1223,7 @@ export function writeStatusState(
   // the buddy stops pacing during a spike, with no extra wiring.
   let wanderSequence: number[] | undefined;
   let wanderRowSequence: number[] | undefined;
-  if (gate === "full") {
+  if (idleGate === "full") {
     try {
       if (cfg.wanderEnabled) {
         const { buildWanderSequence, gaitWalkOpts, spliceStingerArc, STINGER_DELAY_TICKS } =

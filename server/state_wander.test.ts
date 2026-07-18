@@ -37,6 +37,10 @@ interface RenderCase {
   /** Opts passed straight through to writeStatusState (living-world P1
    *  stinger tests). */
   opts?: Record<string, unknown>;
+  /** A persisted reaction (reaction.default.json) seeded before the write —
+   *  living-world P1 D14: drives the active-reason coupling between the
+   *  angry-emotion map and the auto-quiet spike clamp under test. */
+  reaction?: { reaction: string; reason: string };
 }
 
 /** Run writeStatusState in a fresh subprocess under a temp config dir and return
@@ -46,6 +50,14 @@ function render(c: RenderCase): Record<string, unknown> | null {
   const stateDir = join(cfgDir, "buddy-state");
   mkdirSync(stateDir, { recursive: true });
   writeFileSync(join(stateDir, "config.json"), JSON.stringify(c.config));
+  if (c.reaction) {
+    // sessionId() falls back to "default" whenever TMUX_PANE is unset (pinned
+    // below in the child's env), so this is the file writeStatusState reads.
+    writeFileSync(
+      join(stateDir, "reaction.default.json"),
+      JSON.stringify({ ...c.reaction, timestamp: Date.now() }),
+    );
+  }
 
   // A child-local Bun loader plugin swaps wander.ts for a throwing stub — fully
   // isolated to this process, so it can't leak into other test files.
@@ -77,7 +89,9 @@ writeStatusState(companion, ${JSON.stringify(c.opts ?? {})});
   writeFileSync(childPath, childSrc);
 
   const res = spawnSync("bun", [childPath], {
-    env: { ...process.env, CLAUDE_CONFIG_DIR: cfgDir },
+    // Pin the session id to "default" (sessionId()'s no-TMUX_PANE fallback) so
+    // a persisted reaction file always lands where writeStatusState looks.
+    env: { ...process.env, CLAUDE_CONFIG_DIR: cfgDir, TMUX_PANE: "" },
     encoding: "utf8",
   });
 
@@ -157,6 +171,35 @@ describe("writeStatusState — gait lockstep (living-world P1)", () => {
     // Classic idle cycle is 18 ticks (21 for stretch pilot species) — the
     // point is it's NOT the 180-tick walk-length remap.
     expect((state!.frameSequence as number[]).length).toBeLessThanOrEqual(21);
+  });
+});
+
+describe("writeStatusState — angry-gait auto-quiet exemption (D14)", () => {
+  // REASON_EMOTION maps "error" to angry emotion; SPIKE_REASONS ALSO contains
+  // "error" and unconditionally clamps a configured `full` down to `subtle` —
+  // so without the exemption, the one reaction that drives angry emotion is
+  // also the one reaction that always clamps gait/emote away. D14 has the
+  // angry idle expression read the *configured* level instead (the sightBug
+  // precedent, 2026-07-09): the error-born expression must survive the clamp
+  // the error itself causes.
+  test("a live error reaction at configured full still bakes the gaited walk", () => {
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true },
+      reaction: { reaction: "ugh, an error", reason: "error" },
+    });
+    const wanderSequence = state!.wanderSequence as number[] | undefined;
+    const frameSequence = state!.frameSequence as number[];
+    expect(Array.isArray(wanderSequence)).toBe(true);
+    expect(wanderSequence!.length).toBeGreaterThan(0);
+    expect(frameSequence.length).toBe(wanderSequence!.length);
+  });
+
+  test("the same reaction at configured subtle still yields no wander (exemption lifts the CLAMP, never raises the configured level)", () => {
+    const state = render({
+      config: { gameFeel: "subtle", wanderEnabled: true },
+      reaction: { reaction: "ugh, an error", reason: "error" },
+    });
+    expect(state!.wanderSequence).toBeUndefined();
   });
 });
 
