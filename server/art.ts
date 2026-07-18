@@ -630,6 +630,8 @@ export function gaitFrameSequence(
 ): number[] {
   let stepParity = 0;
   return phases.map((p, i) => {
+    // Phase 1 (step): parity counts only step ticks. Parity 0 → base cycle, parity 1 → bob.
+    // Bob lands on every second step tick regardless of intervening dwell/edge ticks.
     if (p === 1) return stepParity++ % 2 === 1 ? idx.bob : baseSeq[i % baseSeq.length];
     if (p === 2) return idx.lean;
     if (p === 3 && showStats) return idx.peek;

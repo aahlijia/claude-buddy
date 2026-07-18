@@ -781,11 +781,22 @@ describe("gaitFrameSequence (living-world P1)", () => {
   test("step ticks alternate base and bob", () => {
     const seq = gaitFrameSequence([1, 1, 1, 1] as GaitPhase[], baseSeq, idx, false);
     expect(seq).toEqual([0, 1, 1, 1]); // parity: base[0], bob, base[2](=1), bob
-    expect(seq.filter((f) => f === idx.bob).length).toBeGreaterThan(0);
   });
   test("edge dwell leans; home linger peeks only with the panel on", () => {
     expect(gaitFrameSequence([2, 2] as GaitPhase[], baseSeq, idx, false)).toEqual([5, 5]);
     expect(gaitFrameSequence([3, 3] as GaitPhase[], baseSeq, idx, true)).toEqual([6, 6]);
     expect(gaitFrameSequence([3] as GaitPhase[], baseSeq, idx, false)).toEqual([0]);
+  });
+  test("parity advances only on step ticks, spanning phase boundaries", () => {
+    // Trace: [0, 1, 2, 1, 3, 1, 1] with baseSeq [0,0,1,0,2], idx {bob:1,lean:5,peek:6}, showStats=false
+    // i0 dwell(0) → baseSeq[0]=0, parity stays 0
+    // i1 step(1) → parity0++ % 2 = 0, baseSeq[1]=0, parity→1
+    // i2 edge(2) → lean=5, parity stays 1
+    // i3 step(1) → parity1++ % 2 = 1, bob=1, parity→2
+    // i4 linger(3) noStats → baseSeq[4]=2, parity stays 2
+    // i5 step(1) → parity2++ % 2 = 0, baseSeq[0]=0, parity→3
+    // i6 step(1) → parity3++ % 2 = 1, bob=1, parity→4
+    const seq = gaitFrameSequence([0, 1, 2, 1, 3, 1, 1] as GaitPhase[], baseSeq, idx, false);
+    expect(seq).toEqual([0, 0, 5, 1, 2, 0, 1]);
   });
 });
