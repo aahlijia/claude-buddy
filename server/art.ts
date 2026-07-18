@@ -573,7 +573,9 @@ export function getStatusFrames(
     renderSpeciesFrame(bones, frameIdx, eye, seasonalHat, gear);
 
   // Append lean/peek as eye-substituted postures for the walk's edge/home beats,
-  // keeping existing indices stable.
+  // keeping existing indices stable. Lean is "~" (strained lean-out) because ">"
+  // collides with the angry emotion eye and the pose must stay visible mid-gait
+  // for every emotion.
   const withGait = (
     r: { frames: string[]; frameSequence: number[] },
   ): ReturnType<typeof getStatusFrames> => {
@@ -581,7 +583,7 @@ export function getStatusFrames(
     const lean = r.frames.length;
     return {
       ...r,
-      frames: [...r.frames, resolveFrame(0, ">"), resolveFrame(0, "<")],
+      frames: [...r.frames, resolveFrame(0, "~"), resolveFrame(0, "<")],
       gaitIdx: { bob: 1, lean, peek: lean + 1 },
     };
   };

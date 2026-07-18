@@ -270,7 +270,7 @@ describe("getStatusFrames", () => {
       expect((base as { gaitIdx?: unknown }).gaitIdx).toBeUndefined();
     });
 
-    test("appends lean (>) and peek (<) frames and reports indices", () => {
+    test("appends lean (~) and peek (<) frames and reports indices", () => {
       const base = getStatusFrames(bones());
       const g = getStatusFrames(bones(), "neutral", undefined, undefined, true);
       expect(g.frames.length).toBe(base.frames.length + 2);
@@ -279,7 +279,7 @@ describe("getStatusFrames", () => {
         lean: base.frames.length,
         peek: base.frames.length + 1,
       });
-      expect(g.frames[g.gaitIdx!.lean]).toBe(renderSpeciesFrame(bones(), 0, ">"));
+      expect(g.frames[g.gaitIdx!.lean]).toBe(renderSpeciesFrame(bones(), 0, "~"));
       expect(g.frames[g.gaitIdx!.peek]).toBe(renderSpeciesFrame(bones(), 0, "<"));
       expect(g.frames.slice(0, base.frames.length)).toEqual(base.frames);
       expect(g.frameSequence).toEqual(base.frameSequence);
@@ -288,6 +288,8 @@ describe("getStatusFrames", () => {
     test("emotion branch also carries variants when requested", () => {
       const g = getStatusFrames(bones(), "angry", undefined, undefined, true);
       expect(g.gaitIdx).toEqual({ bob: 1, lean: 2, peek: 3 });
+      // Collision guard: lean must not match the angry frame (different eye)
+      expect(g.frames[g.gaitIdx!.lean]).not.toBe(g.frames[0]);
     });
   });
 });
