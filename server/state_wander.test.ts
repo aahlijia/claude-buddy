@@ -129,6 +129,28 @@ describe("writeStatusState — wander gate", () => {
   });
 });
 
+describe("writeStatusState — gait lockstep (living-world P1)", () => {
+  test("full+wander gait: frameSequence is walk-length and carries lean frames", () => {
+    const state = render({ config: { gameFeel: "full", wanderEnabled: true } });
+    const wanderSequence = state!.wanderSequence as number[];
+    const frameSequence = state!.frameSequence as number[];
+    const frames = state!.frames as string[];
+    expect(wanderSequence.length).toBeGreaterThan(0);
+    expect(frameSequence.length).toBe(wanderSequence.length);
+    // Variants were appended: frames has at least lean+peek beyond the base 5.
+    expect(frames.length).toBeGreaterThanOrEqual(7);
+    // Every index in the gait sequence points inside frames.
+    const max = Math.max(...frameSequence);
+    expect(max).toBeLessThan(frames.length);
+  });
+
+  test("subtle keeps the classic short frameSequence (no gait remap)", () => {
+    const state = render({ config: { gameFeel: "subtle", wanderEnabled: true } });
+    expect(state!.wanderSequence).toBeUndefined();
+    expect((state!.frameSequence as number[]).length).toBeLessThanOrEqual(18);
+  });
+});
+
 describe("writeStatusState — wander backfill (NFR3)", () => {
   test("old config.json (no wander keys) ⇒ DEFAULT_CONFIG enables wander", () => {
     // Pre-wander config: only gameFeel set. loadConfig merges DEFAULT_CONFIG,

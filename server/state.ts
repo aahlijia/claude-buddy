@@ -948,7 +948,7 @@ export function writeStatusState(
   }
   const { renderFace, RARITY_STARS } =
     require("./engine.ts") as typeof import("./engine.ts");
-  const { getStatusFrames, emoteFor, finalizeIdleBlock } =
+  const { getStatusFrames, gaitFrameSequence, emoteFor, finalizeIdleBlock } =
     require("./art.ts") as typeof import("./art.ts");
 
   // One config + one reaction read for this whole write; the auto-quiet clamp,
@@ -1110,12 +1110,16 @@ export function writeStatusState(
       // Equipment is optional during first install / version skew.
     }
   }
-  const { frames: rawFrames, frameSequence } = getStatusFrames(
-    displayBones,
-    emotion,
-    seasonalHat,
-    gearArt,
-  );
+  // Gait variants (living-world P1) are only worth baking when the wander
+  // branch below will actually consume them — every other tier bakes the
+  // classic byte-identical frames.
+  const wantGait = gate === "full" && cfg.wanderEnabled;
+  const {
+    frames: rawFrames,
+    frameSequence: bakedSequence,
+    gaitIdx,
+  } = getStatusFrames(displayBones, emotion, seasonalHat, gearArt, wantGait);
+  let frameSequence = bakedSequence;
   let xpLevel = level ?? 1;
   let xpTotal = xp ?? 0;
   let xpTitle: string | null = null;
@@ -1210,13 +1214,23 @@ export function writeStatusState(
   if (gate === "full") {
     try {
       if (cfg.wanderEnabled) {
-        const { buildWanderSequence, moodWalkOpts } =
+        const { buildWanderSequence, gaitWalkOpts } =
           require("./wander.ts") as typeof import("./wander.ts");
-        const walkOpts = moodWalkOpts(moodStr, xpLevel, Date.now());
+        const walkOpts = gaitWalkOpts(emotion, moodStr, xpLevel, Date.now());
         if (!cfg.wanderHop) walkOpts.hopHeight = 0; // §7.A opt-in
         const walk = buildWanderSequence(walkOpts);
         wanderSequence = walk.horizontal;
         wanderRowSequence = walk.vertical;
+        // Gait: body frames locked to the walk (living-world P1). Falls back
+        // to the classic short cycle if the bake carried no phases/variants.
+        if (walk.phases && gaitIdx) {
+          frameSequence = gaitFrameSequence(
+            walk.phases,
+            frameSequence,
+            gaitIdx,
+            cfg.showStats === true,
+          );
+        }
       }
     } catch {
       // Best-effort delighter; a failure leaves the buddy planted.
