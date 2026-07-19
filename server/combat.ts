@@ -196,7 +196,11 @@ function gapRow(
   return ` ${swordP}${swordE} `.slice(0, width).padEnd(width);
 }
 
-interface Pose {
+/** One composed beat: both sprites' eyes plus whether the strike clash draws
+ *  in the gap. Exported (living-world P2 Task 5) so `visitor.ts` can build its
+ *  own greet beats through the same `composePose` machinery fight/standoff
+ *  scenes use, keeping every baked scene pixel-consistent. */
+export interface Pose {
   pEye: Eye;
   eEye: Eye;
   strike: boolean;
@@ -229,8 +233,9 @@ function damagePop(n: number, floating: boolean): string {
 }
 
 /** Extra per-frame scene features for the skirmish bouts. Absent ⇒ the
- *  composed frame is byte-identical to the classic pose. */
-interface PoseExtras {
+ *  composed frame is byte-identical to the classic pose. Exported alongside
+ *  `Pose`/`composePose` (living-world P2 Task 5) for `visitor.ts`. */
+export interface PoseExtras {
   /** Attacker translation into the gap, in display cells (0..SCENE_GAP). The
    *  vacated gap is space-padded on the far side, so total width is constant. */
   shift?: { side: "player" | "enemy"; cells: number };
@@ -278,8 +283,11 @@ function scenePoses(
 /** Compose one scene row-block: the player buddy, a fixed-width gap, and the
  *  mirrored enemy, bottom-aligned. The gap clashes blades only on a strike
  *  frame's eye row. Shared by the fight scene (`bakeScene`) and the pending
- *  standoff (`bakePendingScene`) so both stay pixel-identical in layout. */
-function composePose(
+ *  standoff (`bakePendingScene`) so both stay pixel-identical in layout.
+ *  Exported (living-world P2 Task 5, ≤3-export rule) so the wild-visitor
+ *  greet scene (`visitor.ts`) reuses the exact same composition instead of
+ *  forking it. */
+export function composePose(
   playerSpecies: Species,
   enemySpecies: Species,
   pose: Pose,
