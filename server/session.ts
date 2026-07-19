@@ -455,9 +455,23 @@ export function sightBug(slot?: string): void {
   const startedAt = snapshot?.startedAt ?? nowSeconds();
 
   // Only an existing standoff from THIS session escalates; a stale one (crash
-  // between session_start's clear and its snapshot save) is treated as absent.
+  // between session_start's clear and its snapshot save) is treated as
+  // absent. A BOSS is exempt from this startedAt match: `startedAt` is not a
+  // stable session identifier — awardSessionComplete rebaselines it to "now"
+  // on EVERY commit, so a mid-fight boss (which by design survives multiple
+  // commits) would otherwise look "stale" to the very next error event after
+  // any real gap and get spawned over. Bosses are dismissed only by explicit
+  // lifecycle events — `startSession`'s unconditional clear (D12, covering
+  // both a real session boundary and the crash-orphan case this guard exists
+  // for), the `off` gate, and the final-stage kill (see maybeFightBug) — so
+  // an existing boss always counts as "this session's standoff" regardless of
+  // startedAt. pendingAction's boss-immutability then yields "noop": a
+  // mid-boss error event leaves the boss untouched, its pips the only nudge.
   const existing = readPendingEncounter();
-  const sameSession = existing && existing.startedAt === startedAt ? existing : null;
+  const sameSession =
+    existing && (existing.kind === "boss" || existing.startedAt === startedAt)
+      ? existing
+      : null;
   const decision = pendingAction(tier, sameSession, count);
   if (decision === "noop") return;
 
@@ -570,18 +584,21 @@ function resolveFightBug(
  *
  * A BOSS standoff is the **G5 REVISION** (living-world P2 Task 4): it survives
  * a win, resolving exactly one stage per commit, and only clears on the final
- * stage (or the `startSession` orphan-sweep — D12, untouched here). The boss
- * branch is staleness-guarded by `startedAt`, exactly like `resolveFightBug`
- * guards an ordinary pinned standoff: a mismatch (the session/commit window
- * has rebaselined since the standoff was last touched) falls through to the
- * ordinary unconditional-clear path below, same as any other orphaned
- * pending. Note this means a boss that survives a stage win must be fought
- * again by the VERY NEXT commit to stay in sync — `awardSessionComplete`
- * rebaselines `startedAt` to "now" after every commit, and the rewritten
- * standoff intentionally keeps its ORIGINAL `startedAt` (see the stage-clear
- * branch below), so a commit further out no longer matches and the standoff
- * is treated as stale. Acceptable for this pass; flagged for a follow-up if
- * multi-commit boss fights turn out to span longer gaps in practice.
+ * stage. Unlike an ordinary standoff, a boss is deliberately NOT
+ * staleness-guarded by `startedAt` — `resolveFightBug` uses that guard for an
+ * ORDINARY, single-commit-lifetime standoff, but `startedAt` (session.ts
+ * SessionSnapshot) is not a stable session identifier: `awardSessionComplete`
+ * rebaselines it to "now" after EVERY commit. Gating boss continuity on a
+ * match would break the moment any real time passes between the stage-1 win
+ * and the next commit — defeating the entire point of a multi-stage fight,
+ * which is explicitly cross-commit persistence. Bosses are instead dismissed
+ * only by explicit lifecycle events: `startSession`'s unconditional clear
+ * (D12 — this covers both a real Claude Code session boundary AND the
+ * crash-orphan case the staleness guard originally existed for), the `off`
+ * gate below, and the final-stage kill. Segment staleness does not apply to
+ * them. (`sightBug` carries the matching exemption for the same reason — an
+ * error event between commits must not treat a mid-fight boss as stale and
+ * spawn a fresh standoff over it.)
  *
  * Returns the fight's one-line summary so the CALLER's final status write can
  * surface it as a toast (via pickCelebration). This function deliberately does
@@ -601,7 +618,10 @@ export function maybeFightBug(
   startedAt: number,
 ): { summary: string; won: boolean } | null {
   const pending = readPendingEncounter();
-  const isBoss = pending?.kind === "boss" && pending.startedAt === startedAt;
+  // No startedAt comparison here — see the docstring above: bosses are exempt
+  // from the ordinary staleness guard by design (explicit-lifecycle
+  // dismissal only).
+  const isBoss = pending?.kind === "boss";
 
   // Opt-out (design-rpg Phase 4): gameFeel=off disables the idle-RPG loop —
   // no spawns, no drops, no encounter file. A mid-boss standoff is discarded
@@ -619,6 +639,13 @@ export function maybeFightBug(
     clearPendingEncounter();
   }
 
+  // Per-stage seed derivation: `startedAt` and `errorsSeen` are both read
+  // fresh from the CURRENT commit's snapshot/delta (the caller,
+  // awardSessionComplete, recomputes both every call and rebaselines
+  // afterward), so consecutive stage fights against the SAME boss naturally
+  // draw different seeds — no per-stage counter or extra plumbing needed.
+  // Exercised by the session.test.ts boss-rebaseline suite, which finds
+  // distinct win/flee outcomes across the very same multi-stage fight.
   const seed = hashString(`${resolveUserId()}:${startedAt}:${errorsSeen}`);
   const bug = isBoss
     ? bugById(pending!.bugId)

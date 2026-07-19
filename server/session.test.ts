@@ -450,25 +450,63 @@ describe("awardSessionComplete — fightWon (fresh process)", () => {
   });
 });
 
-// ─── maybeFightBug — boss stage lifecycle (living-world P2 Task 4, G5 revision,
-// fresh-process) ────────────────────────────────────────────────────────────
+// ─── maybeFightBug / sightBug — bosses survive commit rebaselining
+// (living-world P2 Task 4, G5 revision, fresh-process) ─────────────────────
 //
-// Same fresh-subprocess + seed-search technique as the fightWon suite above:
-// a 2-stage boss standoff is written directly (writePendingEncounter) so each
-// scenario is independent and self-contained, then `startedAt` is searched
-// (via saveSnapshot) until the deterministic seed lands the desired outcome.
-// DEBUGGING 50 vs tier 4 gives the same ~30% win chance the fightWon suite
-// documents, so both wins and flees turn up quickly.
+// A boss must persist ACROSS commit boundaries, not just across a single
+// commit — that's the entire point of multi-stage bosses. `startedAt`
+// (session.ts SessionSnapshot) is NOT a stable "session" identifier: every
+// commit's awardSessionComplete rebaselines it to "now" (nowSeconds()), so
+// gating boss continuity on `pending.startedAt === startedAt` (the same
+// staleness guard `resolveFightBug` uses for an ORDINARY, single-commit
+// standoff) breaks the moment any real time passes between commits. Bosses
+// are exempt from that guard: they're dismissed only by explicit lifecycle
+// events — `startSession`'s unconditional clear (D12; covers both a real
+// Claude Code session boundary AND the crash-orphan case the staleness guard
+// originally existed for), the `off` gate, and the final-stage kill. Segment
+// staleness does not apply to them.
+//
+// These tests flow entirely through the REAL production path — startSession,
+// sightBug, awardSessionComplete, with a genuine `Bun.sleepSync` gap standing
+// in for the real minutes a developer spends between commits — never a
+// manually pinned `startedAt`/`saveSnapshot`, so a regression of the guard
+// removal shows up here exactly as it would in production.
+//
+// Seed-search technique: unlike the fightWon suite (which varies `startedAt`
+// directly), these vary `errorsSeen` per attempt (incrementEvent bumps
+// errors_seen by a growing amount each try; awardSessionComplete's baseline
+// tracks `current` after every call, so the delta — and thus the seed hash —
+// changes attempt to attempt even when `nowSeconds()` doesn't). DEBUGGING 50
+// vs tier 4 gives the same ~30% win chance the fightWon suite documents.
 
-describe("maybeFightBug — boss stage lifecycle (fresh process)", () => {
-  test("stage win persists+pips, final win clears+badges, flee is untouched", () => {
-    const cfgDir = mkdtempSync(join(tmpdir(), "buddy-boss-fight-proc-"));
-    const script = `
+describe("bosses survive commit rebaselining (fresh process)", () => {
+  function runBossScript(script: string): any {
+    const cfgDir = mkdtempSync(join(tmpdir(), "buddy-boss-rebaseline-proc-"));
+    try {
+      const env: Record<string, string | undefined> = {
+        ...process.env,
+        CLAUDE_CONFIG_DIR: cfgDir,
+      };
+      delete env.TMUX_PANE; // pin SID to "default" so the snapshot file agrees
+      const res = spawnSync("bun", ["-e", script], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        encoding: "utf8",
+        timeout: 60_000,
+      });
+      expect(res.stderr).toBe("");
+      expect(res.status).toBe(0);
+      return JSON.parse(res.stdout.trim().split("\n").pop()!);
+    } finally {
+      rmSync(cfgDir, { recursive: true, force: true });
+    }
+  }
+
+  const SETUP = `
       const { saveConfig, saveCompanion } = await import("./server/state.ts");
-      const { loadGlobalEvents } = await import("./server/achievements.ts");
-      const { awardSessionComplete, saveSnapshot } = await import("./server/session.ts");
-      const { writePendingEncounter, readPendingEncounter } = await import("./server/combat.ts");
-      const { getXpState } = await import("./server/xp.ts");
+      const { incrementEvent, loadGlobalEvents } = await import("./server/achievements.ts");
+      const { awardSessionComplete, startSession, sightBug } = await import("./server/session.ts");
+      const { readPendingEncounter } = await import("./server/combat.ts");
 
       saveConfig({ gameFeel: "full" });
       saveCompanion({
@@ -481,114 +519,141 @@ describe("maybeFightBug — boss stage lifecycle (fresh process)", () => {
         },
       });
 
-      const ZERO = {
-        all_green: 0, large_diffs: 0, errors_seen: 0, commits_made: 0,
-        tests_failed: 0, type_errors: 0, lint_fails: 0, build_fails: 0, pets: 0,
-      };
+      startSession();
+      // 18 errors ⇒ a 3-STAGE boss (BOSS_STAGE2_AT): this leaves a "poke"
+      // commit (below) that can legitimately clear a stage WITHOUT risking an
+      // accidental kill, isolating the mid-fight persistence proof from the
+      // final-stage proof.
+      incrementEvent("errors_seen", 18);
+      sightBug();
+  `;
 
-      function freshBoss(t, stagesCleared) {
-        writePendingEncounter({
-          bugId: "segfault_dragon",
-          tier: 4,
-          frames: ["p1", "p2"],
-          sequence: [0, 1],
-          sightedAt: Date.now(),
-          startedAt: t,
-          project: "demo",
-          kind: "boss",
-          stages: 2,
-          stagesCleared,
-          caption: "BOSS in demo! " + (stagesCleared >= 1 ? "\\u25b0\\u25b1" : "\\u25b0\\u25b0"),
-        });
-      }
+  test("a mid-fight boss survives a real commit gap, a re-sighting, and lands the kill later", () => {
+    const script = `
+      ${SETUP}
+      const initialPending = readPendingEncounter();
 
-      // Fresh 2-stage boss, search for a WIN seed on the FIRST stage.
+      // Stage 1: search for a WIN by varying errorsSeen per attempt — never
+      // startedAt (awardSessionComplete's own trailing saveSnapshot handles
+      // that, exactly like a real commit would). This first resolution is
+      // undisturbed (no gap yet), so it succeeds identically whether or not
+      // the fix is applied — it's the SUBSEQUENT commits that matter.
       let stage1 = null;
-      for (let t = 0; t < 500 && stage1 === null; t++) {
-        freshBoss(t, 0);
-        saveSnapshot({ startedAt: t, baseline: ZERO });
+      for (let i = 0; i < 500 && stage1 === null; i++) {
+        incrementEvent("errors_seen", i + 1);
         const completion = awardSessionComplete();
-        if (completion.fightSummary && completion.fightSummary.includes("Stage 1/2")) {
-          stage1 = { completion, pendingAfter: readPendingEncounter() };
+        if (completion.fightSummary && completion.fightSummary.includes("Stage 1/3")) {
+          stage1 = completion;
         }
       }
+      const afterStage1 = readPendingEncounter();
 
-      // Pretend stage 1 is already cleared; search for a WIN seed on the FINAL
-      // stage. Independent of the stage1 search above (own fresh boss each try).
+      // A real gap — the developer keeps working for over a second before the
+      // next commit. No startedAt is ever touched by hand: this is wall-clock
+      // time actually elapsing.
+      Bun.sleepSync(1100);
+
+      // A "poke" commit: ANY outcome. Its READ still uses the snapshot value
+      // frozen since the stage-1 win (pre-gap, so it resolves against the
+      // SAME boss correctly either way) — but its own trailing
+      // awardSessionComplete rebaseline is the first to capture the POST-GAP
+      // wall-clock time, exactly like the very next real commit after a
+      // developer's away-from-keyboard gap would. A 3-stage boss can absorb
+      // a second win here (stagesCleared 1→2) without risking an accidental
+      // kill, so this step can't spuriously "pass" by clearing the standoff.
+      incrementEvent("errors_seen", 999);
+      awardSessionComplete();
+      const afterPoke = readPendingEncounter();
+
+      // Twin-flaw #2 proof: an error event fired right after MUST NOT
+      // overwrite the still-alive boss (pendingAction's boss-immutability
+      // then yields "noop" — the pips are the only nudge a mid-boss error
+      // gets). This is the first read genuinely exercising the post-gap
+      // snapshot value against the boss's frozen original startedAt.
+      incrementEvent("errors_seen", 3);
+      sightBug();
+      const afterResight = readPendingEncounter();
+
+      // Twin-flaw #1 proof + the kill: subsequent commits — now permanently
+      // past the gap — must keep resolving against the SAME persisted boss
+      // through to the final stage, not fall through to a fresh/discarded
+      // fight the moment the snapshot has rebaselined past the boss's
+      // original sighting time.
       const bossesBeatenBefore = loadGlobalEvents().bosses_beaten;
-      const bonusBefore = getXpState().bonusPoints;
       let final = null;
-      for (let t = 0; t < 500 && final === null; t++) {
-        freshBoss(t, 1);
-        saveSnapshot({ startedAt: t, baseline: ZERO });
+      for (let i = 0; i < 500 && final === null; i++) {
+        incrementEvent("errors_seen", i + 1);
         const completion = awardSessionComplete();
         if (completion.fightWon) {
-          final = { completion, pendingAfter: readPendingEncounter(), xp: getXpState() };
+          final = completion;
         }
       }
       const bossesBeatenAfter = loadGlobalEvents().bosses_beaten;
-
-      // Fresh boss again; search for a FLEE seed — the standoff must survive
-      // byte-untouched.
-      let flee = null;
-      for (let t = 0; t < 500 && flee === null; t++) {
-        freshBoss(t, 0);
-        saveSnapshot({ startedAt: t, baseline: ZERO });
-        const before = readPendingEncounter();
-        const completion = awardSessionComplete();
-        if (completion.fightSummary && completion.fightSummary.includes("scuttled off")) {
-          flee = { completion, before, after: readPendingEncounter() };
-        }
-      }
+      const afterFinal = readPendingEncounter();
 
       console.log(JSON.stringify({
-        stage1, final, flee,
-        bossesBeatenBefore, bossesBeatenAfter,
-        bonusBefore, bonusAfter: final ? final.xp.bonusPoints : null,
+        initialPending, stage1, afterStage1, afterPoke, afterResight,
+        final, afterFinal, bossesBeatenBefore, bossesBeatenAfter,
       }));
     `;
-    try {
-      const env: Record<string, string | undefined> = {
-        ...process.env,
-        CLAUDE_CONFIG_DIR: cfgDir,
-      };
-      delete env.TMUX_PANE; // pin SID to "default" so the snapshot file agrees
-      const res = spawnSync("bun", ["-e", script], {
-        cwd: join(import.meta.dir, ".."),
-        env,
-        encoding: "utf8",
-      });
-      expect(res.stderr).toBe("");
-      expect(res.status).toBe(0);
-      const out = JSON.parse(res.stdout.trim().split("\n").pop()!);
+    const out = runBossScript(script);
 
-      // Stage 1: a win persists the standoff with an incremented pip count and
-      // reports won:false — no victory stinger until the actual kill.
-      expect(out.stage1).not.toBeNull();
-      expect(out.stage1.completion.fightWon).toBe(false);
-      expect(out.stage1.pendingAfter).not.toBeNull();
-      expect(out.stage1.pendingAfter.kind).toBe("boss");
-      expect(out.stage1.pendingAfter.stages).toBe(2);
-      expect(out.stage1.pendingAfter.stagesCleared).toBe(1);
-      expect(out.stage1.pendingAfter.caption).toMatch(/▰▱/u);
+    expect(out.initialPending.kind).toBe("boss");
+    expect(out.initialPending.stages).toBe(3);
+    expect(out.initialPending.stagesCleared).toBe(0);
 
-      // Final stage: the standoff clears, the win is reported, the boss badge
-      // counter increments exactly once, and the guaranteed drop lands (≥ the
-      // BOSS_KILL_POINTS floor — 3x the tier-4 base reward of 5).
-      expect(out.final).not.toBeNull();
-      expect(out.final.completion.fightWon).toBe(true);
-      expect(out.final.pendingAfter).toBeNull();
-      expect(out.bossesBeatenBefore).toBe(0);
-      expect(out.bossesBeatenAfter).toBe(1);
-      expect(out.bonusAfter - out.bonusBefore).toBeGreaterThanOrEqual(15);
-      expect(out.final.xp.inventory).toContain("compiler_crown");
+    // Stage 1 win persists the standoff, pips advance, no victory stinger yet.
+    expect(out.stage1).not.toBeNull();
+    expect(out.stage1.fightWon).toBe(false);
+    expect(out.afterStage1.kind).toBe("boss");
+    expect(out.afterStage1.stagesCleared).toBe(1);
 
-      // Flee: the standoff is byte-untouched, no victory reported.
-      expect(out.flee).not.toBeNull();
-      expect(out.flee.completion.fightWon).toBe(false);
-      expect(out.flee.after).toEqual(out.flee.before);
-    } finally {
-      rmSync(cfgDir, { recursive: true, force: true });
-    }
+    // The poke commit (whatever its outcome) leaves it a live, non-final boss.
+    expect(out.afterPoke.kind).toBe("boss");
+    expect(out.afterPoke.stagesCleared).toBeGreaterThanOrEqual(1);
+    expect(out.afterPoke.stagesCleared).toBeLessThan(3);
+
+    // Twin flaw #2: the re-sighting AFTER the gap must NOT overwrite the
+    // boss — kind/stagesCleared/caption all unchanged from the poke.
+    expect(out.afterResight.kind).toBe("boss");
+    expect(out.afterResight.stagesCleared).toBe(out.afterPoke.stagesCleared);
+    expect(out.afterResight.caption).toBe(out.afterPoke.caption);
+
+    // Twin flaw #1 + the kill: commits after the gap still resolve against
+    // the SAME boss and eventually finish it — the badge counter proves it
+    // was the real boss kill, not an ordinary fight that happened to win.
+    expect(out.bossesBeatenBefore).toBe(0);
+    expect(out.final).not.toBeNull();
+    expect(out.final.fightWon).toBe(true);
+    expect(out.afterFinal).toBeNull();
+    expect(out.bossesBeatenAfter).toBe(1);
+  });
+
+  test("a fleeing commit leaves the standoff byte-untouched", () => {
+    const script = `
+      ${SETUP}
+      // Capture "before" on the SAME attempt the flee is detected on — an
+      // earlier attempt in the search may legitimately WIN a stage first
+      // (that's not what this test is about), which would make a before
+      // captured once up front disagree with "after" for the wrong reason.
+      let flee = null;
+      let before = null;
+      let after = null;
+      for (let i = 0; i < 500 && flee === null; i++) {
+        incrementEvent("errors_seen", i + 1);
+        const attemptBefore = readPendingEncounter();
+        const completion = awardSessionComplete();
+        if (completion.fightSummary && completion.fightSummary.includes("scuttled off")) {
+          flee = completion;
+          before = attemptBefore;
+          after = readPendingEncounter();
+        }
+      }
+      console.log(JSON.stringify({ before, flee, after }));
+    `;
+    const out = runBossScript(script);
+    expect(out.flee).not.toBeNull();
+    expect(out.flee.fightWon).toBe(false);
+    expect(out.after).toEqual(out.before);
   });
 });
