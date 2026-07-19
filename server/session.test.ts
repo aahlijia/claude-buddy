@@ -656,4 +656,80 @@ describe("bosses survive commit rebaselining (fresh process)", () => {
     expect(out.flee.fightWon).toBe(false);
     expect(out.after).toEqual(out.before);
   });
+
+  // The state.ts persistence fix (session.ts sightBug/maybeFightBug) is not
+  // the only staleness reader: `writeStatusState`'s pending render branch
+  // (state.ts) has its OWN `snap.startedAt === pending.startedAt` guard,
+  // independent of session.ts's. A boss can survive in the persisted record
+  // (proven above) while STILL failing to render — the standoff would go
+  // dark on the status line the moment real time passes after a stage win,
+  // even though the underlying fight state is intact. This is the render
+  // path award-xp.ts actually drives after every awardSessionComplete call.
+  test("a stage win still renders (combatSticky + pips) after a real commit gap", () => {
+    const script = `
+      const { readFileSync } = await import("fs");
+      const { join } = await import("path");
+      const { saveConfig, saveCompanion, loadCompanion, writeStatusState } =
+        await import("./server/state.ts");
+      const { incrementEvent } = await import("./server/achievements.ts");
+      const { awardSessionComplete, startSession, sightBug } = await import("./server/session.ts");
+
+      saveConfig({ gameFeel: "full" });
+      saveCompanion({
+        name: "bosstest",
+        personality: "",
+        bones: {
+          species: "cactus", rarity: "common", eye: "\\u00b7", hat: "none",
+          shiny: false, peak: "SNARK", dump: "WISDOM",
+          stats: { DEBUGGING: 50, PATIENCE: 10, CHAOS: 10, WISDOM: 10, SNARK: 10 },
+        },
+      });
+
+      startSession();
+      incrementEvent("errors_seen", 18); // 3-stage boss
+      sightBug();
+
+      let stage1 = null;
+      for (let i = 0; i < 500 && stage1 === null; i++) {
+        incrementEvent("errors_seen", i + 1);
+        const completion = awardSessionComplete();
+        if (completion.fightSummary && completion.fightSummary.includes("Stage 1/3")) {
+          stage1 = completion;
+        }
+      }
+
+      // A real gap before the NEXT commit — the exact scenario the review
+      // proved broken. Sleeping alone doesn't move session.json's on-disk
+      // startedAt (nothing writes it while idle); a commit must happen AFTER
+      // the gap so ITS OWN trailing rebaseline captures the post-gap
+      // wall-clock time, exactly as the very next real commit would.
+      Bun.sleepSync(1100);
+      incrementEvent("errors_seen", 999);
+      awardSessionComplete(); // "poke" commit — any outcome; a 3-stage boss
+                               // can absorb a second win here without risking
+                               // an accidental kill (see the sibling test).
+
+      // award-xp.ts's session_complete handler calls writeStatusState with
+      // the fresh companion immediately after awardSessionComplete returns —
+      // reproduce that exact call here, now against the post-gap snapshot.
+      const companion = loadCompanion();
+      writeStatusState(companion, {});
+
+      const status = JSON.parse(readFileSync(
+        join(process.env.CLAUDE_CONFIG_DIR, "buddy-state", "status.json"),
+        "utf8",
+      ));
+      console.log(JSON.stringify({
+        stage1,
+        hasCombatFrames: Array.isArray(status.combatFrames) && status.combatFrames.length > 0,
+        combatSticky: status.combatSticky ?? null,
+        captionLine: status.combatFrames?.[0]?.split("\\n")[0]?.trim() ?? null,
+      }));
+    `;
+    const out = runBossScript(script);
+    expect(out.stage1).not.toBeNull();
+    expect(out.hasCombatFrames).toBe(true);
+    expect(out.combatSticky).toBe(1);
+    expect(out.captionLine).toMatch(/▰▱/u);
+  });
 });

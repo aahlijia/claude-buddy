@@ -1071,7 +1071,19 @@ export function writeStatusState(
           const { loadSnapshot } =
             require("./session.ts") as typeof import("./session.ts");
           const snap = loadSnapshot();
-          if (snap && snap.startedAt === pending.startedAt) {
+          // Boss exemption (living-world P2 Task 4 fix): `snap.startedAt` is
+          // NOT a stable session identifier — awardSessionComplete rebaselines
+          // it to "now" on every commit — so gating render on a match would
+          // make a mid-fight boss stop rendering (though it still resolves
+          // correctly in session.ts) the moment any real time passes after a
+          // stage win. THREE readers share this exact staleness guard and
+          // must all carry the same boss exemption, or the next one silently
+          // reintroduces this bug: session.ts sightBug's `sameSession` check,
+          // session.ts maybeFightBug's `isBoss` check, and this render branch.
+          // A boss is dismissed only by explicit lifecycle events —
+          // startSession's unconditional clear (D12), the `off` gate, and the
+          // final-stage kill — never by segment staleness.
+          if (snap && (pending.kind === "boss" || snap.startedAt === pending.startedAt)) {
             const scene = captionFrames(
               pending.frames,
               pending.project,
