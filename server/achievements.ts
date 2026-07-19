@@ -75,6 +75,8 @@ export interface GlobalCounters {
   spooky_sessions: number;
   april_fools_errors: number;
   bugs_resolved: number;
+  /** Boss kills across all sessions (living-world P2 Task 4). */
+  bosses_beaten: number;
 }
 
 export interface SlotCounters {
@@ -103,7 +105,7 @@ export const GLOBAL_KEYS: (keyof GlobalCounters)[] = [
   "late_night_commits", "friday_pushes", "marathon_errors", "weekend_conflicts",
   "recoveries", "marathon_recoveries", "max_error_streak",
   "holiday_sessions", "spooky_sessions", "april_fools_errors",
-  "bugs_resolved",
+  "bugs_resolved", "bosses_beaten",
 ];
 
 export const SLOT_KEYS: (keyof SlotCounters)[] = [
@@ -133,6 +135,7 @@ const EMPTY_GLOBAL: GlobalCounters = {
   recoveries: 0, marathon_recoveries: 0, max_error_streak: 0,
   holiday_sessions: 0, spooky_sessions: 0, april_fools_errors: 0,
   bugs_resolved: 0,
+  bosses_beaten: 0,
 };
 
 const EMPTY_SLOT: SlotCounters = {
@@ -1296,6 +1299,16 @@ export const ACHIEVEMENTS: Achievement[] = [
     icon: "\ud83d\udc1f",
     check: (e) => e.bugs_resolved >= 1,
     secret: false,
+  },
+  {
+    id: "boss_slayer",
+    name: "Boss Slayer",
+    description: "Defeat a boss bug",
+    icon: "👑",
+    check: (e) => (e.bosses_beaten ?? 0) >= 1,
+    secret: false,
+    metric: "bosses_beaten",
+    target: 1,
   },
   {
     id: "completionist",

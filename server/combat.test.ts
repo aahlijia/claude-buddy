@@ -6,7 +6,7 @@ import { basename, join } from "path";
 
 import { mulberry32, type BuddyBones, type Species } from "./engine";
 import { displayWidth, eyeRowIndex, getArtFrame, mirrorFrame } from "./art";
-import type { Equipment } from "./items";
+import { ITEMS, type Equipment } from "./items";
 import type { Bug } from "./bugs";
 import { buddyStateDir } from "./path";
 import {
@@ -18,6 +18,8 @@ import {
   resolveCombat,
   winChance,
   writePendingEncounter,
+  bossDrop,
+  BOSS_KILL_POINTS,
   type PendingEncounter,
 } from "./combat";
 
@@ -972,6 +974,33 @@ describe("gear in combat scenes (PlayerLook)", () => {
       expect(frame).not.toContain("†");
       expect(frame).not.toContain(",>");
     }
+  });
+});
+
+// ─── Boss kill drop — guaranteed rare+ item + bonus points (P2 Task 4) ───────
+
+describe("bossDrop (living-world P2 Task 4)", () => {
+  test("always grants at least BOSS_KILL_POINTS", () => {
+    for (let seed = 0; seed < 50; seed++) {
+      expect(bossDrop(seed).points).toBe(BOSS_KILL_POINTS);
+    }
+  });
+
+  test("the granted item (if any) is rarity >= rare", () => {
+    const rank: Record<string, number> = {
+      common: 0, uncommon: 1, rare: 2, epic: 3, legendary: 4,
+    };
+    for (let seed = 0; seed < 50; seed++) {
+      const { itemId } = bossDrop(seed);
+      expect(itemId).toBeDefined();
+      const item = ITEMS.find((i) => i.id === itemId);
+      expect(item).toBeDefined();
+      expect(rank[item!.rarity]).toBeGreaterThanOrEqual(rank.rare);
+    }
+  });
+
+  test("deterministic: same seed always drops the same item", () => {
+    expect(bossDrop(7)).toEqual(bossDrop(7));
   });
 });
 

@@ -21,6 +21,7 @@ import {
   type Species,
   type Eye,
   type Hat,
+  type Rarity,
 } from "./engine";
 import {
   getArtFrame,
@@ -38,7 +39,7 @@ import { buddyStateDir } from "./path";
 import { gearArtOf, resolveAppearance } from "./equipment";
 import { ITEMS, findItem, type Equipment, type ItemId } from "./items";
 import { grantBonusPoints, grantItem, type UpgradeEffect } from "./xp";
-import type { Bug, BugId, BugTier } from "./bugs";
+import { BUGS, type Bug, type BugId, type BugTier } from "./bugs";
 
 // ─── Tunable win curve (design-rpg-phase3 OQ-P3.4) ────────────────────────────
 
@@ -796,6 +797,47 @@ export function readEncounter(
 /** Stage pips for the boss caption: cleared ▰, remaining ▱ (living-world P2). */
 export function bossPips(stages: number, cleared: number): string {
   return "▰".repeat(Math.max(0, cleared)) + "▱".repeat(Math.max(0, stages - cleared));
+}
+
+// ─── Boss rewards (living-world P2 Task 4) ─────────────────────────────────
+
+/** Base skill-point reward for a tier-4 bug (BUGS' sole tier-4 entry today) —
+ *  the anchor both boss reward constants below scale from. */
+const TIER4_BASE_REWARD = BUGS.find((b) => b.tier === 4)?.reward ?? 5;
+
+/** Points for clearing a non-final boss stage — a modest bonus, not the full
+ *  kill reward (maybeFightBug in session.ts). */
+export const BOSS_STAGE_BONUS = TIER4_BASE_REWARD;
+
+/** Guaranteed points on a boss kill: ≥ 3x the tier-4 base reward. */
+export const BOSS_KILL_POINTS = TIER4_BASE_REWARD * 3;
+
+/** Rarity rank for a ">= rare" filter — items.ts only exposes the rarity
+ *  string, not an ordinal, so this mirrors its RARITIES order locally. */
+const RARITY_RANK: Record<Rarity, number> = {
+  common: 0,
+  uncommon: 1,
+  rare: 2,
+  epic: 3,
+  legendary: 4,
+};
+
+/**
+ * Guaranteed boss-kill drop (living-world P2 Task 4): a seeded pick among the
+ * catalog's rarity >= rare items, falling back to the single highest rarity
+ * tier available if the catalog ever drops below "rare" entirely (today it
+ * never does — items DO carry a `rarity` field, so the points-only x4
+ * fallback the design doc anticipated is not needed). Ownership is
+ * deliberately NOT excluded: `grantItem` already no-ops on a duplicate, and
+ * the guaranteed reward is really the points — the item is a bonus.
+ */
+export function bossDrop(seed: number): DropSpec {
+  const rng = mulberry32(seed);
+  const rarePlus = ITEMS.filter((i) => RARITY_RANK[i.rarity] >= RARITY_RANK.rare);
+  const bestRank = Math.max(...ITEMS.map((i) => RARITY_RANK[i.rarity]));
+  const pool = rarePlus.length > 0 ? rarePlus : ITEMS.filter((i) => RARITY_RANK[i.rarity] === bestRank);
+  const itemId = pool[Math.floor(rng() * pool.length)]?.id;
+  return { points: BOSS_KILL_POINTS, itemId };
 }
 
 // ─── Pending-encounter side-channel (design-pending-encounter §3.1) ───────────

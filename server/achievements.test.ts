@@ -27,6 +27,7 @@ const EMPTY_EVENTS: EventCounters = {
   recoveries: 0, marathon_recoveries: 0, max_error_streak: 0,
   holiday_sessions: 0, spooky_sessions: 0, april_fools_errors: 0,
   bugs_resolved: 0,
+  bosses_beaten: 0,
 };
 
 function makeEvents(overrides: Partial<EventCounters> = {}): EventCounters {
@@ -809,6 +810,12 @@ describe("achievement thresholds", () => {
     expect(ach.check(makeEvents({ buddies_collected: 5, dismissals: 1 }))).toBe(true);
   });
 
+  test("boss_slayer requires 1 boss beaten (living-world P2)", () => {
+    const ach = ACHIEVEMENTS.find((a) => a.id === "boss_slayer")!;
+    expect(ach.check(makeEvents({ bosses_beaten: 0 }))).toBe(false);
+    expect(ach.check(makeEvents({ bosses_beaten: 1 }))).toBe(true);
+  });
+
   test("completionist requires all other achievements unlocked and is secret", () => {
     const ach = ACHIEVEMENTS.find((a) => a.id === "completionist")!;
     expect(ach.secret).toBe(true);
@@ -848,6 +855,7 @@ describe("unlock simulation via check functions", () => {
       recoveries: 99999, marathon_recoveries: 99999, max_error_streak: 99999,
       holiday_sessions: 99999, spooky_sessions: 99999, april_fools_errors: 99999,
       bugs_resolved: 99999,
+      bosses_beaten: 99999,
     });
     const wouldUnlock = ACHIEVEMENTS.filter((a) => a.check(maxed));
     expect(wouldUnlock.length).toBe(ACHIEVEMENTS.length);

@@ -32,7 +32,12 @@ import {
   type CelebrationKind,
 } from "./state.ts";
 import type { StingerKind } from "./wander.ts";
-import { loadEvents, type EventCounters } from "./achievements.ts";
+import {
+  loadEvents,
+  incrementEvent,
+  checkAndAward,
+  type EventCounters,
+} from "./achievements.ts";
 import {
   awardXpAmount,
   rarityMultiplier,
@@ -55,7 +60,10 @@ import {
   clearPendingEncounter,
   currentProject,
   bossPips,
+  bossDrop,
+  BOSS_STAGE_BONUS,
   type PlayerLook,
+  type PendingEncounter,
 } from "./combat.ts";
 import { gearArtOf, resolveAppearance } from "./equipment.ts";
 import { ITEMS } from "./items.ts";
@@ -397,6 +405,21 @@ export function pendingAction(
 }
 
 /**
+ * Boss standoff caption text (living-world P2): pips + project name, with the
+ * project-less fallback so a caption never renders an empty "in !". Shared by
+ * `sightBug` (first upgrade) and `maybeFightBug` (stage-clear rewrite) so both
+ * stay byte-identical in format.
+ */
+function bossCaption(
+  project: string | undefined,
+  stages: number,
+  cleared: number,
+): string {
+  const pips = bossPips(stages, cleared);
+  return project ? `BOSS in ${project}! ${pips}` : `BOSS FIGHT! ${pips}`;
+}
+
+/**
  * Bug-selection seed for a sighting/escalation, keyed per (session, tier). A
  * re-sighting at the same tier re-derives the same bug (idempotent), while an
  * escalation to a new tier rolls a fresh same-tier pick — matching the roll the
@@ -490,9 +513,7 @@ export function sightBug(slot?: string): void {
   // future pips/text change can't silently widen it unnoticed.
   const caption =
     isBoss && stages !== undefined && stagesCleared !== undefined
-      ? project
-        ? `BOSS in ${project}! ${bossPips(stages, stagesCleared)}`
-        : `BOSS FIGHT! ${bossPips(stages, stagesCleared)}`
+      ? bossCaption(project, stages, stagesCleared)
       : undefined;
 
   writePendingEncounter({
@@ -542,9 +563,25 @@ function resolveFightBug(
  * baked fight lands in the transient encounter side-channel (rendered by
  * Phase 4). Seeded deterministically for reproducibility.
  *
- * The enemy fought is the one the standoff pinned (G4); a commit ALSO clears the
- * pending standoff unconditionally (G5) — even at `off` or a zero-delta commit —
- * so "commit dismisses the nudge" is a hard invariant, not a happy-path effect.
+ * The enemy fought is the one the standoff pinned (G4). An ORDINARY standoff
+ * is ALSO dismissed unconditionally on a commit (G5) — even at `off` or a
+ * zero-delta commit — so "commit dismisses the nudge" is a hard invariant for
+ * it, not a happy-path effect.
+ *
+ * A BOSS standoff is the **G5 REVISION** (living-world P2 Task 4): it survives
+ * a win, resolving exactly one stage per commit, and only clears on the final
+ * stage (or the `startSession` orphan-sweep — D12, untouched here). The boss
+ * branch is staleness-guarded by `startedAt`, exactly like `resolveFightBug`
+ * guards an ordinary pinned standoff: a mismatch (the session/commit window
+ * has rebaselined since the standoff was last touched) falls through to the
+ * ordinary unconditional-clear path below, same as any other orphaned
+ * pending. Note this means a boss that survives a stage win must be fought
+ * again by the VERY NEXT commit to stay in sync — `awardSessionComplete`
+ * rebaselines `startedAt` to "now" after every commit, and the rewritten
+ * standoff intentionally keeps its ORIGINAL `startedAt` (see the stage-clear
+ * branch below), so a commit further out no longer matches and the standoff
+ * is treated as stale. Acceptable for this pass; flagged for a follow-up if
+ * multi-commit boss fights turn out to span longer gaps in practice.
  *
  * Returns the fight's one-line summary so the CALLER's final status write can
  * surface it as a toast (via pickCelebration). This function deliberately does
@@ -555,24 +592,43 @@ function resolveFightBug(
  *
  * Returns both the summary and whether the fight resolved as a win — the
  * latter lets the caller anchor a victory-lap wander stinger (living-world
- * P1) without re-deriving it from the summary text.
+ * P1) without re-deriving it from the summary text. A non-final boss stage
+ * win reports `won: false` — no victory stinger fires until the kill.
  */
 export function maybeFightBug(
   slot: string | undefined,
   errorsSeen: number,
   startedAt: number,
 ): { summary: string; won: boolean } | null {
-  // Read the pinned standoff, then dismiss it unconditionally (§4.3, G5): the
-  // commit resolves the nudge regardless of gate or delta.
   const pending = readPendingEncounter();
-  clearPendingEncounter();
+  const isBoss = pending?.kind === "boss" && pending.startedAt === startedAt;
 
   // Opt-out (design-rpg Phase 4): gameFeel=off disables the idle-RPG loop —
-  // no spawns, no drops, no encounter file (the clear above still ran).
-  if (effectiveGameFeel() === "off") return null;
+  // no spawns, no drops, no encounter file. A mid-boss standoff is discarded
+  // too: opt-out means opt-out — there is no stage-fight surface at `off` for
+  // it to persist toward, and leaving it behind would resolve it against
+  // whatever combat state exists if the gate is re-enabled later.
+  if (effectiveGameFeel() === "off") {
+    clearPendingEncounter();
+    return null;
+  }
+
+  if (!isBoss) {
+    // Today's exact G5 path: an ordinary (or stale/orphaned) standoff is
+    // dismissed unconditionally, regardless of gate or delta.
+    clearPendingEncounter();
+  }
+
   const seed = hashString(`${resolveUserId()}:${startedAt}:${errorsSeen}`);
-  const bug = resolveFightBug(pending, errorsSeen, startedAt, seed);
-  if (!bug) return null;
+  const bug = isBoss
+    ? bugById(pending!.bugId)
+    : resolveFightBug(pending, errorsSeen, startedAt, seed);
+  if (!bug) {
+    // The pinned boss bug vanished from the catalog (renamed/removed) — drop
+    // the now-unresolvable standoff rather than leave it stuck forever.
+    if (isBoss) clearPendingEncounter();
+    return null;
+  }
   const companion = slot ? loadCompanionSlot(slot) : loadCompanion();
   if (!companion) return null;
 
@@ -587,9 +643,51 @@ export function maybeFightBug(
     owned,
     ownedUpgradeEffects(xpState),
   );
-  applyCombatDrops(result.drop);
+
+  if (!isBoss) {
+    applyCombatDrops(result.drop);
+    writeEncounter(result, currentProject());
+    return { summary: result.summary, won: result.outcome === "win" };
+  }
+
+  // ── Boss stage fight (G5 revision, living-world P2 Task 4) ──────────────
+  const boss = pending as PendingEncounter;
+  if (result.outcome !== "win") {
+    // Flee: nothing was cleared above, so the standoff persists byte-untouched.
+    return { summary: result.summary, won: false };
+  }
+
+  const stages = boss.stages ?? bossStages(errorsSeen);
+  const stagesCleared = (boss.stagesCleared ?? 0) + 1;
+  if (stagesCleared < stages) {
+    // Stage cleared, boss still standing: rewrite the standoff with the
+    // updated pip count (same frames/sequence/bugId/tier/startedAt/project —
+    // only stagesCleared + caption move). No writeEncounter — the standoff
+    // stays on the line; this isn't a resolved kill scene.
+    writePendingEncounter({
+      ...boss,
+      stagesCleared,
+      caption: bossCaption(boss.project, stages, stagesCleared),
+    });
+    applyCombatDrops({ points: BOSS_STAGE_BONUS });
+    return {
+      summary: `⚔️ Stage ${stagesCleared}/${stages} down — the boss staggers!`,
+      won: false,
+    };
+  }
+
+  // Final stage: the boss falls. Guaranteed drop replaces the roll a plain
+  // fight would have gotten (bossDrop, combat.ts) — a rare+ item plus points
+  // well above a normal win.
+  clearPendingEncounter();
+  applyCombatDrops(bossDrop(seed));
+  incrementEvent("bosses_beaten", 1, slot);
+  checkAndAward(slot);
   writeEncounter(result, currentProject());
-  return { summary: result.summary, won: result.outcome === "win" };
+  return {
+    summary: `\u{1F451} BOSS DOWN — ${bug.name} defeated!`,
+    won: true,
+  };
 }
 
 // ─── Lifecycle entry points (called from award-xp.ts) ────────────────────────

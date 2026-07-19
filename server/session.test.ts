@@ -449,3 +449,146 @@ describe("awardSessionComplete — fightWon (fresh process)", () => {
     }
   });
 });
+
+// ─── maybeFightBug — boss stage lifecycle (living-world P2 Task 4, G5 revision,
+// fresh-process) ────────────────────────────────────────────────────────────
+//
+// Same fresh-subprocess + seed-search technique as the fightWon suite above:
+// a 2-stage boss standoff is written directly (writePendingEncounter) so each
+// scenario is independent and self-contained, then `startedAt` is searched
+// (via saveSnapshot) until the deterministic seed lands the desired outcome.
+// DEBUGGING 50 vs tier 4 gives the same ~30% win chance the fightWon suite
+// documents, so both wins and flees turn up quickly.
+
+describe("maybeFightBug — boss stage lifecycle (fresh process)", () => {
+  test("stage win persists+pips, final win clears+badges, flee is untouched", () => {
+    const cfgDir = mkdtempSync(join(tmpdir(), "buddy-boss-fight-proc-"));
+    const script = `
+      const { saveConfig, saveCompanion } = await import("./server/state.ts");
+      const { loadGlobalEvents } = await import("./server/achievements.ts");
+      const { awardSessionComplete, saveSnapshot } = await import("./server/session.ts");
+      const { writePendingEncounter, readPendingEncounter } = await import("./server/combat.ts");
+      const { getXpState } = await import("./server/xp.ts");
+
+      saveConfig({ gameFeel: "full" });
+      saveCompanion({
+        name: "bosstest",
+        personality: "",
+        bones: {
+          species: "cactus", rarity: "common", eye: "\\u00b7", hat: "none",
+          shiny: false, peak: "SNARK", dump: "WISDOM",
+          stats: { DEBUGGING: 50, PATIENCE: 10, CHAOS: 10, WISDOM: 10, SNARK: 10 },
+        },
+      });
+
+      const ZERO = {
+        all_green: 0, large_diffs: 0, errors_seen: 0, commits_made: 0,
+        tests_failed: 0, type_errors: 0, lint_fails: 0, build_fails: 0, pets: 0,
+      };
+
+      function freshBoss(t, stagesCleared) {
+        writePendingEncounter({
+          bugId: "segfault_dragon",
+          tier: 4,
+          frames: ["p1", "p2"],
+          sequence: [0, 1],
+          sightedAt: Date.now(),
+          startedAt: t,
+          project: "demo",
+          kind: "boss",
+          stages: 2,
+          stagesCleared,
+          caption: "BOSS in demo! " + (stagesCleared >= 1 ? "\\u25b0\\u25b1" : "\\u25b0\\u25b0"),
+        });
+      }
+
+      // Fresh 2-stage boss, search for a WIN seed on the FIRST stage.
+      let stage1 = null;
+      for (let t = 0; t < 500 && stage1 === null; t++) {
+        freshBoss(t, 0);
+        saveSnapshot({ startedAt: t, baseline: ZERO });
+        const completion = awardSessionComplete();
+        if (completion.fightSummary && completion.fightSummary.includes("Stage 1/2")) {
+          stage1 = { completion, pendingAfter: readPendingEncounter() };
+        }
+      }
+
+      // Pretend stage 1 is already cleared; search for a WIN seed on the FINAL
+      // stage. Independent of the stage1 search above (own fresh boss each try).
+      const bossesBeatenBefore = loadGlobalEvents().bosses_beaten;
+      const bonusBefore = getXpState().bonusPoints;
+      let final = null;
+      for (let t = 0; t < 500 && final === null; t++) {
+        freshBoss(t, 1);
+        saveSnapshot({ startedAt: t, baseline: ZERO });
+        const completion = awardSessionComplete();
+        if (completion.fightWon) {
+          final = { completion, pendingAfter: readPendingEncounter(), xp: getXpState() };
+        }
+      }
+      const bossesBeatenAfter = loadGlobalEvents().bosses_beaten;
+
+      // Fresh boss again; search for a FLEE seed — the standoff must survive
+      // byte-untouched.
+      let flee = null;
+      for (let t = 0; t < 500 && flee === null; t++) {
+        freshBoss(t, 0);
+        saveSnapshot({ startedAt: t, baseline: ZERO });
+        const before = readPendingEncounter();
+        const completion = awardSessionComplete();
+        if (completion.fightSummary && completion.fightSummary.includes("scuttled off")) {
+          flee = { completion, before, after: readPendingEncounter() };
+        }
+      }
+
+      console.log(JSON.stringify({
+        stage1, final, flee,
+        bossesBeatenBefore, bossesBeatenAfter,
+        bonusBefore, bonusAfter: final ? final.xp.bonusPoints : null,
+      }));
+    `;
+    try {
+      const env: Record<string, string | undefined> = {
+        ...process.env,
+        CLAUDE_CONFIG_DIR: cfgDir,
+      };
+      delete env.TMUX_PANE; // pin SID to "default" so the snapshot file agrees
+      const res = spawnSync("bun", ["-e", script], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        encoding: "utf8",
+      });
+      expect(res.stderr).toBe("");
+      expect(res.status).toBe(0);
+      const out = JSON.parse(res.stdout.trim().split("\n").pop()!);
+
+      // Stage 1: a win persists the standoff with an incremented pip count and
+      // reports won:false — no victory stinger until the actual kill.
+      expect(out.stage1).not.toBeNull();
+      expect(out.stage1.completion.fightWon).toBe(false);
+      expect(out.stage1.pendingAfter).not.toBeNull();
+      expect(out.stage1.pendingAfter.kind).toBe("boss");
+      expect(out.stage1.pendingAfter.stages).toBe(2);
+      expect(out.stage1.pendingAfter.stagesCleared).toBe(1);
+      expect(out.stage1.pendingAfter.caption).toMatch(/▰▱/u);
+
+      // Final stage: the standoff clears, the win is reported, the boss badge
+      // counter increments exactly once, and the guaranteed drop lands (≥ the
+      // BOSS_KILL_POINTS floor — 3x the tier-4 base reward of 5).
+      expect(out.final).not.toBeNull();
+      expect(out.final.completion.fightWon).toBe(true);
+      expect(out.final.pendingAfter).toBeNull();
+      expect(out.bossesBeatenBefore).toBe(0);
+      expect(out.bossesBeatenAfter).toBe(1);
+      expect(out.bonusAfter - out.bonusBefore).toBeGreaterThanOrEqual(15);
+      expect(out.final.xp.inventory).toContain("compiler_crown");
+
+      // Flee: the standoff is byte-untouched, no victory reported.
+      expect(out.flee).not.toBeNull();
+      expect(out.flee.completion.fightWon).toBe(false);
+      expect(out.flee.after).toEqual(out.flee.before);
+    } finally {
+      rmSync(cfgDir, { recursive: true, force: true });
+    }
+  });
+});
