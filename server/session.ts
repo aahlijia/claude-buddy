@@ -54,6 +54,7 @@ import {
   readPendingEncounter,
   clearPendingEncounter,
   currentProject,
+  bossPips,
   type PlayerLook,
 } from "./combat.ts";
 import { gearArtOf, resolveAppearance } from "./equipment.ts";
@@ -434,7 +435,7 @@ export function sightBug(slot?: string): void {
   // between session_start's clear and its snapshot save) is treated as absent.
   const existing = readPendingEncounter();
   const sameSession = existing && existing.startedAt === startedAt ? existing : null;
-  const decision = pendingAction(tier, sameSession);
+  const decision = pendingAction(tier, sameSession, count);
   if (decision === "noop") return;
 
   const bug = spawnBug(count, pendingSeed(startedAt, tier));
@@ -470,6 +471,30 @@ export function sightBug(slot?: string): void {
     tier,
     look,
   );
+  // Boss upgrade (living-world P2, D13): pendingAction() only ever returns
+  // "boss" on the first upgrade (an existing boss standoff is immutable —
+  // it returns "noop" and we bail above), so `stagesCleared` preservation
+  // below is defensive, not load-bearing today. Scene bake is unchanged; the
+  // boss LOOK upgrade is a later task.
+  const project = currentProject();
+  const isBoss = decision === "boss";
+  const stages = isBoss ? bossStages(count) : undefined;
+  const stagesCleared = isBoss
+    ? sameSession?.kind === "boss"
+      ? sameSession.stagesCleared ?? 0
+      : 0
+    : undefined;
+  // Producer clamp contract (Task 1 review): captionFrames does NOT
+  // length-clamp — currentProject() already caps at 24 chars, keeping this
+  // caption well under artWidth, but the length is pinned by a test so a
+  // future pips/text change can't silently widen it unnoticed.
+  const caption =
+    isBoss && stages !== undefined && stagesCleared !== undefined
+      ? project
+        ? `BOSS in ${project}! ${bossPips(stages, stagesCleared)}`
+        : `BOSS FIGHT! ${bossPips(stages, stagesCleared)}`
+      : undefined;
+
   writePendingEncounter({
     bugId: bug.id,
     tier: tier as BugTier, // decision !== "noop" ⇒ tier >= 1
@@ -477,7 +502,9 @@ export function sightBug(slot?: string): void {
     sequence: scene.sequence,
     sightedAt: Date.now(),
     startedAt,
-    project: currentProject(),
+    project,
+    ...(caption !== undefined ? { caption } : {}),
+    ...(isBoss ? { kind: "boss" as const, stages, stagesCleared } : {}),
   });
   // Land the standoff on the line immediately (§4.1.6); writeStatusState reads
   // the pending file we just wrote (P3 render branch).

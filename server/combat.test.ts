@@ -974,3 +974,128 @@ describe("gear in combat scenes (PlayerLook)", () => {
     }
   });
 });
+
+// ─── Boss sighting — standoffs escalate into multi-stage bosses (P2 Task 3) ──
+//
+// pendingAction()/bossStages()/BOSS_THRESHOLD already land in session.ts
+// (P2 Task 2). This exercises the real sightBug() seam: ≥12 error-ish events
+// in a session upgrade the standoff to a boss with a pipped caption, and an
+// existing boss is immutable to further sightings (no downgrade/reset).
+
+describe("boss sighting escalation (living-world P2, fresh process)", () => {
+  function runBossScript(script: string): {
+    kind: string | null;
+    stages: number | null;
+    stagesCleared: number | null;
+    caption: string | null;
+  } {
+    const cfgDir = mkdtempSync(join(tmpdir(), "buddy-boss-sight-proc-"));
+    try {
+      const env: Record<string, string | undefined> = {
+        ...process.env,
+        CLAUDE_CONFIG_DIR: cfgDir,
+      };
+      delete env.TMUX_PANE; // pin SID to "default" so session files agree
+      const res = spawnSync("bun", ["-e", script], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        encoding: "utf8",
+      });
+      expect(res.stderr).toBe("");
+      expect(res.status).toBe(0);
+      return JSON.parse(res.stdout.trim());
+    } finally {
+      rmSync(cfgDir, { recursive: true, force: true });
+    }
+  }
+
+  const BOSS_SETUP = `
+      const { saveConfig, saveCompanion } = await import("./server/state.ts");
+      const { incrementEvent } = await import("./server/achievements.ts");
+      const { startSession, sightBug } = await import("./server/session.ts");
+      const { readPendingEncounter } = await import("./server/combat.ts");
+      saveConfig({ gameFeel: "full" });
+      saveCompanion({
+        name: "bosstest",
+        personality: "",
+        bones: {
+          species: "cactus", rarity: "common", eye: "\\u00b7", hat: "none",
+          shiny: false, peak: "SNARK", dump: "WISDOM",
+          stats: { DEBUGGING: 10, PATIENCE: 10, CHAOS: 10, WISDOM: 10, SNARK: 10 },
+        },
+      });
+      startSession();
+  `;
+
+  test("12 error events upgrade the standoff to a pipped boss", () => {
+    const script = `
+      ${BOSS_SETUP}
+      incrementEvent("errors_seen", 12);
+      sightBug();
+      const pending = readPendingEncounter();
+      console.log(JSON.stringify({
+        kind: pending?.kind ?? null,
+        stages: pending?.stages ?? null,
+        stagesCleared: pending?.stagesCleared ?? null,
+        caption: pending?.caption ?? null,
+      }));
+    `;
+    const out = runBossScript(script);
+    expect(out.kind).toBe("boss");
+    expect(out.stages).toBe(2);
+    expect(out.stagesCleared).toBe(0);
+    expect(out.caption).toMatch(/^BOSS in .+! ▰*▱+$/u);
+    // Producer clamp contract (Task 1 review): the caption isn't length-
+    // clamped by captionFrames — pin the assembled length here so a future
+    // pips/text change can't silently over-widen artWidth (currentProject()
+    // caps at 24 chars, so this stays well under the shell's rendered width).
+    expect(out.caption!.length).toBeLessThanOrEqual(40);
+  });
+
+  test("a further sighting at a higher count stays a boss (no downgrade, pips intact)", () => {
+    const script = `
+      ${BOSS_SETUP}
+      incrementEvent("errors_seen", 12);
+      sightBug();
+      const first = readPendingEncounter();
+      incrementEvent("errors_seen", 6); // now 18 — would bump bossStages to 3
+      sightBug();
+      const second = readPendingEncounter();
+      console.log(JSON.stringify({
+        firstKind: first?.kind ?? null,
+        firstStages: first?.stages ?? null,
+        firstCaption: first?.caption ?? null,
+        secondKind: second?.kind ?? null,
+        secondStages: second?.stages ?? null,
+        secondStagesCleared: second?.stagesCleared ?? null,
+        secondCaption: second?.caption ?? null,
+      }));
+    `;
+    const cfgDir = mkdtempSync(join(tmpdir(), "buddy-boss-sight-proc-"));
+    try {
+      const env: Record<string, string | undefined> = {
+        ...process.env,
+        CLAUDE_CONFIG_DIR: cfgDir,
+      };
+      delete env.TMUX_PANE;
+      const res = spawnSync("bun", ["-e", script], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        encoding: "utf8",
+      });
+      expect(res.stderr).toBe("");
+      expect(res.status).toBe(0);
+      const out = JSON.parse(res.stdout.trim());
+      expect(out.firstKind).toBe("boss");
+      expect(out.firstStages).toBe(2);
+      // No re-upgrade/re-bake on the second sighting: stages/caption unchanged
+      // despite crossing BOSS_STAGE2_AT (existing boss is immutable, §Task 2).
+      expect(out.secondKind).toBe("boss");
+      expect(out.secondStages).toBe(2);
+      expect(out.secondStagesCleared).toBe(0);
+      expect(out.secondCaption).toBe(out.firstCaption);
+    } finally {
+      rmSync(cfgDir, { recursive: true, force: true });
+    }
+  });
+});

@@ -793,6 +793,11 @@ export function readEncounter(
   }
 }
 
+/** Stage pips for the boss caption: cleared ▰, remaining ▱ (living-world P2). */
+export function bossPips(stages: number, cleared: number): string {
+  return "▰".repeat(Math.max(0, cleared)) + "▱".repeat(Math.max(0, stages - cleared));
+}
+
 // ─── Pending-encounter side-channel (design-pending-encounter §3.1) ───────────
 
 function pendingEncounterFile(): string {
