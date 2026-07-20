@@ -640,6 +640,11 @@ const EMOTION_FRAME_SEQUENCE: readonly number[] = [0, 0, 0, 1, 1, 1];
  *     empty (never clobbers a user-equipped hat).
  * @param gear: Optional equipped-gear glyphs composited at the species'
  *     anchors (weapon held beside the body, trinket at the feet).
+ * @param prop: Optional ambient ground prop (living-world P4) composited at
+ *     the species' *separate* prop anchors, applied AFTER `gear` — so if a
+ *     future species ever aliases a prop anchor onto a gear anchor, the
+ *     owned-equipment glyph wins the blank-cell race and the ambient prop is
+ *     the one that silently skips, never the other way around.
  * @returns The rendered frame as a newline-joined string.
  */
 export function renderSpeciesFrame(
@@ -648,6 +653,7 @@ export function renderSpeciesFrame(
   eye: string,
   seasonalHat?: Hat,
   gear?: GearArt,
+  prop?: PropArt,
 ): string {
   const raw = SPECIES_ART[bones.species][frameIdx];
   const art = raw.map((line) => line.replace(/\{E\}/g, eye));
@@ -657,6 +663,10 @@ export function renderSpeciesFrame(
   const hat = bones.hat !== "none" ? bones.hat : seasonalHat ?? "none";
   applyHat(bones.species, hat, art);
   applyGear(bones.species, art, gear);
+  // Ambient prop last (living-world P4 Task 3): gear owns first claim on any
+  // shared cell, prop fills in around it (overlayGlyph's blank-cells-only
+  // contract skips rather than clobbers).
+  applyProp(bones.species, art, prop);
   return art.join("\n");
 }
 
@@ -666,6 +676,7 @@ export function getStatusFrames(
   seasonalHat?: Hat,
   gear?: GearArt,
   gaitVariants = false,
+  prop?: PropArt,
 ): {
   frames: string[];
   frameSequence: number[];
@@ -673,8 +684,12 @@ export function getStatusFrames(
    *  `gaitVariants` was requested. bob = existing frame 1 (no new art). */
   gaitIdx?: { bob: number; lean: number; peek: number };
 } {
+  // `prop` (living-world P4 Task 3) rides every frame this closure resolves —
+  // idle 0-2, blink/glance, the P7 stretch frame, and the lean/peek frames
+  // `withGait` appends below — because they all route through this one
+  // closure rather than calling renderSpeciesFrame directly.
   const resolveFrame = (frameIdx: number, eye: string): string =>
-    renderSpeciesFrame(bones, frameIdx, eye, seasonalHat, gear);
+    renderSpeciesFrame(bones, frameIdx, eye, seasonalHat, gear, prop);
 
   // Append lean/peek as eye-substituted postures for the walk's edge/home beats,
   // keeping existing indices stable. Lean is "~" (strained lean-out) because ">"

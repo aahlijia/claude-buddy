@@ -47,6 +47,12 @@ interface RenderCase {
    *  assertion that assumes the tight "focused" (range 2) corridor. Any test
    *  that reasons about specific wander-range values MUST set this. */
   mood?: string;
+  /** Stub props.ts's pickDayProp to a fixed PropArt regardless of the real
+   *  calendar day (living-world P4 Task 3). pickDayProp is day-seeded off
+   *  the real clock, so — same idiom as throwWander below — a child-local
+   *  loader plugin swaps the module for a deterministic stub rather than
+   *  reasoning about calendar-day races between the test and child clocks. */
+  stubProp?: { feet: string; ahead: string };
 }
 
 /** Run writeStatusState in a fresh subprocess under a temp config dir and return
@@ -95,7 +101,28 @@ plugin({ name: "throw-wander", setup(b) {
 `
     : "";
 
-  const childSrc = `${throwBlock}
+  // Same idiom, this time pinning props.ts's day-seeded pickDayProp to a
+  // fixed PropArt so the prop-gating tests don't depend on the real date.
+  // The stub's own source is built with JSON.stringify (rather than manual
+  // quoting like throwWander above) so glyph characters can't collide with
+  // the surrounding quote style.
+  const propsStubBlock = c.stubProp
+    ? `
+import { plugin } from "bun";
+plugin({ name: "stub-props", setup(b) {
+  b.onLoad({ filter: /props\\.ts$/ }, () => ({
+    loader: "js",
+    contents: ${JSON.stringify(
+      `export function pickDayProp(){return {prop:{feet:${JSON.stringify(
+        c.stubProp.feet,
+      )},ahead:${JSON.stringify(c.stubProp.ahead)}},palette:"bright"}}`,
+    )},
+  }));
+}});
+`
+    : "";
+
+  const childSrc = `${throwBlock}${propsStubBlock}
 import { writeStatusState } from ${STATE_TS};
 import { generateBones } from ${ENGINE_TS};
 const companion = {
@@ -436,5 +463,89 @@ writeStatusState({
       expect(frame).toContain(",>");
     }
     rmSync(cfgDir, { recursive: true, force: true });
+  });
+});
+
+describe("writeStatusState — ambient ground prop (living-world P4 Task 3)", () => {
+  // Neither glyph occurs in any species' innate art, so containment proves
+  // the prop landed (a collision would silently skip the overlay).
+  const PROP = { feet: "❦", ahead: "•" };
+
+  test("full + wanderEnabled: idle frames carry the day's prop", () => {
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true },
+      mood: "focused",
+      stubProp: PROP,
+    });
+    const frames = state!.frames as string[];
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames) {
+      expect(frame).toContain(PROP.feet);
+      expect(frame).toContain(PROP.ahead);
+    }
+  });
+
+  test("subtle: props are full-only idle juice — absent", () => {
+    const state = render({
+      config: { gameFeel: "subtle", wanderEnabled: true },
+      stubProp: PROP,
+    });
+    const frames = state!.frames as string[];
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames) {
+      expect(frame).not.toContain(PROP.feet);
+      expect(frame).not.toContain(PROP.ahead);
+    }
+  });
+
+  test("off: no prop", () => {
+    const state = render({
+      config: { gameFeel: "off", wanderEnabled: true },
+      stubProp: PROP,
+    });
+    const frames = state!.frames as string[];
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames) {
+      expect(frame).not.toContain(PROP.feet);
+      expect(frame).not.toContain(PROP.ahead);
+    }
+  });
+
+  test("full but wanderEnabled=false: prop is independent of the wander opt-out — still full-gated, so still present", () => {
+    // idleGate === "full" doesn't depend on wanderEnabled (that only gates
+    // gaitVariants/wantGait) — props are full-idle juice, not wander-specific,
+    // so they render even with wander off.
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: false },
+      stubProp: PROP,
+    });
+    const frames = state!.frames as string[];
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames) {
+      expect(frame).toContain(PROP.feet);
+      expect(frame).toContain(PROP.ahead);
+    }
+  });
+
+  test("a live error reaction at configured full still bakes the prop (D14 exemption carries forward)", () => {
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true },
+      reaction: { reaction: "ugh, an error", reason: "error" },
+      stubProp: PROP,
+    });
+    const frames = state!.frames as string[];
+    for (const frame of frames) {
+      expect(frame).toContain(PROP.feet);
+      expect(frame).toContain(PROP.ahead);
+    }
+  });
+
+  test("no stub (real pickDayProp): write never breaks — props are best-effort", () => {
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true },
+      mood: "focused",
+    });
+    expect(Array.isArray(state!.frames)).toBe(true);
+    expect((state!.frames as string[]).length).toBeGreaterThan(0);
   });
 });

@@ -1196,6 +1196,26 @@ export function writeStatusState(
       // Equipment is optional during first install / version skew.
     }
   }
+  // Ambient ground prop (living-world P4 Task 3): a day-seeded sprout/pebble
+  // riding the idle sprite, re-derived on every write from the current date —
+  // no persisted file, nothing added to TRANSIENT_PREFIXES. `full`-only idle
+  // juice, same as the emote row and the gait wander just below, so it's
+  // bound to the already-clamped `idleGate` rather than the raw `gate` —
+  // that reuses the D14 angry exemption for free (an error-driven angry idle
+  // still gets its prop even under the auto-quiet spike clamp). Reads
+  // `displayBones.species` (post-equipment; species itself never changes via
+  // equipment, but this stays correct if that ever changes). `new Date()`
+  // here is the one sanctioned impure wrapper call — `pickDayProp` itself
+  // stays pure on the injected date.
+  let dayProp: import("./art.ts").PropArt | undefined;
+  if (idleGate === "full") {
+    try {
+      const { pickDayProp } = require("./props.ts") as typeof import("./props.ts");
+      dayProp = pickDayProp(new Date(), displayBones.species).prop;
+    } catch {
+      // Props are a best-effort delighter — a failure leaves the buddy propless.
+    }
+  }
   // Gait variants (living-world P1) are only worth baking when the wander
   // branch below will actually consume them — every other tier bakes the
   // classic byte-identical frames.
@@ -1204,7 +1224,7 @@ export function writeStatusState(
     frames: rawFrames,
     frameSequence: bakedSequence,
     gaitIdx,
-  } = getStatusFrames(displayBones, emotion, seasonalHat, gearArt, wantGait);
+  } = getStatusFrames(displayBones, emotion, seasonalHat, gearArt, wantGait, dayProp);
   let frameSequence = bakedSequence;
   let xpLevel = level ?? 1;
   let xpTotal = xp ?? 0;

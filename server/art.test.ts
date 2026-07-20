@@ -615,8 +615,9 @@ describe("applyGear (gear overlays)", () => {
 //
 // Structural twin of applyGear/GEAR_ANCHORS above, but a parallel table
 // (PROP_ANCHORS): props are ambient world-dressing, not owned gear, so the
-// two systems stay independently testable. Not wired into renderSpeciesFrame
-// yet (P4 Task 3's job) — these tests exercise applyProp directly.
+// two systems stay independently testable. Wired into renderSpeciesFrame /
+// getStatusFrames as of P4 Task 3 — see the "threads a prop" block below for
+// the wired-in coverage; these first tests still exercise applyProp directly.
 
 describe("applyProp (ground props — living-world P4)", () => {
   const bones = (overrides: Partial<BuddyBones> = {}): BuddyBones => ({
@@ -737,12 +738,95 @@ describe("applyProp (ground props — living-world P4)", () => {
     }
   });
 
-  test("getStatusFrames without a prop arg stays byte-identical (applyProp not wired in yet)", () => {
-    // Task 1 must stay inert: applyProp exists and is directly callable, but
-    // renderSpeciesFrame/getStatusFrames don't call it until Task 3.
+  test("getStatusFrames without a prop arg stays byte-identical (back-compat pin)", () => {
+    // Task 3 wires applyProp into the render path via a trailing optional
+    // param — omitting it (or passing undefined) must render exactly what it
+    // did before Task 3, protecting the render snapshots.
     const before = getStatusFrames(bones());
     const after = getStatusFrames(bones());
     expect(after).toEqual(before);
+    const explicitUndefined = getStatusFrames(
+      bones(),
+      "neutral",
+      undefined,
+      undefined,
+      false,
+      undefined,
+    );
+    expect(explicitUndefined).toEqual(before);
+  });
+
+  // ── Wired in: P4 Task 3 threads `prop` through renderSpeciesFrame /
+  // getStatusFrames's resolveFrame closure, so every returned frame carries
+  // it — idle 0-2, blink/glance, the P7 stretch frame, and the appended gait
+  // lean/peek postures.
+
+  test("getStatusFrames threads a prop into every idle frame, incl. blink/glance", () => {
+    const { frames } = getStatusFrames(
+      bones(),
+      "neutral",
+      undefined,
+      undefined,
+      false,
+      PROP,
+    );
+    expect(frames).toHaveLength(5); // cactus has no stretch frame
+    for (const body of frames) {
+      expect(body).toContain(PROP.feet);
+      expect(body).toContain(PROP.ahead);
+    }
+  });
+
+  test("emotion micro-cycles keep the prop on", () => {
+    const { frames } = getStatusFrames(
+      bones(),
+      "happy",
+      undefined,
+      undefined,
+      false,
+      PROP,
+    );
+    for (const body of frames) {
+      expect(body).toContain(PROP.feet);
+      expect(body).toContain(PROP.ahead);
+    }
+  });
+
+  test("prop reaches the P7 stretch frame and the gait lean/peek postures", () => {
+    for (const species of ["duck", "cat", "robot"] as const) {
+      const { frames, gaitIdx } = getStatusFrames(
+        bones({ species }),
+        "neutral",
+        undefined,
+        undefined,
+        true,
+        PROP,
+      );
+      expect(gaitIdx).toBeDefined();
+      // [0, 1, 2, blink, glance, stretch, lean, peek] — stretch is 3rd from
+      // the end since lean/peek are appended after it.
+      const stretchIdx = frames.length - 3;
+      for (const idx of [stretchIdx, gaitIdx!.lean, gaitIdx!.peek]) {
+        expect(frames[idx]).toContain(PROP.feet);
+        expect(frames[idx]).toContain(PROP.ahead);
+      }
+    }
+  });
+
+  test("gear (applied first) and prop coexist through getStatusFrames — no clobber", () => {
+    const { frames } = getStatusFrames(
+      bones(),
+      "neutral",
+      undefined,
+      { trinket: ",>" },
+      false,
+      PROP,
+    );
+    for (const body of frames) {
+      expect(body).toContain(",>");
+      expect(body).toContain(PROP.feet);
+      expect(body).toContain(PROP.ahead);
+    }
   });
 });
 
