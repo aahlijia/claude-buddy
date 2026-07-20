@@ -273,47 +273,18 @@ export function applyGear(
 
 /**
  * Ambient ground props composited onto a rendered frame (living-world P4).
- * `ahead` sits a couple cells past the body on the ground (kicked forward on
- * step ticks — P4 Task 4); `feet` rests beside the buddy, a daily-seeded
- * sprout/mushroom (P4 Task 2). Distinct from the owned-gear `trinket` anchor
- * so a prop and an equipped trinket can render at once (Task 6's
- * crowded-sprite case).
- */
-/**
  * `ahead` sits a couple cells past the body on the ground — a daily-constant
- * pebble glyph (P4 Task 2). It is *withheld* on the two gait frames that mark
- * the walk's direction-flip beats (P4 Task 4's step-kick, `kickedProp` below)
- * — see the "prop kick" decision-gate note in art.test.ts for why a
- * multi-column advance was rejected in favor of this present/withheld toggle.
- * `feet` rests beside the buddy — a daily-seeded sprout/mushroom (P4 Task 2),
- * untouched by the kick.
+ * pebble glyph (P4 Task 2) that slides a cell closer to the body on each of
+ * the walk's step ticks for the species that have room for it, then resets
+ * (P4 Task 4's step-kick — `PROP_KICK_COLUMNS`/`propKickFrameSequence`
+ * below). `feet` rests beside the buddy, a daily-seeded sprout/mushroom (P4
+ * Task 2), untouched by the kick. Distinct from the owned-gear `trinket`
+ * anchor so a prop and an equipped trinket can render at once (Task 6's
+ * crowded-sprite case).
  */
 export interface PropArt {
   ahead?: string;
   feet?: string;
-}
-
-/**
- * The prop as it renders on the walk's direction-flip gait frames (lean/peek
- * — living-world P4 Task 4, "the step-kick"). Pure: strips `ahead` (the
- * pebble reads as mid-kick, off its rest anchor) and keeps `feet` (the daily
- * sprout is untouched by the kick) untouched. `undefined` in ⇒ `undefined`
- * out, so a propless render stays propless.
- *
- * DECISION GATE (plan-p4.md Task 4 Step 1): a per-tick sliding pebble-column
- * family (the plan's "Branch A") was rejected — a blank-cell probe over row 4
- * cols 7-11 (Task 1's own methodology) found no third column blank across
- * every species free of both body pixels *and* the `feet` anchor (which
- * already sits at col 10 — the one otherwise-blank column short of the
- * existing `ahead` anchor at col 11 — for 7 of 20 species). This is "Branch
- * B": the pebble stays pinned to its single anchor and instead re-seats
- * (is withheld) at the walk's existing lean/peek edge-beats, reusing the
- * exact phase→frame wiring P1 already built — no new frames, no new signal.
- */
-export function kickedProp(prop?: PropArt): PropArt | undefined {
-  if (!prop) return undefined;
-  const { ahead: _ahead, ...rest } = prop;
-  return rest;
 }
 
 /**
@@ -384,6 +355,120 @@ export function applyProp(
   const anchors = PROP_ANCHORS[species];
   if (prop.ahead) overlayGlyph(art, anchors.ahead, prop.ahead);
   if (prop.feet) overlayGlyph(art, anchors.feet, prop.feet);
+}
+
+/**
+ * Per-species columns (row 4, same row as `PROP_ANCHORS.ahead`) the pebble
+ * can slide through on its way toward the body during a walk's step ticks —
+ * living-world P4 Task 4, "the step-kick". Ordered nearest-to-`ahead` (col
+ * 11) first, so index 0 is the first kick, the last entry the fully
+ * kicked-in position. Only species with at least one column that is blank,
+ * across every idle frame (0-2), the P7 stretch frame, and the gait
+ * lean/peek postures, AND distinct from that species' own `PROP_ANCHORS.feet`
+ * column (so the sliding pebble never collides with the daily sprout/
+ * mushroom) get an entry here; the other 9 species are cramped and simply
+ * keep the single static `ahead` anchor — no kick, exactly Task 3's
+ * behavior, never withheld.
+ *
+ * Re-verified 2026-07-20 against a code-review finding that an earlier pass
+ * of this table wrongly concluded NO species had a safe second column (it
+ * checked cols 7-11 in aggregate across all species rather than per-species
+ * with each species' own `feet` column excluded). The corrected per-species
+ * probe (mirroring Task 1's own blank-cell-probe methodology; pinned as a
+ * test in art.test.ts's "prop kick" describe block, not just this comment):
+ *
+ *   duck [9]        goose [8,9,10]     owl [9,10]       penguin [8,9,10]
+ *   turtle [10]      snail [10]        axolotl [10]     cactus [7,9,10]
+ *   mushroom [9,10]  wyvern [8,9,10]   pikachu [7,8,9,10]
+ *
+ * (blob/cat/dragon/octopus/ghost/capybara/robot/rabbit/chonk have none —
+ * `PROP_ANCHORS.feet` already sits at their one otherwise-blank column, or —
+ * robot/chonk — `feet` moved to row 3 specifically because row 4 has no
+ * third column to spare in the first place.)
+ */
+export const PROP_KICK_COLUMNS: Partial<Record<Species, readonly number[]>> = {
+  duck: [9],
+  goose: [10, 9, 8],
+  owl: [10, 9],
+  penguin: [10, 9, 8],
+  turtle: [10],
+  snail: [10],
+  axolotl: [10],
+  cactus: [10, 9, 7],
+  mushroom: [10, 9],
+  wyvern: [10, 9, 8],
+  pikachu: [10, 9, 8, 7],
+};
+
+/**
+ * Composite the prop with `ahead` placed at an overridden column (same row
+ * as the species' normal `ahead` anchor) instead of its default anchor —
+ * the sliding kick (P4 Task 4). `feet` still renders at its normal anchor,
+ * untouched by the kick. Same blank-cells-only / ANSI-refused contract as
+ * `applyProp` (delegates to the same private `overlayGlyph`).
+ */
+export function applyPropKicked(
+  species: Species,
+  art: string[],
+  prop: PropArt,
+  aheadCol: number,
+): void {
+  const anchors = PROP_ANCHORS[species];
+  if (prop.ahead) overlayGlyph(art, [anchors.ahead[0], aheadCol], prop.ahead);
+  if (prop.feet) overlayGlyph(art, anchors.feet, prop.feet);
+}
+
+/**
+ * Raw, unclamped "steps since the last non-travel tick" per tick of a walk —
+ * living-world P4 Task 4, the step-kick's pure mapper. Increments on every
+ * phase===1 (step) tick; resets to 0 on every other tick (dwell, edge-dwell,
+ * home-linger alike) — `propKickFrameSequence` below only ever overrides the
+ * rendered frame on phase===1 ticks in the first place (lean/peek/dwell
+ * frames all render the plain, un-kicked prop), so a depth that "held"
+ * through a non-step tick would never actually be visible; resetting
+ * everywhere else keeps this function's output an honest description of what
+ * renders. Species-agnostic and uncapped; the render layer clamps this to
+ * however many kick columns a given species actually has
+ * (`PROP_KICK_COLUMNS`).
+ */
+export function propKickDepth(phases: GaitPhase[]): number[] {
+  let run = 0;
+  return phases.map((p) => {
+    if (p === 1) {
+      run += 1;
+      return run;
+    }
+    run = 0;
+    return 0;
+  });
+}
+
+/**
+ * Overlay the species' kick frames onto an already gait-remapped
+ * `frameSequence` (`gaitFrameSequence`'s output) — a parallel index over the
+ * SAME `phases` track, structurally identical to `gaitFrameSequence` itself
+ * (living-world P4 Task 4). On every phase===1 tick, replaces whatever
+ * `baseSeq` picked with the kick frame for the current depth (capped at the
+ * species' available column count, so a long travel run advances the pebble
+ * then holds at the fully-kicked-in position — monotonic within a run,
+ * constant once maxed). Every other tick (dwell/edge/home) passes `baseSeq`
+ * through unchanged — lean/peek/blink/glance/bob keep rendering exactly as
+ * `gaitFrameSequence` already produces them. `kickIdx` is `undefined`/empty
+ * for the 9 cramped species (`getStatusFrames` never builds kick frames for
+ * them), in which case this is a no-op passthrough.
+ */
+export function propKickFrameSequence(
+  phases: GaitPhase[],
+  baseSeq: number[],
+  kickIdx: number[] | undefined,
+): number[] {
+  if (!kickIdx || kickIdx.length === 0) return baseSeq;
+  const depth = propKickDepth(phases);
+  return baseSeq.map((idx, i) => {
+    if (phases[i] !== 1) return idx;
+    const d = Math.min(depth[i], kickIdx.length);
+    return kickIdx[d - 1];
+  });
 }
 
 const SHINY_COLOR = "\x1b[93m"; // bright yellow
@@ -677,6 +762,10 @@ const EMOTION_FRAME_SEQUENCE: readonly number[] = [0, 0, 0, 1, 1, 1];
  *     future species ever aliases a prop anchor onto a gear anchor, the
  *     owned-equipment glyph wins the blank-cell race and the ambient prop is
  *     the one that silently skips, never the other way around.
+ * @param kickCol: Optional column override (P4 Task 4's step-kick) — when
+ *     set, `ahead` renders at this column instead of the species' default
+ *     `ahead` anchor (`feet` is unaffected). Absent ⇒ identical to omitting
+ *     it, the plain `applyProp` anchor.
  * @returns The rendered frame as a newline-joined string.
  */
 export function renderSpeciesFrame(
@@ -686,6 +775,7 @@ export function renderSpeciesFrame(
   seasonalHat?: Hat,
   gear?: GearArt,
   prop?: PropArt,
+  kickCol?: number,
 ): string {
   const raw = SPECIES_ART[bones.species][frameIdx];
   const art = raw.map((line) => line.replace(/\{E\}/g, eye));
@@ -698,7 +788,11 @@ export function renderSpeciesFrame(
   // Ambient prop last (living-world P4 Task 3): gear owns first claim on any
   // shared cell, prop fills in around it (overlayGlyph's blank-cells-only
   // contract skips rather than clobbers).
-  applyProp(bones.species, art, prop);
+  if (kickCol !== undefined && prop) {
+    applyPropKicked(bones.species, art, prop, kickCol);
+  } else {
+    applyProp(bones.species, art, prop);
+  }
   return art.join("\n");
 }
 
@@ -715,6 +809,13 @@ export function getStatusFrames(
   /** Indices of the gait posture frames (living-world P1); present only when
    *  `gaitVariants` was requested. bob = existing frame 1 (no new art). */
   gaitIdx?: { bob: number; lean: number; peek: number };
+  /** Indices of the sliding-pebble kick frames (living-world P4 Task 4),
+   *  ordered nearest-`ahead`-anchor first (index 0 = first kick). Present
+   *  only when `gaitVariants` was requested, a prop with an `ahead` glyph was
+   *  supplied, AND the species has room for it (`PROP_KICK_COLUMNS`) — the 9
+   *  cramped species never get this field, so their walk is untouched by
+   *  Task 4 (still the single static anchor, Task 3's plain behavior). */
+  kickIdx?: number[];
 } {
   // `prop` (living-world P4 Task 3) rides every frame this closure resolves —
   // idle 0-2, blink/glance, the P7 stretch frame, and the lean/peek frames
@@ -726,25 +827,39 @@ export function getStatusFrames(
   // Append lean/peek as eye-substituted postures for the walk's edge/home beats,
   // keeping existing indices stable. Lean is "~" (strained lean-out) because ">"
   // collides with the angry emotion eye and the pose must stay visible mid-gait
-  // for every emotion.
-  //
-  // Living-world P4 Task 4 (the step-kick, decision-gate Branch B — see the
-  // "prop kick" note in art.test.ts): lean and peek are the walk's own
-  // direction-flip beats (edge-dwell / home-linger), so the pebble is kicked
-  // off its anchor for exactly these two frames — `kickedProp` strips `ahead`
-  // and keeps `feet`. No new frames are appended beyond P1's original two.
-  const kicked = kickedProp(prop);
+  // for every emotion. Both keep the plain `prop` — lean/peek are NOT touched
+  // by the step-kick (P4 Task 4 fires on phase===1 step ticks only; see
+  // `propKickFrameSequence`), so the pebble renders exactly as it does on
+  // every other frame.
   const withGait = (
     r: { frames: string[]; frameSequence: number[] },
   ): ReturnType<typeof getStatusFrames> => {
     if (!gaitVariants) return r;
     const lean = r.frames.length;
-    const resolveKicked = (frameIdx: number, eye: string): string =>
-      renderSpeciesFrame(bones, frameIdx, eye, seasonalHat, gear, kicked);
+    let frames = [...r.frames, resolveFrame(0, "~"), resolveFrame(0, "<")];
+    const peek = lean + 1;
+    // Living-world P4 Task 4 (the step-kick): append one frame per column the
+    // species has room for (`PROP_KICK_COLUMNS`), each the plain idle pose
+    // (frame 0, the buddy's own eye) with `ahead` overridden to that column.
+    // Cramped species (no table entry) get no extra frames — `kickIdx` stays
+    // undefined and `propKickFrameSequence` is a no-op for them.
+    let kickIdx: number[] | undefined;
+    const cols = PROP_KICK_COLUMNS[bones.species];
+    if (cols && cols.length > 0 && prop?.ahead) {
+      kickIdx = cols.map((col) => {
+        const idx = frames.length;
+        frames = [
+          ...frames,
+          renderSpeciesFrame(bones, 0, bones.eye, seasonalHat, gear, prop, col),
+        ];
+        return idx;
+      });
+    }
     return {
       ...r,
-      frames: [...r.frames, resolveKicked(0, "~"), resolveKicked(0, "<")],
-      gaitIdx: { bob: 1, lean, peek: lean + 1 },
+      frames,
+      gaitIdx: { bob: 1, lean, peek },
+      ...(kickIdx ? { kickIdx } : {}),
     };
   };
 

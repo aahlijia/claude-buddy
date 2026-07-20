@@ -973,8 +973,13 @@ export function writeStatusState(
   }
   const { renderFace, RARITY_STARS } =
     require("./engine.ts") as typeof import("./engine.ts");
-  const { getStatusFrames, gaitFrameSequence, emoteFor, finalizeIdleBlock } =
-    require("./art.ts") as typeof import("./art.ts");
+  const {
+    getStatusFrames,
+    gaitFrameSequence,
+    propKickFrameSequence,
+    emoteFor,
+    finalizeIdleBlock,
+  } = require("./art.ts") as typeof import("./art.ts");
 
   // One config + one reaction read for this whole write; the auto-quiet clamp,
   // the emotion map, and the wander branch below all share these instead of
@@ -1224,6 +1229,7 @@ export function writeStatusState(
     frames: rawFrames,
     frameSequence: bakedSequence,
     gaitIdx,
+    kickIdx,
   } = getStatusFrames(displayBones, emotion, seasonalHat, gearArt, wantGait, dayProp);
   let frameSequence = bakedSequence;
   let xpLevel = level ?? 1;
@@ -1336,6 +1342,15 @@ export function writeStatusState(
             gaitIdx,
             cfg.showStats === true,
           );
+        }
+        // Prop step-kick (living-world P4 Task 4): overlays the sliding
+        // pebble onto the SAME phase track the gait remap above just
+        // consumed — a parallel index, not a new signal. No-op (returns
+        // frameSequence unchanged) when `kickIdx` is undefined: either the
+        // species is one of the 9 cramped ones with no safe second `ahead`
+        // column, or no day prop was baked this write.
+        if (walk.phases) {
+          frameSequence = propKickFrameSequence(walk.phases, frameSequence, kickIdx);
         }
         // Event-choreography stinger (living-world P1): a one-shot arc spliced
         // into the baked track at the tick this write's celebration/scene

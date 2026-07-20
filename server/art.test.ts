@@ -17,7 +17,12 @@ import {
   getArtFrame,
   applyGear,
   applyProp,
-  kickedProp,
+  applyPropKicked,
+  PROP_ANCHORS,
+  PROP_KICK_COLUMNS,
+  SPECIES_ART,
+  propKickDepth,
+  propKickFrameSequence,
   applyBossCrown,
   overlayRow,
   trimBlankTopRows,
@@ -793,12 +798,10 @@ describe("applyProp (ground props — living-world P4)", () => {
     }
   });
 
-  test("prop reaches the P7 stretch frame; lean/peek carry feet but withhold the kicked pebble", () => {
-    // Superseded by P4 Task 4 (the step-kick, Branch B — see the "prop kick"
-    // describe block below): lean/peek are the walk's direction-flip beats,
-    // and the pebble is kicked off its anchor for exactly those two frames.
-    // `feet` (the daily sprout) is untouched by Task 4 and stays on every
-    // frame, gait or not.
+  test("prop reaches the P7 stretch frame and the gait lean/peek postures", () => {
+    // P4 Task 4 (the step-kick) does NOT touch lean/peek — the kick fires on
+    // phase===1 step ticks only (`propKickFrameSequence`); lean/peek keep the
+    // plain `prop`, identical to Task 3's original behavior.
     for (const species of ["duck", "cat", "robot"] as const) {
       const { frames, gaitIdx } = getStatusFrames(
         bones({ species }),
@@ -809,14 +812,13 @@ describe("applyProp (ground props — living-world P4)", () => {
         PROP,
       );
       expect(gaitIdx).toBeDefined();
-      // [0, 1, 2, blink, glance, stretch, lean, peek] — stretch is 3rd from
-      // the end since lean/peek are appended after it.
-      const stretchIdx = frames.length - 3;
-      expect(frames[stretchIdx]).toContain(PROP.feet);
-      expect(frames[stretchIdx]).toContain(PROP.ahead);
-      for (const idx of [gaitIdx!.lean, gaitIdx!.peek]) {
+      // stretch is the frame right before lean, regardless of whether kick
+      // frames were appended after peek (duck has kick frames; cat/robot are
+      // cramped and don't — `gaitIdx.lean` is the stable reference either way).
+      const stretchIdx = gaitIdx!.lean - 1;
+      for (const idx of [stretchIdx, gaitIdx!.lean, gaitIdx!.peek]) {
         expect(frames[idx]).toContain(PROP.feet);
-        expect(frames[idx]).not.toContain(PROP.ahead);
+        expect(frames[idx]).toContain(PROP.ahead);
       }
     }
   });
@@ -840,46 +842,47 @@ describe("applyProp (ground props — living-world P4)", () => {
 
 // ─── prop kick (living-world P4 Task 4 — the step-kick) ──────────────────────
 //
-// DECISION GATE (plan-p4.md Task 4 Step 1): Branch A ("a short pre-baked
-// family of pebble-position frames... e.g. 3-4 variants, each with the pebble
-// one cell further along `ahead`") is NOT viable across all 20 species. A
-// blank-cell probe (mirroring Task 1's methodology, run over row 4 cols 7-11
-// across every species/frame) found:
-//   - cols 7-9 are body pixels for most species at frame 0 (dragon "v--'",
-//     octopus "\/\", ghost "~`~", axolotl ")_(", capybara/robot/chonk "--'",
-//     cat/blob/turtle partially) — a sliding family through these columns
-//     would either clobber body pixels or silently skip the overlay for a
-//     majority of species, defeating the visible "kick".
-//   - col 10 is blank at frame 0 for all 20 species, BUT `PROP_ANCHORS.feet`
-//     already sits at exactly [4,10] for blob/cat/dragon/octopus/ghost/
-//     capybara/rabbit (7/20 species) — a second `ahead` position there would
-//     collide with the daily sprout/mushroom (`feet`) and flicker it in/out
-//     as the pebble "advances", which is worse than no animation.
-//   - col 11 (today's single anchor) is the only column blank across every
-//     species/frame with zero collision risk.
-// Growing the box past col 11 was rejected too: it would make the pebble's
-// frames wider than the rest of the idle flipbook, breaking the "constant
-// width AND height per flipbook" standing constraint.
+// DECISION GATE (plan-p4.md Task 4 Step 1), CORRECTED 2026-07-20: an earlier
+// pass of this task concluded no species had a safe second `ahead` column and
+// shipped a present/withheld toggle on lean/peek instead — code review caught
+// two problems with that: (a) the toggle fired on phase 2/3 (the buddy
+// STOPPED), the literal inverse of "a kick as the buddy ambles" (phase===1),
+// and (b) a glyph that disappears and reappears with no visible cause is
+// flicker, which design.md §P4 explicitly forbids. The review also found the
+// "no safe column" conclusion itself was wrong: it checked cols 7-11 in
+// aggregate across all 20 species rather than per-species with each species'
+// own `PROP_ANCHORS.feet` column excluded.
 //
-// ⇒ Branch B: no per-tick pebble-position frame family. The pebble stays
-// pinned to its single existing anchor ([4,11], Task 1) and instead
-// *re-seats* — is withheld — at the walk's direction-flip beats, which are
-// exactly the gait's existing lean (edge-dwell, phase 2) and peek
-// (home-linger, phase 3) postures P1 already appends via `withGait`. No new
-// frames are appended by this task (P1's two already are); Task 4 only
-// changes which `PropArt` those two already-appended calls render with. This
-// reuses `gaitIdx.lean`/`gaitIdx.peek` — the exact phase→frame wiring P1 and
-// Task 3 already built — so `server/state.ts` needed NO changes: the walk's
-// `phases` were already routed to these two frame slots.
+// The corrected per-species blank-cell probe (row 4, cols 7-10, every idle
+// frame + the P7 stretch frame + lean/peek, `feet`'s own column excluded —
+// Task 1's methodology, pinned as the "every declared kick column is blank"
+// test below rather than left as a one-off script) found:
 //
-// Consequently the Step 2 pure-mapper test below is re-derived from a
-// per-tick "column index" premise (infeasible, per above) to what the real
-// mechanism actually asserts: `kickedProp` is a pure feet-preserving,
-// ahead-stripping transform, and the two direction-flip frames are the only
-// ones that ever render without the pebble. "Monotonic advance" doesn't
-// apply to a two-state (present/withheld) toggle; "resets" is realized as
-// "every non-lean/non-peek frame shows the pebble" rather than a numeric
-// reset — the description below documents the honest replacement.
+//   duck [9]         goose [10,9,8]     owl [10,9]        penguin [10,9,8]
+//   turtle [10]       snail [10]        axolotl [10]      cactus [10,9,7]
+//   mushroom [10,9]   wyvern [10,9,8]   pikachu [10,9,8,7]
+//
+// — 11 of 20 species DO have room (`PROP_KICK_COLUMNS`, art.ts). The other 9
+// (blob/cat/dragon/octopus/ghost/capybara/robot/rabbit/chonk) are genuinely
+// cramped — `feet` already occupies their one otherwise-blank column (or, for
+// robot/chonk, `feet` was moved to row 3 in Task 1 specifically because row 4
+// had no third column to spare) — and get NO kick at all: the single static
+// anchor, exactly Task 3's original behavior, the pebble never withheld.
+//
+// ⇒ Partial Branch A: species with room get a real sliding pebble —
+// `PROP_KICK_COLUMNS[species]` frames, nearest-`ahead`-first, appended after
+// lean/peek (`getStatusFrames`'s `kickIdx`) — driven by `propKickDepth`
+// (phases → per-tick "steps since the last non-travel tick") and
+// `propKickFrameSequence` (the parallel-index overlay onto an already
+// gait-remapped `frameSequence`, structurally identical to
+// `gaitFrameSequence`). It fires on phase===1 (step) ticks — motion tied to
+// actual motion — advances monotonically within a travel run, holds at the
+// fully-kicked-in position once maxed, and resets only at dwell/home
+// (phase 0/3); it holds (doesn't reset) through the edge pause (phase 2) so
+// the pebble doesn't snap back mid-pause. The glyph is NEVER removed once
+// drawn — every frame this task produces still contains `PROP.ahead`.
+// Cramped species get no `kickIdx`, so `propKickFrameSequence` is a no-op for
+// them and their walk renders exactly as Task 3 left it.
 
 describe("prop kick (living-world P4 Task 4)", () => {
   const bones = (overrides: Partial<BuddyBones> = {}): BuddyBones => ({
@@ -894,20 +897,91 @@ describe("prop kick (living-world P4 Task 4)", () => {
     ...overrides,
   });
   const PROP = { feet: "❦", ahead: "•" };
+  const KICK_SPECIES = Object.keys(PROP_KICK_COLUMNS) as (keyof typeof PROP_KICK_COLUMNS)[];
+  const CRAMPED_SPECIES = SPECIES.filter((s) => !PROP_KICK_COLUMNS[s]);
 
-  test("kickedProp is a pure feet-preserving, ahead-stripping transform", () => {
-    expect(kickedProp({ feet: "❦", ahead: "•" })).toEqual({ feet: "❦" });
-    expect(kickedProp({ feet: "❦" })).toEqual({ feet: "❦" });
-    expect(kickedProp({ ahead: "•" })).toEqual({});
-    expect(kickedProp(undefined)).toBeUndefined();
-    // Pure: same input twice ⇒ deep-equal output, no shared mutable state.
-    const input = { feet: "❦", ahead: "•" };
-    expect(kickedProp(input)).toEqual(kickedProp(input));
+  test("sanity: the corrected split is 11 species with room, 9 cramped", () => {
+    expect(KICK_SPECIES.length).toBe(11);
+    expect(CRAMPED_SPECIES.length).toBe(9);
   });
 
-  test("lean/peek (the walk's direction-flip beats) withhold the pebble; every other gait frame keeps it — every species", () => {
-    for (const species of SPECIES) {
-      const { frames, gaitIdx } = getStatusFrames(
+  // ── Task 1-style blank-cell probe, pinned (not a one-off script) ──────────
+  test("every declared kick column is blank across idle frames, the P7 stretch frame, and lean/peek", () => {
+    for (const species of KICK_SPECIES) {
+      const cols = PROP_KICK_COLUMNS[species]!;
+      // Lean/peek substitute "~"/"<" for the eye, outside the normal `Eye`
+      // union getArtFrame's public type accepts — reconstruct them the same
+      // way renderSpeciesFrame does (raw frame 0, `{E}` replaced directly).
+      const altEye = (eye: string): string[] =>
+        SPECIES_ART[species][0].map((line) => line.replace(/\{E\}/g, eye));
+      const framesToCheck = [
+        getArtFrame(species, "°", 0),
+        getArtFrame(species, "°", 1),
+        getArtFrame(species, "°", 2),
+        getArtFrame(species, "°", 3), // wraps to frame 0 for non-P7 species; harmless
+        altEye("~"), // lean's underlying frame
+        altEye("<"), // peek's underlying frame
+      ];
+      for (const col of cols) {
+        for (const art of framesToCheck) {
+          const rows = art.map((r) => r);
+          applyPropKicked(species, rows, PROP, col);
+          expect(rows.join("\n")).toContain(PROP.ahead);
+          expect(rows.join("\n")).toContain(PROP.feet);
+        }
+      }
+    }
+  });
+
+  test("declared kick columns are distinct from that species' own feet column", () => {
+    for (const species of KICK_SPECIES) {
+      const cols = PROP_KICK_COLUMNS[species]!;
+      const anchors = PROP_ANCHORS[species];
+      const feetCol = anchors.feet[0] === anchors.ahead[0] ? anchors.feet[1] : null;
+      for (const col of cols) expect(col).not.toBe(feetCol);
+    }
+  });
+
+  test("propKickDepth: increments on step ticks, resets on every non-step tick — monotonic within a travel run", () => {
+    // dwell, step, step, step, edge-dwell, edge-dwell, step, home-linger, dwell
+    const phases: GaitPhase[] = [0, 1, 1, 1, 2, 2, 1, 3, 0];
+    expect(propKickDepth(phases)).toEqual([0, 1, 2, 3, 0, 0, 1, 0, 0]);
+  });
+
+  test("propKickDepth: pure — same input twice is deep-equal", () => {
+    const phases: GaitPhase[] = [1, 1, 0, 1];
+    expect(propKickDepth(phases)).toEqual(propKickDepth(phases));
+  });
+
+  test("propKickFrameSequence: overrides only phase===1 ticks, capped at the species' kick depth, passthrough elsewhere", () => {
+    const phases: GaitPhase[] = [0, 1, 1, 1, 1, 2, 3, 0];
+    const baseSeq = [0, 0, 1, 0, 1, 5, 6, 0]; // stand-in gaitFrameSequence output
+    const kickIdx = [10, 11, 12]; // 3 kick frames for a hypothetical species
+    const out = propKickFrameSequence(phases, baseSeq, kickIdx);
+    // Non-step ticks pass through baseSeq untouched.
+    expect(out[0]).toBe(baseSeq[0]);
+    expect(out[5]).toBe(baseSeq[5]);
+    expect(out[6]).toBe(baseSeq[6]);
+    expect(out[7]).toBe(baseSeq[7]);
+    // Step ticks (indices 1-4) climb through kickIdx, capping at the last
+    // entry once depth exceeds the species' available columns (depth 4 at
+    // index 4 still maps to kickIdx[2], the last/fully-kicked-in frame).
+    expect(out[1]).toBe(kickIdx[0]);
+    expect(out[2]).toBe(kickIdx[1]);
+    expect(out[3]).toBe(kickIdx[2]);
+    expect(out[4]).toBe(kickIdx[2]);
+  });
+
+  test("propKickFrameSequence: undefined/empty kickIdx is a no-op passthrough (cramped species)", () => {
+    const phases: GaitPhase[] = [0, 1, 1, 2, 3];
+    const baseSeq = [0, 1, 0, 5, 6];
+    expect(propKickFrameSequence(phases, baseSeq, undefined)).toEqual(baseSeq);
+    expect(propKickFrameSequence(phases, baseSeq, [])).toEqual(baseSeq);
+  });
+
+  test("getStatusFrames: species with room get kickIdx frames appended after lean/peek; the pebble is never absent from any frame", () => {
+    for (const species of KICK_SPECIES) {
+      const { frames, gaitIdx, kickIdx } = getStatusFrames(
         bones({ species }),
         "neutral",
         undefined,
@@ -916,40 +990,34 @@ describe("prop kick (living-world P4 Task 4)", () => {
         PROP,
       );
       expect(gaitIdx).toBeDefined();
-      const kicked = new Set([gaitIdx!.lean, gaitIdx!.peek]);
-      frames.forEach((frame, i) => {
-        // feet (the daily sprout) is untouched by Task 4 — present always.
+      expect(kickIdx).toBeDefined();
+      expect(kickIdx!.length).toBe(PROP_KICK_COLUMNS[species]!.length);
+      // Appended strictly after peek, in order.
+      for (let i = 0; i < kickIdx!.length; i++) {
+        expect(kickIdx![i]).toBe(gaitIdx!.peek + 1 + i);
+      }
+      // The pebble is present on EVERY frame — never withheld.
+      for (const frame of frames) {
+        expect(frame).toContain(PROP.ahead);
         expect(frame).toContain(PROP.feet);
-        if (kicked.has(i)) {
-          expect(frame).not.toContain(PROP.ahead);
-        } else {
-          expect(frame).toContain(PROP.ahead);
-        }
-      });
+      }
     }
   });
 
-  test("kicked (pebble-withheld) frames still satisfy the blank-cell contract — feet alone never clobbers body pixels", () => {
-    for (const species of SPECIES) {
-      const { frames, gaitIdx } = getStatusFrames(
+  test("getStatusFrames: cramped species get no kickIdx — untouched by Task 4, identical to Task 3", () => {
+    for (const species of CRAMPED_SPECIES) {
+      const withProp = getStatusFrames(
         bones({ species }),
         "neutral",
         undefined,
         undefined,
         true,
+        PROP,
       );
-      expect(gaitIdx).toBeDefined();
-      for (const idx of [gaitIdx!.lean, gaitIdx!.peek]) {
-        const rows = frames[idx].split("\n");
-        const base = frames[idx].split("\n"); // pre-prop baseline (no prop was passed above)
-        applyProp(species, rows, kickedProp(PROP));
-        for (let r = 0; r < rows.length; r++) {
-          const b = [...(base[r] ?? "")];
-          const p = [...rows[r]];
-          for (let c = 0; c < p.length; c++) {
-            if ((b[c] ?? " ") !== p[c]) expect(b[c] ?? " ").toBe(" ");
-          }
-        }
+      expect(withProp.kickIdx).toBeUndefined();
+      for (const frame of withProp.frames) {
+        expect(frame).toContain(PROP.ahead);
+        expect(frame).toContain(PROP.feet);
       }
     }
   });
@@ -958,15 +1026,17 @@ describe("prop kick (living-world P4 Task 4)", () => {
     const withKick = getStatusFrames(bones(), "neutral", undefined, undefined, false, PROP);
     const before = getStatusFrames(bones(), "neutral", undefined, undefined, false, PROP);
     expect(withKick).toEqual(before);
+    expect(withKick.kickIdx).toBeUndefined();
     for (const frame of withKick.frames) {
       expect(frame).toContain(PROP.ahead);
       expect(frame).toContain(PROP.feet);
     }
   });
 
-  test("no prop ⇒ kick logic is a no-op (no crash, gaitIdx still present)", () => {
-    const { gaitIdx } = getStatusFrames(bones(), "neutral", undefined, undefined, true);
+  test("no prop ⇒ kick logic is a no-op (no crash, no kickIdx, gaitIdx still present)", () => {
+    const { gaitIdx, kickIdx } = getStatusFrames(bones(), "neutral", undefined, undefined, true);
     expect(gaitIdx).toBeDefined();
+    expect(kickIdx).toBeUndefined();
   });
 });
 

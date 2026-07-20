@@ -53,6 +53,23 @@ interface RenderCase {
    *  loader plugin swaps the module for a deterministic stub rather than
    *  reasoning about calendar-day races between the test and child clocks. */
   stubProp?: { feet: string; ahead: string };
+  /** Override `generateBones`'s salt (userId stays "smoke") so a test can
+   *  pin a specific species — default "salt" always yields "chonk" (one of
+   *  the 9 cramped species with no PROP_KICK_COLUMNS entry, living-world P4
+   *  Task 4), so the step-kick tests need a different salt to land on a
+   *  species that actually has a kick family. */
+  salt?: string;
+  /** Pin `buildWanderSequence`'s `phases` output via a child-local loader
+   *  plugin stub (same idiom as `throwWander`/`stubProp` above) — the real
+   *  generator seeds off `Date.now()` with no config-level override, so a
+   *  test that needs a SPECIFIC phase sequence (e.g. a guaranteed run of
+   *  step ticks long enough to exercise every kick column) pins it here
+   *  instead of retrying against the wall clock. `horizontal`/`vertical`
+   *  are filled with zeros (their values don't matter to the kick tests);
+   *  `gaitWalkOpts` is still stubbed (state.ts calls it unconditionally
+   *  before `buildWanderSequence`) but its return value is unused once
+   *  `buildWanderSequence` itself is replaced. */
+  stubPhases?: number[];
 }
 
 /** Run writeStatusState in a fresh subprocess under a temp config dir and return
@@ -88,10 +105,13 @@ function render(c: RenderCase): Record<string, unknown> | null {
   }
 
   // A child-local Bun loader plugin swaps wander.ts for a throwing stub — fully
-  // isolated to this process, so it can't leak into other test files.
+  // isolated to this process, so it can't leak into other test files. Each
+  // stub block below registers its own `plugin({...})` call but shares ONE
+  // `import { plugin } from "bun"` (hoisted below) — importing it twice in
+  // the same module is a SyntaxError, which bites the instant two stubs are
+  // active in the same render() call (e.g. stubProp + stubPhases together).
   const throwBlock = c.throwWander
     ? `
-import { plugin } from "bun";
 plugin({ name: "throw-wander", setup(b) {
   b.onLoad({ filter: /wander\\.ts$/ }, () => ({
     loader: "js",
@@ -108,7 +128,6 @@ plugin({ name: "throw-wander", setup(b) {
   // the surrounding quote style.
   const propsStubBlock = c.stubProp
     ? `
-import { plugin } from "bun";
 plugin({ name: "stub-props", setup(b) {
   b.onLoad({ filter: /props\\.ts$/ }, () => ({
     loader: "js",
@@ -122,11 +141,38 @@ plugin({ name: "stub-props", setup(b) {
 `
     : "";
 
-  const childSrc = `${throwBlock}${propsStubBlock}
+  // Same idiom again: pins `buildWanderSequence`'s `phases` output (P4 Task
+  // 4's step-kick tests need a SPECIFIC, guaranteed-long-enough run of step
+  // ticks rather than hoping a `Date.now()`-seeded real walk happens to
+  // produce one). `gaitWalkOpts` still has to exist (state.ts calls it
+  // unconditionally before `buildWanderSequence`) but its return value is
+  // discarded once `buildWanderSequence` itself is replaced.
+  const stubPhasesBlock = c.stubPhases
+    ? `
+plugin({ name: "stub-phases", setup(b) {
+  b.onLoad({ filter: /wander\\.ts$/ }, () => ({
+    loader: "js",
+    contents: ${JSON.stringify(
+      `export function gaitWalkOpts(){return {range:4,length:${c.stubPhases.length},dwellMin:2,dwellMax:2,stepEvery:1,hopHeight:0,seed:1}}
+export function buildWanderSequence(){
+  const phases=${JSON.stringify(c.stubPhases)};
+  return {horizontal:phases.map(()=>0),vertical:undefined,phases};
+}`,
+    )},
+  }));
+}});
+`
+    : "";
+  const pluginImport =
+    throwBlock || propsStubBlock || stubPhasesBlock
+      ? `import { plugin } from "bun";\n`
+      : "";
+
+  const childSrc = `${pluginImport}${throwBlock}${propsStubBlock}${stubPhasesBlock}
 import { writeStatusState } from ${STATE_TS};
 import { generateBones } from ${ENGINE_TS};
 const companion = {
-  bones: generateBones("smoke", "salt"),
+  bones: generateBones("smoke", ${JSON.stringify(c.salt ?? "salt")}),
   name: "Waffle",
   personality: "x",
   hatchedAt: Date.now(),
@@ -479,14 +525,10 @@ describe("writeStatusState — ambient ground prop (living-world P4 Task 3)", ()
     });
     const frames = state!.frames as string[];
     expect(frames.length).toBeGreaterThan(0);
-    // wanderEnabled:true appends the lean/peek gait frames (P1) — the LAST
-    // two entries — and P4 Task 4's step-kick withholds `ahead` on exactly
-    // those two (see the "prop kick" describe block below); every other
-    // frame still carries both glyphs.
-    frames.forEach((frame, i) => {
+    for (const frame of frames) {
       expect(frame).toContain(PROP.feet);
-      if (i < frames.length - 2) expect(frame).toContain(PROP.ahead);
-    });
+      expect(frame).toContain(PROP.ahead);
+    }
   });
 
   test("subtle: props are full-only idle juice — absent", () => {
@@ -538,11 +580,10 @@ describe("writeStatusState — ambient ground prop (living-world P4 Task 3)", ()
       stubProp: PROP,
     });
     const frames = state!.frames as string[];
-    // Same lean/peek (last-two) exception as above — P4 Task 4.
-    frames.forEach((frame, i) => {
+    for (const frame of frames) {
       expect(frame).toContain(PROP.feet);
-      if (i < frames.length - 2) expect(frame).toContain(PROP.ahead);
-    });
+      expect(frame).toContain(PROP.ahead);
+    }
   });
 
   test("no stub (real pickDayProp): write never breaks — props are best-effort", () => {
@@ -559,77 +600,83 @@ describe("writeStatusState — prop kick (living-world P4 Task 4)", () => {
   // Neither glyph occurs in any species' innate art, so containment proves
   // the prop landed (a collision would silently skip the overlay).
   const PROP = { feet: "❦", ahead: "•" };
+  // The finalized `state.frames` have gone through `finalizeIdleBlock`
+  // (unshifts the emote FX row, trims dead top rows) — the row the ahead
+  // glyph lands on there is NOT necessarily row 4 the way it is straight out
+  // of `getStatusFrames`, so search every row rather than assuming an index.
+  const aheadColumn = (frame: string): number => {
+    for (const row of frame.split("\n")) {
+      const col = [...row].indexOf(PROP.ahead);
+      if (col >= 0) return col;
+    }
+    return -1;
+  };
 
-  test("the walk's lean/peek gait frames (last two of `frames`) withhold the pebble; every other frame keeps it", () => {
+  test("the pebble is present on every frame of the real baked walk — never withheld (default companion is chonk, one of the 9 cramped species)", () => {
     const state = render({
       config: { gameFeel: "full", wanderEnabled: true },
       mood: "focused",
       stubProp: PROP,
     });
     const frames = state!.frames as string[];
-    // Precondition (P1's "gait lockstep" test above): gaitVariants appended
-    // exactly two frames (lean, peek) after the base cycle.
-    expect(frames.length).toBeGreaterThanOrEqual(7);
-    const kicked = new Set([frames.length - 2, frames.length - 1]);
-    frames.forEach((frame, i) => {
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames) {
       expect(frame).toContain(PROP.feet);
-      if (kicked.has(i)) {
-        expect(frame).not.toContain(PROP.ahead);
-      } else {
-        expect(frame).toContain(PROP.ahead);
-      }
-    });
-  });
-
-  test("the actual rendered sprite differs between a step tick and a direction-flip tick", () => {
-    // This is the state_wander-level proof that the kick reaches the real
-    // baked write, not just getStatusFrames in isolation: find a tick in the
-    // walk-length frameSequence that lands on an ordinary frame (pebble
-    // present) and one that lands on the appended lean/peek frame (pebble
-    // withheld), and confirm the two rendered frames actually differ.
-    //
-    // `writeStatusState` seeds the walk off the real `Date.now()` (no test
-    // seam to pin it — same as the pre-existing P1 "carries lean frames"
-    // test above, which has the identical dependency), so whether a given
-    // 180-tick walk happens to visit the range edge (the only way `idx.lean`
-    // gets selected — `idx.peek` needs `showStats`, off by default) is
-    // probabilistic. "chaotic" mood (range 6, dwellMin 2) makes it land on
-    // the edge on all but a sliver of seeds; retrying a bounded few times
-    // over fresh real-clock seeds collapses that sliver to negligible
-    // without pinning a seed this harness doesn't expose.
-    let ordinaryFrame: string | undefined;
-    let kickedFrame: string | undefined;
-    for (let attempt = 0; attempt < 8 && !kickedFrame; attempt++) {
-      const state = render({
-        config: { gameFeel: "full", wanderEnabled: true },
-        mood: "chaotic",
-        stubProp: PROP,
-      });
-      const frames = state!.frames as string[];
-      const frameSequence = state!.frameSequence as number[];
-      const kickedIdx = new Set([frames.length - 2, frames.length - 1]);
-      const ordinaryTick = frameSequence.findIndex((f) => !kickedIdx.has(f));
-      const kickedTick = frameSequence.findIndex((f) => kickedIdx.has(f));
-      if (ordinaryTick >= 0 && kickedTick >= 0) {
-        ordinaryFrame = frames[frameSequence[ordinaryTick]];
-        kickedFrame = frames[frameSequence[kickedTick]];
-      }
+      expect(frame).toContain(PROP.ahead);
     }
-    expect(kickedFrame).toBeDefined();
-    expect(ordinaryFrame).not.toBe(kickedFrame);
-    expect(ordinaryFrame).toContain(PROP.ahead);
-    expect(kickedFrame).not.toContain(PROP.ahead);
   });
 
-  test("gaitVariants off (wanderEnabled:false) ⇒ no lean/peek frames exist, so the kick never triggers — every frame keeps the pebble", () => {
+  test("a species with room (pikachu, salt \"x\") genuinely slides the pebble through multiple columns across the real baked walk, and it's never absent", () => {
+    // This is the state_wander-level proof the kick reaches the real write,
+    // not just getStatusFrames in isolation: walk the actual frameSequence
+    // this write produced and read the ahead glyph's rendered column at
+    // every tick. `stubPhases` pins the walk's phase track (W1 — the real
+    // generator seeds off Date.now() with no config-level override, so this
+    // is deterministic rather than hoping a real walk happens to travel):
+    // dwell(4) → 5 step ticks (enough to run past pikachu's 4 kick columns
+    // and saturate) → edge-dwell(2) → 2 more step ticks → home-linger →
+    // dwell. `propKickFrameSequence` only ever overrides a phase===1 tick —
+    // every other tick (dwell/edge/home alike) renders the plain prop at its
+    // rest column (11), so the second step run starts fresh from col 10.
+    const stubPhases = [
+      0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 1, 1, 3, 0, 0, 0, 0, 0, 0,
+    ];
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true },
+      stubProp: PROP,
+      salt: "x",
+      stubPhases,
+    });
+    const frames = state!.frames as string[];
+    const frameSequence = state!.frameSequence as number[];
+    expect(frameSequence.length).toBe(stubPhases.length);
+    const columns = frameSequence.map((idx) => aheadColumn(frames[idx]));
+    // Never absent: every tick's frame contains the pebble somewhere.
+    expect(columns.every((c) => c >= 0)).toBe(true);
+    // Genuine motion, deterministically: every one of pikachu's positions —
+    // rest (11) plus all 4 kick columns (10, 9, 8, 7) — actually appears,
+    // and in the expected order over the stubbed run.
+    expect(columns).toEqual([
+      11, 11, 11, 11, // dwell
+      10, 9, 8, 7, 7, // 5 step ticks: climbs then saturates at col 7
+      11, 11, // edge-dwell: not a step tick, plain prop at rest
+      10, 9, // 2 more step ticks: fresh run, restarts from col 10
+      11, // home-linger: plain prop at rest
+      11, 11, 11, 11, 11, 11, // dwell
+    ]);
+  });
+
+  test("gaitVariants off (wanderEnabled:false) ⇒ no kick frames exist, so every frame keeps the pebble at its rest anchor", () => {
     const state = render({
       config: { gameFeel: "full", wanderEnabled: false },
       stubProp: PROP,
+      salt: "x",
     });
     const frames = state!.frames as string[];
     for (const frame of frames) {
       expect(frame).toContain(PROP.feet);
       expect(frame).toContain(PROP.ahead);
+      expect(aheadColumn(frame)).toBe(11);
     }
   });
 });

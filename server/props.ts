@@ -44,12 +44,12 @@ const FEET_PROPS: readonly string[] = [
 
 /**
  * The kicked pebble for the `ahead` anchor — a daily-constant glyph, drawn
- * here. P4 Task 4 found no second column blank across every species free of
- * both body pixels and the `feet` anchor (which already occupies the one
- * otherwise-blank near column for 7/20 species), so it does not advance a
- * *column*; instead the pebble is withheld (`art.ts`'s `kickedProp`) on the
- * walk's lean/peek direction-flip frames. See the "prop kick" decision-gate
- * note in art.test.ts for the full blank-cell evidence.
+ * here. P4 Task 4 slides this glyph through per-species columns on the
+ * walk's step ticks for the 11 species with room for it (`art.ts`'s
+ * `PROP_KICK_COLUMNS`/`propKickFrameSequence`); the glyph itself never
+ * changes and is never removed once drawn — only its rendered column moves.
+ * See the "prop kick" decision-gate note in art.test.ts for the full
+ * per-species blank-cell evidence.
  */
 const AHEAD_PROPS: readonly string[] = [
   ".", // pebble
