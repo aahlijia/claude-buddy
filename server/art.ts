@@ -728,7 +728,8 @@ export type CelebrationKind =
   | "whim"
   | "discovery"
   | "shiny"
-  | "statup";
+  | "statup"
+  | "visitor";
 
 interface FlourishCycle {
   eyes: readonly string[];
@@ -753,6 +754,10 @@ const FLOURISH_BY_KIND: Record<CelebrationKind, FlourishCycle> = {
   // A stat crossing a whole point (stats-leveling-v2 §P4): a quick, quiet
   // proud bob — the smallest celebration, matching how often it fires.
   statup: { eyes: ["^", "-", "^"], frameSequence: [0, 1, 2] },
+  // A wild buddy visitor (living-world P2 Task 7): the same quiet 2-frame
+  // happy blink as `loot` — a greet is a small, common delight, not a big
+  // performance.
+  visitor: { eyes: ["^", "^"], frameSequence: [0, 1] },
 };
 
 /**

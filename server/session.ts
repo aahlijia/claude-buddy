@@ -54,6 +54,7 @@ import {
   resolveCombat,
   applyCombatDrops,
   writeEncounter,
+  readEncounter,
   bakePendingScene,
   writePendingEncounter,
   readPendingEncounter,
@@ -62,9 +63,12 @@ import {
   bossPips,
   bossDrop,
   BOSS_STAGE_BONUS,
+  writeVisitor,
+  VISITOR_GLYPH,
   type PlayerLook,
   type PendingEncounter,
 } from "./combat.ts";
+import { rollVisitor, bakeVisitorScene } from "./visitor.ts";
 import { gearArtOf, resolveAppearance } from "./equipment.ts";
 import { ITEMS } from "./items.ts";
 import { ownedItems } from "./shop.ts";
@@ -727,6 +731,92 @@ export function maybeFightBug(
   };
 }
 
+// ─── Wild visitors (living-world P2 Task 7) ───────────────────────────────────
+
+/**
+ * Roll a wild buddy visitor for this commit — a flavor beat distinct from the
+ * bug-fight pipeline above (visitor.ts): a different-species buddy wanders
+ * through, greets, and leaves. No fight, no gear, no stakes beyond an
+ * occasional small points reward.
+ *
+ * Called from `awardSessionComplete` AFTER the fight resolution, and rolls
+ * ONLY when this commit's own combat slot is untouched: `fightSummary` null
+ * (no fight/boss-stage resolved this commit) AND no live fight/standoff
+ * side-channel (`readEncounter`/`readPendingEncounter` both null). Combat
+ * always outranks a visitor — checked here AND again, independently, at
+ * render time (state.ts's `writeStatusState` third combat-block branch) as
+ * belt-and-suspenders. Also gated off entirely at `gameFeel=off`, mirroring
+ * `maybeFightBug`'s opt-out.
+ *
+ * Seeded per session-commit (`visitor:<user>:<startedAt>`) — deterministic
+ * and independent of the fight seed (which additionally folds in
+ * errorsSeen), so a re-run of the same commit boundary rolls the same
+ * result. Returns the one-line toast text for the caller's celebration (or
+ * null when nothing rolled); `writeVisitor` persists the greet scene itself
+ * as a side effect, mirroring how `maybeFightBug` writes the encounter
+ * side-channel before returning just the summary string.
+ */
+export function maybeVisitBuddy(
+  slot: string | undefined,
+  fightSummary: string | null,
+  startedAt: number,
+): string | null {
+  if (effectiveGameFeel() === "off") return null;
+  if (fightSummary !== null) return null;
+  if (readPendingEncounter() !== null) return null;
+  if (readEncounter() !== null) return null;
+
+  const companion = slot ? loadCompanionSlot(slot) : loadCompanion();
+  if (!companion) return null;
+
+  const seed = hashString(`visitor:${resolveUserId()}:${startedAt}`);
+  const visitor = rollVisitor(seed, companion.bones.species);
+  if (!visitor) return null;
+
+  // The greet scene shows the buddy's full look (worn hat + gear overlay),
+  // same as the standoff/fight bakes — best-effort, cosmetics only.
+  let look: PlayerLook | undefined;
+  try {
+    const xp = getXpState();
+    const appearance = resolveAppearance(
+      companion.bones,
+      xp.equipment,
+      xp.cosmeticFlags,
+      ITEMS,
+      ownedUpgradeEffects(xp),
+    );
+    look = { hat: appearance.hat, gear: gearArtOf(appearance) };
+  } catch {
+    // Cosmetics only — the greet still bakes bare.
+  }
+
+  const scene = bakeVisitorScene(
+    companion.bones.species,
+    companion.bones.eye,
+    visitor,
+    seed,
+    look,
+  );
+  // Producer clamp contract (Task 1/3 review): captionFrames does NOT
+  // length-clamp — species names come from engine.ts's curated SPECIES set
+  // (all short single words), keeping this well under artWidth, but pinned
+  // by a test all the same (visitor.test.ts / the render e2e).
+  const caption = `A wild ${visitor.species} stopped by!`;
+  writeVisitor({
+    frames: scene.frames,
+    sequence: scene.sequence,
+    at: Date.now(),
+    caption,
+    enemyGlyph: VISITOR_GLYPH,
+  });
+
+  if (visitor.reward) applyCombatDrops({ points: visitor.reward.points });
+  const rewardText = visitor.reward
+    ? ` left ${visitor.reward.points} pts!`
+    : "";
+  return `\u{1F43E} a wild ${visitor.species} stopped by!${rewardText}`;
+}
+
 // ─── Lifecycle entry points (called from award-xp.ts) ────────────────────────
 
 /** Capture the baseline at the start of a session (overwrites any stale one).
@@ -777,6 +867,10 @@ export interface SessionCompletion {
   /** Whole-point stat increments applied this commit (stats-leveling-v2 §P4).
    *  The caller surfaces them as a toast + panel flash. Empty ⇒ nothing rose. */
   statIncrements: Partial<Record<StatName, number>>;
+  /** One-line toast for a wild buddy visitor rolled this commit (living-world
+   *  P2 Task 7), or null when none rolled. Only ever non-null alongside
+   *  `fightSummary === null` — combat always outranks a visitor. */
+  visitorText: string | null;
 }
 
 /**
@@ -824,6 +918,11 @@ export function awardSessionComplete(
   const fightSummary = fight?.summary ?? null;
   const fightWon = fight?.won ?? false;
 
+  // Wild visitor (living-world P2 Task 7): a flavor beat rolled only when
+  // this commit's own fight left the combat slot untouched — see
+  // maybeVisitBuddy's docstring for the full suppression contract.
+  const visitorText = maybeVisitBuddy(slot, fightSummary, snapshot?.startedAt ?? 0);
+
   // A non-zero streak reward means a streak milestone just landed — roll loot
   // on top of the deterministic bonus (additional-rewards FR4.1).
   if (streakReward > 0) rollLoot("streak_milestone", slot);
@@ -831,5 +930,5 @@ export function awardSessionComplete(
   // Re-baseline: the next session starts counting from here.
   saveSnapshot({ startedAt: nowSeconds(), baseline: current });
 
-  return { bonus, state, fightSummary, fightWon, statIncrements };
+  return { bonus, state, fightSummary, fightWon, statIncrements, visitorText };
 }

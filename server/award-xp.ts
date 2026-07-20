@@ -120,16 +120,17 @@ function main(): void {
 
   if (event === "session_complete") {
     const prevLevel = getXpState().level;
-    const { bonus, state, fightSummary, fightWon, statIncrements } =
+    const { bonus, state, fightSummary, fightWon, statIncrements, visitorText } =
       awardSessionComplete(slot, species, rarity);
     // A commit ticks the daily whim (commits_made was bumped before this runs).
     const whimRewarded = safeTickWhim(slot);
     if (companion) {
       const leveled = state.level > prevLevel;
-      // A fight summary also suppresses the once-ever discovery announce, so
-      // the intro isn't consumed on a write where the fight owns the bubble.
+      // A fight summary (or a wild visitor — living-world P2 Task 7) also
+      // suppresses the once-ever discovery announce, so the intro isn't
+      // consumed on a write where the fight/visitor already owns the bubble.
       const discovered = maybeDiscoverWhim(
-        leveled || whimRewarded || fightSummary !== null,
+        leveled || whimRewarded || fightSummary !== null || visitorText !== null,
       );
       // Behavioral stat leveling feedback (stats-leveling-v2 §P4): a toast for
       // any stat that crossed a whole point this commit (the lowest celebration
@@ -145,6 +146,7 @@ function main(): void {
         discovered,
         "loot",
         statUpText,
+        visitorText,
       );
       writeStatusState(companion, {
         level: state.level,

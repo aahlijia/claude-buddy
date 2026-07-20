@@ -14,6 +14,7 @@ import { join, resolve } from "path";
 
 import { displayWidth } from "./art";
 import { bakePendingScene } from "./combat";
+import { bakeVisitorScene } from "./visitor";
 
 const SCRIPT = resolve(import.meta.dir, "..", "statusline", "buddy-status.sh");
 
@@ -1403,6 +1404,62 @@ describe("pending standoff render (design-pending-encounter Phase 3)", () => {
     const out = stripAnsi(renderStatus({ gameFeel: "full" }));
     expect(out).not.toContain("SA0");
     expect(out).toContain("("); // the default idle fixture
+  });
+});
+
+describe("wild visitor cameo render (living-world P2 Task 7)", () => {
+  // A real seeded bake (not a hand-fabricated fixture) — proves the actual
+  // visitor.ts flipbook is a well-formed combat-scene payload the shell can
+  // render, same as the fight/standoff scenes above.
+  const scene = bakeVisitorScene(
+    "cactus",
+    "·",
+    { species: "goose", shiny: false },
+    7,
+  );
+  const W = displayWidth(scene.frames[0].split("\n")[0]);
+  const VISIT_TEXT = "🐾 a wild goose stopped by!";
+
+  const renderVisitor = (o: Partial<StatusOverrides> = {}): string =>
+    stripAnsi(
+      renderStatus({
+        gameFeel: "full",
+        combatFrames: scene.frames,
+        combatSequence: scene.sequence,
+        artWidth: W,
+        enemyGlyph: "◇",
+        encounterSecondsAgo: 0,
+        celebration: { text: VISIT_TEXT, secondsAgo: 2 },
+        ...o,
+      }),
+    );
+
+  test("the greet scene renders at full, EncounterRecord-shaped like a resolved fight", () => {
+    const out = renderVisitor();
+    // Two distinct rows of the baked flipbook prove the real scene rendered,
+    // not the default idle fixture.
+    expect(out).not.toContain("(··)  ");
+    expect(out.split("\n").length).toBeGreaterThan(1);
+  });
+
+  test("never carries combatSticky — that bit is fight-specific", () => {
+    // Sanity: the standoff's TTL-bypass render only fires with combatSticky.
+    // A visitor scene renders purely off `encounterAt` freshness, so an aged
+    // encounterSecondsAgo reverts it exactly like a resolved fight would.
+    const fresh = renderVisitor({ encounterSecondsAgo: 0 });
+    const stale = renderVisitor({ encounterSecondsAgo: 99 });
+    expect(fresh).not.toBe(stale);
+  });
+
+  test("at subtle, the toast is the ONLY surface — the full-only scene reverts to idle", () => {
+    const out = renderVisitor({ gameFeel: "subtle" });
+    expect(out).toContain(VISIT_TEXT); // celebration toast — kind-agnostic gate
+    expect(out).toContain("("); // idle fixture, not the visitor scene
+  });
+
+  test("at full, both the toast and the scene are present", () => {
+    const out = renderVisitor();
+    expect(out).toContain(VISIT_TEXT);
   });
 });
 

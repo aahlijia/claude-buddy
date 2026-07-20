@@ -761,3 +761,268 @@ describe("bosses survive commit rebaselining (fresh process)", () => {
     expect(out.captionLine).toMatch(/▰▱/u);
   });
 });
+
+// ─── maybeVisitBuddy — wild visitor trigger (living-world P2 Task 7,
+// fresh-process) ────────────────────────────────────────────────────────────
+//
+// Combat always outranks a visitor: `maybeVisitBuddy` rolls ONLY when this
+// commit's own fight left the combat slot untouched (fightSummary null) AND
+// neither combat side-channel (encounter.json / pending-encounter.json) is
+// live. Proved with a seed-search technique like the fightWon suite above
+// (never by temporarily lowering VISITOR_ODDS): find a `startedAt` where an
+// UNBLOCKED roll genuinely hits, then re-run the SAME startedAt under each
+// suppression condition to prove the guard — not just an unlucky miss —
+// is what blocks it.
+
+describe("maybeVisitBuddy — wild visitor trigger (living-world P2 Task 7, fresh process)", () => {
+  test("suppression matrix: fight present / standoff present / off ⇒ no roll", () => {
+    const script = `
+      const { saveConfig, saveCompanion } = await import("./server/state.ts");
+      const { maybeVisitBuddy } = await import("./server/session.ts");
+      const {
+        writePendingEncounter, writeEncounter, readVisitor, clearVisitor,
+        clearPendingEncounter, bakePendingScene,
+      } = await import("./server/combat.ts");
+
+      saveConfig({ gameFeel: "full" });
+      saveCompanion({
+        name: "visittest",
+        personality: "",
+        bones: {
+          species: "cactus", rarity: "common", eye: "\\u00b7", hat: "none",
+          shiny: false, peak: "SNARK", dump: "WISDOM",
+          stats: { DEBUGGING: 50, PATIENCE: 10, CHAOS: 10, WISDOM: 10, SNARK: 10 },
+        },
+      });
+
+      // Search for a startedAt where an UNBLOCKED roll hits — same technique
+      // the fightWon suite uses (varying the seed input, never the odds).
+      let hitStartedAt = null;
+      let hitText = null;
+      for (let t = 0; t < 3000 && hitStartedAt === null; t++) {
+        const text = maybeVisitBuddy(undefined, null, t);
+        if (text !== null) {
+          hitStartedAt = t;
+          hitText = text;
+          clearVisitor(); // undo the side effect so the matrix below starts clean
+        }
+      }
+
+      // "off" ⇒ no roll, even at the known-hit startedAt.
+      saveConfig({ gameFeel: "off" });
+      const offResult = maybeVisitBuddy(undefined, null, hitStartedAt);
+      const offVisitor = readVisitor();
+      saveConfig({ gameFeel: "full" });
+
+      // A fight this commit ⇒ no roll (fightSummary non-null).
+      const fightResult = maybeVisitBuddy(undefined, "some fight summary", hitStartedAt);
+      const fightVisitor = readVisitor();
+
+      // A live standoff ⇒ no roll, even with fightSummary null.
+      const scene = bakePendingScene("cactus", "\\u00b7", "dragon", "\\u00b7");
+      writePendingEncounter({
+        bugId: "segfault_dragon",
+        tier: 4,
+        frames: scene.frames,
+        sequence: scene.sequence,
+        sightedAt: Date.now(),
+        startedAt: hitStartedAt,
+      });
+      const standoffResult = maybeVisitBuddy(undefined, null, hitStartedAt);
+      const standoffVisitor = readVisitor();
+      clearPendingEncounter();
+
+      // A live resolved encounter ⇒ no roll.
+      writeEncounter(
+        {
+          outcome: "win",
+          frames: scene.frames,
+          sequence: scene.sequence,
+          enemyGlyph: "x",
+          drop: { points: 0 },
+          summary: "",
+        },
+        "proj",
+      );
+      const encResult = maybeVisitBuddy(undefined, null, hitStartedAt);
+      const encVisitor = readVisitor();
+
+      console.log(JSON.stringify({
+        hitStartedAt, hitText,
+        offResult, offVisitor,
+        fightResult, fightVisitor,
+        standoffResult, standoffVisitor,
+        encResult, encVisitor,
+      }));
+    `;
+    const cfgDir = mkdtempSync(join(tmpdir(), "buddy-visit-trigger-proc-"));
+    try {
+      const env: Record<string, string | undefined> = {
+        ...process.env,
+        CLAUDE_CONFIG_DIR: cfgDir,
+      };
+      delete env.TMUX_PANE;
+      const res = spawnSync("bun", ["-e", script], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        encoding: "utf8",
+        timeout: 60_000,
+      });
+      expect(res.stderr).toBe("");
+      expect(res.status).toBe(0);
+      const out = JSON.parse(res.stdout.trim().split("\n").pop()!);
+
+      // The search found a genuine hit and it wrote the greet scene.
+      expect(out.hitStartedAt).not.toBeNull();
+      expect(out.hitText).toMatch(/^🐾 a wild \w+ stopped by!( left \d+ pts!)?$/u);
+
+      // Every suppression case: no toast text AND nothing written.
+      expect(out.offResult).toBeNull();
+      expect(out.offVisitor).toBeNull();
+      expect(out.fightResult).toBeNull();
+      expect(out.fightVisitor).toBeNull();
+      expect(out.standoffResult).toBeNull();
+      expect(out.standoffVisitor).toBeNull();
+      expect(out.encResult).toBeNull();
+      expect(out.encVisitor).toBeNull();
+    } finally {
+      rmSync(cfgDir, { recursive: true, force: true });
+    }
+  });
+
+  test("an unblocked roll persists the greet scene and toast through the real commit path", () => {
+    const script = `
+      const { readFileSync } = await import("fs");
+      const { join } = await import("path");
+      const { saveConfig, saveCompanion, loadCompanion, writeStatusState, pickCelebration } =
+        await import("./server/state.ts");
+      const { awardSessionComplete, saveSnapshot } = await import("./server/session.ts");
+      const { readVisitor } = await import("./server/combat.ts");
+
+      saveConfig({ gameFeel: "full" });
+      saveCompanion({
+        name: "visittest2",
+        personality: "",
+        bones: {
+          species: "cactus", rarity: "common", eye: "\\u00b7", hat: "none",
+          shiny: false, peak: "SNARK", dump: "WISDOM",
+          stats: { DEBUGGING: 50, PATIENCE: 10, CHAOS: 10, WISDOM: 10, SNARK: 10 },
+        },
+      });
+
+      const ZERO = {
+        all_green: 0, large_diffs: 0, errors_seen: 0, commits_made: 0,
+        tests_failed: 0, type_errors: 0, lint_fails: 0, build_fails: 0, pets: 0,
+      };
+
+      // Search over startedAt via the REAL production entry point — a
+      // zero-delta commit never spawns a fight, so fightSummary stays null
+      // and the visitor trigger's own conditions are met by construction.
+      let hit = null;
+      for (let t = 0; t < 3000 && hit === null; t++) {
+        saveSnapshot({ startedAt: t, baseline: ZERO });
+        const completion = awardSessionComplete();
+        if (completion.visitorText !== null) hit = completion;
+      }
+
+      const visitor = readVisitor();
+
+      // The search loop above ran the REAL awardSessionComplete many times,
+      // which can incidentally trip a genuine streak-milestone loot roll on
+      // some iteration (unrelated to the visitor being tested here). Clear
+      // any resulting lastDrop so it can't compete for the bubble via
+      // buildCelebration's loot side-channel merge and make this assertion
+      // flaky — a real concurrent loot drop legitimately outranking a
+      // visitor (CELEB_PRIORITY) is exercised separately, not here.
+      const { loadLoot, saveLoot } = await import("./server/loot.ts");
+      saveLoot({ ...loadLoot(), lastDrop: null });
+
+      // Mirror award-xp.ts's session_complete status write so the render
+      // fields land in status.json exactly like production.
+      const { celebration } = pickCelebration(
+        hit.state.level, false, false, hit.fightSummary, false, "loot",
+        null, hit.visitorText,
+      );
+      const companion = loadCompanion();
+      writeStatusState(companion, { celebration, cause: "loot" });
+
+      const status = JSON.parse(readFileSync(
+        join(process.env.CLAUDE_CONFIG_DIR, "buddy-state", "status.json"),
+        "utf8",
+      ));
+      console.log(JSON.stringify({
+        hitVisitorText: hit.visitorText,
+        hitFightSummary: hit.fightSummary,
+        visitorCaption: visitor?.caption ?? null,
+        visitorFrameCount: visitor?.frames?.length ?? 0,
+        celebrationKind: status.celebration?.kind ?? null,
+        celebrationText: status.celebration?.text ?? null,
+        hasCombatFrames: Array.isArray(status.combatFrames) && status.combatFrames.length > 0,
+        combatSticky: status.combatSticky ?? null,
+        enemyGlyph: status.enemyGlyph ?? null,
+      }));
+    `;
+    const cfgDir = mkdtempSync(join(tmpdir(), "buddy-visit-e2e-proc-"));
+    try {
+      const env: Record<string, string | undefined> = {
+        ...process.env,
+        CLAUDE_CONFIG_DIR: cfgDir,
+      };
+      delete env.TMUX_PANE;
+      const res = spawnSync("bun", ["-e", script], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        encoding: "utf8",
+        timeout: 60_000,
+      });
+      expect(res.stderr).toBe("");
+      expect(res.status).toBe(0);
+      const out = JSON.parse(res.stdout.trim().split("\n").pop()!);
+
+      expect(out.hitFightSummary).toBeNull();
+      expect(out.hitVisitorText).toMatch(/^🐾 a wild \w+ stopped by!/u);
+      expect(out.visitorCaption).toMatch(/^A wild \w+ stopped by!$/u);
+      expect(out.visitorFrameCount).toBeGreaterThan(0);
+      // Toast surfaces via the celebration channel (subtle-visible surface).
+      expect(out.celebrationKind).toBe("visitor");
+      expect(out.celebrationText).toBe(out.hitVisitorText);
+      // Scene surfaces via the resolved-phase combat fields — never sticky
+      // (that bit is fight-specific).
+      expect(out.hasCombatFrames).toBe(true);
+      expect(out.combatSticky).toBeNull();
+      expect(out.enemyGlyph).toBe("◇");
+
+      // Through the REAL shell (statusline/buddy-status.sh) against the
+      // status.json the production write just left in this same
+      // CLAUDE_CONFIG_DIR — proves the caption + scene actually render, not
+      // just that the server-side fields were set correctly.
+      const shellEnv: Record<string, string> = { CLAUDE_CONFIG_DIR: cfgDir };
+      for (const k of ["HOME", "PATH", "USER", "LANG", "LC_ALL", "LC_CTYPE"]) {
+        if (process.env[k]) shellEnv[k] = process.env[k]!;
+      }
+      if (!shellEnv.LC_ALL && !shellEnv.LANG && !shellEnv.LC_CTYPE) {
+        shellEnv.LC_ALL = "en_US.UTF-8";
+      }
+      shellEnv.COLUMNS = "125";
+      shellEnv.BUDDY_FAKE_COLS = "125";
+      const shellScript = join(
+        import.meta.dir,
+        "..",
+        "statusline",
+        "buddy-status.sh",
+      );
+      const shellRes = spawnSync("bash", [shellScript], {
+        env: shellEnv,
+        input: "",
+        encoding: "utf8",
+      });
+      expect(shellRes.status).toBe(0);
+      // eslint-disable-next-line no-control-regex
+      const rendered = shellRes.stdout.replace(/\x1b\[[0-9;]*m/g, "");
+      expect(rendered).toContain("stopped by!");
+      expect(rendered).toContain(out.hitVisitorText.match(/wild (\w+)/u)![1]);
+    } finally {
+      rmSync(cfgDir, { recursive: true, force: true });
+    }
+  });
+});

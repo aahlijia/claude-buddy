@@ -918,3 +918,78 @@ export function clearPendingEncounter(): void {
     /* already gone — clearing is idempotent */
   }
 }
+
+// ─── Wild-visitor side-channel (living-world P2 Task 7) ───────────────────────
+
+/**
+ * The baked wild-visitor greet scene (visitor.ts's pure core bakes it;
+ * session.ts's `maybeVisitBuddy` is the only writer). Surfaced through the
+ * same combat render fields as a resolved fight (state.ts) but persisted in
+ * its own file so it never competes with `encounter.json`'s fight-specific
+ * lifecycle or `pending-encounter.json`'s no-TTL standoff. EncounterRecord-
+ * shaped by design, with two differences: `caption` is REQUIRED (a visitor
+ * has no `project` to fall back to — the classic "Bug fight in <project>!"
+ * text never applies to it) and `enemyGlyph` is always {@link VISITOR_GLYPH}.
+ */
+export interface VisitorRecord {
+  frames: string[];
+  sequence: number[];
+  at: number; // Date.now() — TTL freshness, same window as encounter.json
+  caption: string;
+  enemyGlyph: string;
+}
+
+/** The wild visitor's margin glyph — distinct from any bug glyph so a
+ *  stale-shell degraded render (the enemyGlyph fallback) never misreads a
+ *  greet cameo as combat. */
+export const VISITOR_GLYPH = "◇"; // ◇
+
+function visitorFile(): string {
+  return join(buddyStateDir(), "visitor.json");
+}
+
+/** Persist the baked visitor greet atomically (tmp+rename), like
+ *  `writeEncounter`/`writePendingEncounter`. */
+export function writeVisitor(rec: VisitorRecord): void {
+  mkdirSync(buddyStateDir(), { recursive: true });
+  const file = visitorFile();
+  const tmp = file + ".tmp";
+  writeFileSync(tmp, JSON.stringify(rec));
+  try {
+    renameSync(tmp, file);
+  } catch {
+    writeFileSync(file, JSON.stringify(rec));
+  }
+}
+
+/**
+ * Read the visitor side-channel if present and fresh — the same
+ * `ENCOUNTER_TTL_MS` window `readEncounter` uses (a wild visitor is exactly
+ * as transient as a resolved fight). Returns null when missing, malformed, or
+ * stale.
+ */
+export function readVisitor(
+  maxAgeMs: number = ENCOUNTER_TTL_MS,
+): VisitorRecord | null {
+  try {
+    const rec = JSON.parse(
+      readFileSync(visitorFile(), "utf8"),
+    ) as VisitorRecord;
+    if (!Array.isArray(rec.frames) || typeof rec.at !== "number") return null;
+    if (Date.now() - rec.at > maxAgeMs) return null;
+    return rec;
+  } catch {
+    return null;
+  }
+}
+
+/** Clear the visitor side-channel. Not on the production hot path (a fresh
+ *  roll overwrites the file atomically), but exported for test/fixture
+ *  hygiene, mirroring `clearPendingEncounter`. */
+export function clearVisitor(): void {
+  try {
+    rmSync(visitorFile(), { force: true });
+  } catch {
+    /* already gone — clearing is idempotent */
+  }
+}

@@ -786,13 +786,17 @@ export interface StatusOpts {
   stinger?: import("./wander.ts").StingerKind;
 }
 
-/** Higher wins when several celebrations contend for the single bubble slot. */
+/** Higher wins when several celebrations contend for the single bubble slot.
+ *  `visitor` (living-world P2 Task 7) sits directly below `loot` — the kind a
+ *  fight summary also rides — so a wild-visitor greet loses to an actual
+ *  fight/loot toast but still outranks a stat-up or the one-time discovery. */
 const CELEB_PRIORITY: Record<CelebrationKind, number> = {
-  ascension: 6,
-  shiny: 5,
-  levelup: 4,
-  whim: 3,
-  loot: 2,
+  ascension: 7,
+  shiny: 6,
+  levelup: 5,
+  whim: 4,
+  loot: 3,
+  visitor: 2,
   statup: 1,
   discovery: 0,
 };
@@ -848,6 +852,13 @@ export function buildCelebration(
  * @param statUpText: Toast for a stat that crossed a whole point this commit,
  *     or null. The lowest rung — a common, quiet event never buries a level-up,
  *     fight, or the one-time discovery (stats-leveling-v2 §P4).
+ * @param visitorText: Toast for a wild buddy visitor rolled this commit
+ *     (living-world P2 Task 7), or null. Sits directly below the fight
+ *     summary rung — the trigger (session.ts's maybeVisitBuddy) never rolls a
+ *     visitor on a commit that also resolved a fight, so the two are
+ *     mutually exclusive in practice, but the ladder still orders them
+ *     defensively: combat outranks a visitor everywhere else, so it does here
+ *     too.
  * @param now: Injected clock for tests; `Date.now()` in production.
  * @returns The celebration to write (or null) and the write's cause.
  */
@@ -859,6 +870,7 @@ export function pickCelebration(
   discovered: boolean,
   fallbackCause: StatusOpts["cause"],
   statUpText: string | null = null,
+  visitorText: string | null = null,
   now: number = Date.now(),
 ): { celebration: Celebration | null; cause: StatusOpts["cause"] } {
   if (leveled) {
@@ -877,6 +889,12 @@ export function pickCelebration(
     return {
       celebration: { text: fightSummary, kind: "loot", at: now },
       cause: "loot",
+    };
+  }
+  if (visitorText) {
+    return {
+      celebration: { text: visitorText, kind: "visitor", at: now },
+      cause: fallbackCause,
     };
   }
   if (discovered) {
@@ -996,7 +1014,7 @@ export function writeStatusState(
   let combatSticky: 1 | undefined;
   if (gate !== "off") {
     try {
-      const { readEncounter, readPendingEncounter } =
+      const { readEncounter, readPendingEncounter, readVisitor } =
         require("./combat.ts") as typeof import("./combat.ts");
       const { displayWidth } = require("./art.ts") as typeof import("./art.ts");
       const sceneWidth = (frs: string[]): number =>
@@ -1057,42 +1075,69 @@ export function writeStatusState(
           combatSequence = enc.sequence;
           artWidth = scene.width;
         }
-      } else if (cfg.gameFeel === "full") {
-        // Pending standoff (design-pending-encounter §5.1): no TTL, full-only,
-        // and only when it belongs to the live session (staleness guard §5.3).
-        // Gated on the CONFIGURED level, not the clamped `gate`: the standoff
-        // exists BECAUSE of errors, and the fresh error reaction keeps the
-        // auto-quiet spike clamp active (FR-E1) — the clamped gate would strip
-        // the scene sightBug just landed on the very next status write.
-        // Surfaced through the same combat fields plus the `combatSticky` bit so
-        // the shell bypasses the encounter TTL (the standoff has no encounterAt).
-        const pending = readPendingEncounter();
-        if (pending && Array.isArray(pending.frames) && pending.frames.length > 0) {
-          const { loadSnapshot } =
-            require("./session.ts") as typeof import("./session.ts");
-          const snap = loadSnapshot();
-          // Boss exemption (living-world P2 Task 4 fix): `snap.startedAt` is
-          // NOT a stable session identifier — awardSessionComplete rebaselines
-          // it to "now" on every commit — so gating render on a match would
-          // make a mid-fight boss stop rendering (though it still resolves
-          // correctly in session.ts) the moment any real time passes after a
-          // stage win. THREE readers share this exact staleness guard and
-          // must all carry the same boss exemption, or the next one silently
-          // reintroduces this bug: session.ts sightBug's `sameSession` check,
-          // session.ts maybeFightBug's `isBoss` check, and this render branch.
-          // A boss is dismissed only by explicit lifecycle events —
-          // startSession's unconditional clear (D12), the `off` gate, and the
-          // final-stage kill — never by segment staleness.
-          if (snap && (pending.kind === "boss" || snap.startedAt === pending.startedAt)) {
-            const scene = captionFrames(
-              pending.frames,
-              pending.project,
-              pending.caption,
-            );
+      } else {
+        if (cfg.gameFeel === "full") {
+          // Pending standoff (design-pending-encounter §5.1): no TTL, full-only,
+          // and only when it belongs to the live session (staleness guard §5.3).
+          // Gated on the CONFIGURED level, not the clamped `gate`: the standoff
+          // exists BECAUSE of errors, and the fresh error reaction keeps the
+          // auto-quiet spike clamp active (FR-E1) — the clamped gate would strip
+          // the scene sightBug just landed on the very next status write.
+          // Surfaced through the same combat fields plus the `combatSticky` bit so
+          // the shell bypasses the encounter TTL (the standoff has no encounterAt).
+          const pending = readPendingEncounter();
+          if (pending && Array.isArray(pending.frames) && pending.frames.length > 0) {
+            const { loadSnapshot } =
+              require("./session.ts") as typeof import("./session.ts");
+            const snap = loadSnapshot();
+            // Boss exemption (living-world P2 Task 4 fix): `snap.startedAt` is
+            // NOT a stable session identifier — awardSessionComplete rebaselines
+            // it to "now" on every commit — so gating render on a match would
+            // make a mid-fight boss stop rendering (though it still resolves
+            // correctly in session.ts) the moment any real time passes after a
+            // stage win. THREE readers share this exact staleness guard and
+            // must all carry the same boss exemption, or the next one silently
+            // reintroduces this bug: session.ts sightBug's `sameSession` check,
+            // session.ts maybeFightBug's `isBoss` check, and this render branch.
+            // A boss is dismissed only by explicit lifecycle events —
+            // startSession's unconditional clear (D12), the `off` gate, and the
+            // final-stage kill — never by segment staleness.
+            if (snap && (pending.kind === "boss" || snap.startedAt === pending.startedAt)) {
+              const scene = captionFrames(
+                pending.frames,
+                pending.project,
+                pending.caption,
+              );
+              combatFrames = scene.frames;
+              combatSequence = pending.sequence;
+              artWidth = scene.width;
+              combatSticky = 1;
+            }
+          }
+        }
+        // Wild visitor cameo (living-world P2 Task 7): the THIRD, lowest-
+        // priority branch of this combat block — tried only when neither a
+        // resolved fight nor a surfaced pending standoff claimed the scene
+        // this tick (combat always outranks a visitor; the trigger side in
+        // session.ts's maybeVisitBuddy independently enforces the same rule
+        // — belt-and-suspenders). Full-gated the same way the resolved phase
+        // above is: not via an explicit `cfg.gameFeel === "full"` check here,
+        // but because the shell's own `$enc_fresh` gate (buddy-status.sh)
+        // only honors `encounterAt` at gameFeel=full — so passing
+        // `visitor.at` straight through as `encounterAt` gets the same
+        // full-only behavior for free, no extra staleness check needed here.
+        // Never sets `combatSticky` — that bit is fight-specific (the pending
+        // standoff's no-encounterAt TTL bypass); a visitor scene always
+        // carries a real `encounterAt` instead.
+        if (combatFrames === undefined) {
+          const visitor = readVisitor();
+          if (visitor && Array.isArray(visitor.frames) && visitor.frames.length > 0) {
+            const scene = captionFrames(visitor.frames, undefined, visitor.caption);
             combatFrames = scene.frames;
-            combatSequence = pending.sequence;
+            combatSequence = visitor.sequence;
             artWidth = scene.width;
-            combatSticky = 1;
+            encounterAt = visitor.at;
+            enemyGlyph = visitor.enemyGlyph;
           }
         }
       }
@@ -1415,6 +1460,7 @@ const TRANSIENT_PREFIXES = [
   ".session_start.",
   "session.",
   "pending-encounter.", // standoff side-channel + its .tmp (design-pending-encounter §3.1)
+  "visitor.", // wild-visitor greet side-channel + its .tmp (living-world P2 Task 7)
   ".tty.", // statusline's cached controlling-PTY device (per session)
   ".status.patch.", // react.sh's atomic-patch temp (crash leftovers only)
   ".events.patch.",

@@ -21,8 +21,15 @@ import {
   bossDrop,
   BOSS_KILL_POINTS,
   composePose,
+  writeVisitor,
+  readVisitor,
+  clearVisitor,
+  VISITOR_GLYPH,
+  ENCOUNTER_TTL_MS,
   type PendingEncounter,
+  type VisitorRecord,
 } from "./combat";
+import { rollVisitor, bakeVisitorScene } from "./visitor";
 
 function bones(debug: number, overrides: Partial<BuddyBones> = {}): BuddyBones {
   return {
@@ -681,6 +688,89 @@ describe("pending-encounter I/O (Phase 1)", () => {
       JSON.stringify({ frames: ["x"], tier: 4 }), // no bugId / startedAt
     );
     expect(readPendingEncounter()).toBeNull();
+  });
+});
+
+describe("visitor I/O (living-world P2 Task 7)", () => {
+  let prevEnv: string | undefined;
+  let cfgDir: string;
+
+  beforeEach(() => {
+    prevEnv = process.env.CLAUDE_CONFIG_DIR;
+    cfgDir = mkdtempSync(join(tmpdir(), "buddy-visitor-test-"));
+    process.env.CLAUDE_CONFIG_DIR = cfgDir;
+    mkdirSync(buddyStateDir(), { recursive: true });
+  });
+
+  afterEach(() => {
+    if (prevEnv === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prevEnv;
+    rmSync(cfgDir, { recursive: true, force: true });
+  });
+
+  const sample = (now = 1_700_000_000_000): VisitorRecord => {
+    // A real seeded bake, not a fabricated placeholder — proves the
+    // VisitorSpec → bakeVisitorScene → VisitorRecord pipeline round-trips.
+    const spec = { species: "goose" as Species, shiny: false };
+    const scene = bakeVisitorScene("cactus", "·", spec, 7);
+    return {
+      frames: scene.frames,
+      sequence: scene.sequence,
+      at: now,
+      caption: "A wild goose stopped by!",
+      enemyGlyph: VISITOR_GLYPH,
+    };
+  };
+
+  test("round-trips a written record when fresh", () => {
+    const rec = sample(Date.now());
+    writeVisitor(rec);
+    expect(readVisitor()).toEqual(rec);
+  });
+
+  test("clearVisitor removes the file (idempotent)", () => {
+    writeVisitor(sample(Date.now()));
+    clearVisitor();
+    expect(readVisitor()).toBeNull();
+    expect(() => clearVisitor()).not.toThrow();
+  });
+
+  test("missing file reads as null", () => {
+    expect(readVisitor()).toBeNull();
+  });
+
+  test("a stale record (older than ENCOUNTER_TTL_MS) reads as null, same TTL as readEncounter", () => {
+    const rec = sample(Date.now() - ENCOUNTER_TTL_MS - 1);
+    writeVisitor(rec);
+    expect(readVisitor()).toBeNull();
+  });
+
+  test("malformed file reads as null", () => {
+    writeFileSync(join(buddyStateDir(), "visitor.json"), "{ not json");
+    expect(readVisitor()).toBeNull();
+  });
+
+  test("a record missing required fields reads as null", () => {
+    writeFileSync(
+      join(buddyStateDir(), "visitor.json"),
+      JSON.stringify({ caption: "hi" }), // no frames / at
+    );
+    expect(readVisitor()).toBeNull();
+  });
+
+  test("VISITOR_GLYPH is a single distinct glyph, never mistaken for a bug", () => {
+    expect(VISITOR_GLYPH).toBe("◇");
+  });
+
+  test("the producer's caption stays well under a sane width bound (Task 1/3 clamp contract)", () => {
+    // rollVisitor's species pool is curated + short (engine.ts SPECIES), so a
+    // future species addition can't silently blow this out unnoticed.
+    for (let s = 0; s < 200; s++) {
+      const v = rollVisitor(s, "cactus");
+      if (!v) continue;
+      const caption = `A wild ${v.species} stopped by!`;
+      expect(caption.length).toBeLessThanOrEqual(40);
+    }
   });
 });
 
