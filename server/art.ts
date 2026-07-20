@@ -831,8 +831,21 @@ export function getStatusFrames(
   // by the step-kick (P4 Task 4 fires on phase===1 step ticks only; see
   // `propKickFrameSequence`), so the pebble renders exactly as it does on
   // every other frame.
+  //
+  // `baseEye` is whichever eye glyph frame 0 of the cycle THIS call built
+  // actually used — the emotion eye (`EMOTION_EYE[emotion]`) when an emotion
+  // is active, `bones.eye` for the neutral cycle — passed in by each call
+  // site below rather than re-derived here, so the kick frames can reuse the
+  // exact same eye. Hardcoding `bones.eye` here (an earlier pass of this
+  // task did) breaks the same invariant lean/peek's own comment states:
+  // during an emotional walk it would flip the eyes emotion→neutral→emotion
+  // on every step tick — a per-tick expression flicker, caught by code
+  // review, not by any test here at the time (every existing "prop kick"
+  // test used emotion:"neutral", where `bones.eye` and the emotion eye
+  // happen to coincide).
   const withGait = (
     r: { frames: string[]; frameSequence: number[] },
+    baseEye: string,
   ): ReturnType<typeof getStatusFrames> => {
     if (!gaitVariants) return r;
     const lean = r.frames.length;
@@ -840,9 +853,10 @@ export function getStatusFrames(
     const peek = lean + 1;
     // Living-world P4 Task 4 (the step-kick): append one frame per column the
     // species has room for (`PROP_KICK_COLUMNS`), each the plain idle pose
-    // (frame 0, the buddy's own eye) with `ahead` overridden to that column.
-    // Cramped species (no table entry) get no extra frames — `kickIdx` stays
-    // undefined and `propKickFrameSequence` is a no-op for them.
+    // (frame 0, `baseEye` — the SAME eye the rest of this gait cycle is
+    // using) with `ahead` overridden to that column. Cramped species (no
+    // table entry) get no extra frames — `kickIdx` stays undefined and
+    // `propKickFrameSequence` is a no-op for them.
     let kickIdx: number[] | undefined;
     const cols = PROP_KICK_COLUMNS[bones.species];
     if (cols && cols.length > 0 && prop?.ahead) {
@@ -850,7 +864,7 @@ export function getStatusFrames(
         const idx = frames.length;
         frames = [
           ...frames,
-          renderSpeciesFrame(bones, 0, bones.eye, seasonalHat, gear, prop, col),
+          renderSpeciesFrame(bones, 0, baseEye, seasonalHat, gear, prop, col),
         ];
         return idx;
       });
@@ -866,10 +880,13 @@ export function getStatusFrames(
   // Emotion: swap in the emotion's eye and run a 2-frame micro-cycle.
   if (emotion !== "neutral") {
     const eye = EMOTION_EYE[emotion];
-    return withGait({
-      frames: [resolveFrame(0, eye), resolveFrame(1, eye)],
-      frameSequence: [...EMOTION_FRAME_SEQUENCE],
-    });
+    return withGait(
+      {
+        frames: [resolveFrame(0, eye), resolveFrame(1, eye)],
+        frameSequence: [...EMOTION_FRAME_SEQUENCE],
+      },
+      eye,
+    );
   }
 
   // Neutral: the original idle cycle (game-feel R3) plus a rare glance
@@ -877,19 +894,22 @@ export function getStatusFrames(
   // same derivation blink already uses, so it's unconditionally safe across
   // every species (all carry `{E}` on frame 0) with zero new art.
   const hasStretch = SPECIES_ART[bones.species].length > 3;
-  return withGait({
-    frames: [
-      resolveFrame(0, bones.eye),
-      resolveFrame(1, bones.eye),
-      resolveFrame(2, bones.eye),
-      resolveFrame(0, "-"), // 3: blink
-      resolveFrame(0, "'"), // 4: glance
-      ...(hasStretch ? [resolveFrame(3, bones.eye)] : []), // 5: stretch (pilot species)
-    ],
-    frameSequence: [
-      ...(hasStretch ? STATUS_FRAME_SEQUENCE_STRETCH : STATUS_FRAME_SEQUENCE),
-    ],
-  });
+  return withGait(
+    {
+      frames: [
+        resolveFrame(0, bones.eye),
+        resolveFrame(1, bones.eye),
+        resolveFrame(2, bones.eye),
+        resolveFrame(0, "-"), // 3: blink
+        resolveFrame(0, "'"), // 4: glance
+        ...(hasStretch ? [resolveFrame(3, bones.eye)] : []), // 5: stretch (pilot species)
+      ],
+      frameSequence: [
+        ...(hasStretch ? STATUS_FRAME_SEQUENCE_STRETCH : STATUS_FRAME_SEQUENCE),
+      ],
+    },
+    bones.eye,
+  );
 }
 
 /** Map a walk's per-tick phases onto frame indices (living-world P1). The

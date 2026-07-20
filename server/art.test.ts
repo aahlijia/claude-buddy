@@ -36,6 +36,8 @@ import {
   activeSeasonal,
   renderSpeciesFrame,
   gaitFrameSequence,
+  eyeRowIndex,
+  type Emotion,
 } from "./art.ts";
 import { SPECIES, type BuddyBones } from "./engine.ts";
 import type { GaitPhase } from "./wander.ts";
@@ -877,10 +879,14 @@ describe("applyProp (ground props — living-world P4)", () => {
 // gait-remapped `frameSequence`, structurally identical to
 // `gaitFrameSequence`). It fires on phase===1 (step) ticks — motion tied to
 // actual motion — advances monotonically within a travel run, holds at the
-// fully-kicked-in position once maxed, and resets only at dwell/home
-// (phase 0/3); it holds (doesn't reset) through the edge pause (phase 2) so
-// the pebble doesn't snap back mid-pause. The glyph is NEVER removed once
-// drawn — every frame this task produces still contains `PROP.ahead`.
+// fully-kicked-in position once maxed within that run, and resets to rest on
+// EVERY non-step tick (dwell, edge-dwell, AND home-linger alike — phase 0/2/3
+// all reset it): `propKickFrameSequence` only ever overrides the rendered
+// frame on a phase===1 tick in the first place, so a "held" depth through the
+// edge pause was never actually visible — a subtlety this task's own
+// implementation caught and fixed once already; see `propKickDepth`'s
+// docstring in art.ts. The glyph is NEVER removed once drawn — every frame
+// this task produces still contains `PROP.ahead`.
 // Cramped species get no `kickIdx`, so `propKickFrameSequence` is a no-op for
 // them and their walk renders exactly as Task 3 left it.
 
@@ -1000,6 +1006,40 @@ describe("prop kick (living-world P4 Task 4)", () => {
       for (const frame of frames) {
         expect(frame).toContain(PROP.ahead);
         expect(frame).toContain(PROP.feet);
+      }
+    }
+  });
+
+  test("kick frames use the ACTIVE emotion's eye, not bones.eye — no eye flicker during an emotional walk (W-NEW-1)", () => {
+    // bones.eye defaults to "°" in this file's `bones()` helper, distinct
+    // from every EMOTION_EYE value, so a mismatch is unambiguous. An earlier
+    // pass of this task hardcoded `bones.eye` into the kick-frame bake,
+    // which every existing kick test missed because they all used
+    // emotion:"neutral" (where bones.eye and the resolved eye coincide) —
+    // code review caught it by rendering a real angry/happy walk.
+    for (const [emotion, expectedEye] of Object.entries({
+      angry: ">",
+      happy: "^",
+      bored: "-",
+      surprised: "O",
+    }) as [Emotion, string][]) {
+      for (const species of KICK_SPECIES) {
+        const { frames, kickIdx } = getStatusFrames(
+          bones({ species }),
+          emotion,
+          undefined,
+          undefined,
+          true,
+          PROP,
+        );
+        expect(kickIdx).toBeDefined();
+        for (const idx of kickIdx!) {
+          const eyeRow = frames[idx].split("\n")[eyeRowIndex(species)];
+          expect(eyeRow).toContain(expectedEye);
+          // The neutral eye must NOT appear where the emotion eye should —
+          // this is the flicker itself, made explicit.
+          if (expectedEye !== "°") expect(eyeRow).not.toContain("°");
+        }
       }
     }
   });
