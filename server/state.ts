@@ -1230,6 +1230,7 @@ export function writeStatusState(
     frameSequence: bakedSequence,
     gaitIdx,
     kickIdx,
+    inspectIdx,
   } = getStatusFrames(displayBones, emotion, seasonalHat, gearArt, wantGait, dayProp);
   let frameSequence = bakedSequence;
   let xpLevel = level ?? 1;
@@ -1326,8 +1327,13 @@ export function writeStatusState(
   if (idleGate === "full") {
     try {
       if (cfg.wanderEnabled) {
-        const { buildWanderSequence, gaitWalkOpts, spliceStingerArc, STINGER_DELAY_TICKS } =
-          require("./wander.ts") as typeof import("./wander.ts");
+        const {
+          buildWanderSequence,
+          gaitWalkOpts,
+          spliceStingerArc,
+          STINGER_DELAY_TICKS,
+          stingerInspectOffsets,
+        } = require("./wander.ts") as typeof import("./wander.ts");
         const walkOpts = gaitWalkOpts(emotion, moodStr, xpLevel, Date.now());
         if (!cfg.wanderHop) walkOpts.hopHeight = 0; // §7.A opt-in
         const walk = buildWanderSequence(walkOpts);
@@ -1363,7 +1369,34 @@ export function writeStatusState(
         if (opts.stinger && wanderSequence.length > 0) {
           const delay = opts.stinger === "walkon" ? 0 : STINGER_DELAY_TICKS;
           const at = (Math.floor(Date.now() / 1000) + delay) % wanderSequence.length;
+          // Capture the arc's reach BEFORE splicing overwrites wanderSequence
+          // — spliceStingerArc computes this identical Math.max(...horizontal,
+          // 3) internally; stingerInspectOffsets needs the same value so its
+          // reported ticks land on the same pause spliceStingerArc drew.
+          const stingerRange = Math.max(...wanderSequence, 3);
           wanderSequence = spliceStingerArc(wanderSequence, opts.stinger, at);
+          // Loot-dash inspect beat (living-world P4 Task 5): pose the buddy
+          // over a dropped-item glyph for the pause's exact ticks, composing
+          // over the gait/kick frameSequence above rather than fighting it —
+          // the same "layer on top of the existing remap" pattern the prop
+          // step-kick (Task 4) uses. victory/walkon report an empty span, so
+          // this is a no-op for them. The length guard is defensive: gait
+          // remap always runs alongside a stinger splice in practice (both
+          // gated on wantGait/cfg.wanderEnabled), so inspectIdx and matching
+          // lengths are the expected case, not the exception.
+          if (
+            inspectIdx !== undefined &&
+            frameSequence.length === wanderSequence.length
+          ) {
+            const inspectOffsets = stingerInspectOffsets(
+              opts.stinger,
+              stingerRange,
+            );
+            const len = frameSequence.length;
+            for (const k of inspectOffsets) {
+              frameSequence[(at + k) % len] = inspectIdx;
+            }
+          }
         }
       }
     } catch {

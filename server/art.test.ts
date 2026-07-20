@@ -24,6 +24,7 @@ import {
   propKickDepth,
   propKickFrameSequence,
   applyBossCrown,
+  LOOTDASH_ITEM_GLYPH,
   overlayRow,
   trimBlankTopRows,
   trimSharedBlankTopRows,
@@ -285,7 +286,10 @@ describe("getStatusFrames", () => {
     test("appends lean (~) and peek (<) frames and reports indices", () => {
       const base = getStatusFrames(bones());
       const g = getStatusFrames(bones(), "neutral", undefined, undefined, true);
-      expect(g.frames.length).toBe(base.frames.length + 2);
+      // +2 for lean/peek, +1 for the Task 5 inspect frame (always appended
+      // last when gaitVariants is requested — see the dedicated describe
+      // block below for its own coverage).
+      expect(g.frames.length).toBe(base.frames.length + 3);
       expect(g.gaitIdx).toEqual({
         bob: 1,
         lean: base.frames.length,
@@ -1002,8 +1006,11 @@ describe("prop kick (living-world P4 Task 4)", () => {
       for (let i = 0; i < kickIdx!.length; i++) {
         expect(kickIdx![i]).toBe(gaitIdx!.peek + 1 + i);
       }
-      // The pebble is present on EVERY frame — never withheld.
-      for (const frame of frames) {
+      // The pebble is present on EVERY frame — never withheld — EXCEPT the
+      // Task 5 inspect frame, always the last appended, which intentionally
+      // overrides `ahead` to the dropped-item glyph instead (its own
+      // describe block below covers that swap).
+      for (const frame of frames.slice(0, -1)) {
         expect(frame).toContain(PROP.ahead);
         expect(frame).toContain(PROP.feet);
       }
@@ -1055,7 +1062,10 @@ describe("prop kick (living-world P4 Task 4)", () => {
         PROP,
       );
       expect(withProp.kickIdx).toBeUndefined();
-      for (const frame of withProp.frames) {
+      // Same carve-out as the KICK_SPECIES test above: the last frame is the
+      // Task 5 inspect frame, which intentionally shows the item glyph
+      // instead of the pebble at `ahead`.
+      for (const frame of withProp.frames.slice(0, -1)) {
         expect(frame).toContain(PROP.ahead);
         expect(frame).toContain(PROP.feet);
       }
@@ -1077,6 +1087,132 @@ describe("prop kick (living-world P4 Task 4)", () => {
     const { gaitIdx, kickIdx } = getStatusFrames(bones(), "neutral", undefined, undefined, true);
     expect(gaitIdx).toBeDefined();
     expect(kickIdx).toBeUndefined();
+  });
+});
+
+// ─── Loot-dash inspect frame (living-world P4 Task 5) ─────────────────────
+//
+// The stinger's inspect pause needs a POSE, not just a position — the peek
+// ("<") posture P1 already appends, with `ahead` swapped for a dropped-item
+// glyph instead of the day's own prop there. `state.ts`'s splice block
+// (via wander.ts's `stingerInspectOffsets`) points a lootdash arc's pause
+// ticks at this frame; this describe block covers the frame itself, in
+// isolation from the stinger/state wiring (server/wander.test.ts and
+// state_wander.test.ts cover that end of the seam).
+
+describe("loot-dash inspect frame (living-world P4 Task 5)", () => {
+  const bones = (overrides: Partial<BuddyBones> = {}): BuddyBones => ({
+    rarity: "common",
+    species: "cactus",
+    eye: "°",
+    hat: "none",
+    shiny: false,
+    stats: { DEBUGGING: 50, PATIENCE: 50, CHAOS: 50, WISDOM: 50, SNARK: 50 },
+    peak: "DEBUGGING",
+    dump: "PATIENCE",
+    ...overrides,
+  });
+  const PROP = { feet: "❦", ahead: "•" };
+
+  test("appended for every species when gaitVariants is requested, and the item glyph actually lands (ahead anchor is blank)", () => {
+    for (const species of SPECIES) {
+      const { frames, inspectIdx } = getStatusFrames(
+        bones({ species }),
+        "neutral",
+        undefined,
+        undefined,
+        true,
+      );
+      expect(inspectIdx).toBeDefined();
+      expect(frames[inspectIdx!]).toContain(LOOTDASH_ITEM_GLYPH);
+    }
+  });
+
+  test("absent when gaitVariants is not requested", () => {
+    const { inspectIdx } = getStatusFrames(bones());
+    expect(inspectIdx).toBeUndefined();
+  });
+
+  test("appended strictly after any kick frames, so kickIdx's own numbering is undisturbed", () => {
+    // "duck" has kick columns (PROP_KICK_COLUMNS); confirm inspectIdx lands
+    // right after the last kick frame, not spliced in the middle.
+    const { kickIdx, inspectIdx } = getStatusFrames(
+      bones({ species: "duck" }),
+      "neutral",
+      undefined,
+      undefined,
+      true,
+      PROP,
+    );
+    expect(kickIdx).toBeDefined();
+    expect(inspectIdx).toBe(kickIdx![kickIdx!.length - 1] + 1);
+  });
+
+  test("swaps `ahead` for the item glyph but leaves `feet` untouched (not a wholesale prop swap)", () => {
+    const { frames, inspectIdx } = getStatusFrames(
+      bones(),
+      "neutral",
+      undefined,
+      undefined,
+      true,
+      PROP,
+    );
+    expect(frames[inspectIdx!]).toContain(LOOTDASH_ITEM_GLYPH);
+    expect(frames[inspectIdx!]).not.toContain(PROP.ahead); // item replaces the day pebble
+    expect(frames[inspectIdx!]).toContain(PROP.feet); // feet untouched
+  });
+
+  test("renders even with no day prop supplied — the item glyph doesn't depend on `prop`", () => {
+    const { frames, inspectIdx } = getStatusFrames(
+      bones(),
+      "neutral",
+      undefined,
+      undefined,
+      true,
+    );
+    expect(frames[inspectIdx!]).toContain(LOOTDASH_ITEM_GLYPH);
+  });
+
+  test("uses the peek eye ('<'), never bones.eye — no hardcoded-eye flicker across any emotion", () => {
+    // Mirrors the kick frames' own W-NEW-1 regression test: peek is a FIXED
+    // pose eye by design (see the lean/peek comment in art.ts), so this
+    // confirms the inspect frame follows that same established rule rather
+    // than accidentally reintroducing a bones.eye/emotion-eye leak.
+    for (const [emotion, otherEye] of Object.entries({
+      neutral: "°",
+      angry: ">",
+      happy: "^",
+      bored: "-",
+      surprised: "O",
+    }) as [Emotion, string][]) {
+      const { frames, inspectIdx } = getStatusFrames(
+        bones(),
+        emotion,
+        undefined,
+        undefined,
+        true,
+        PROP,
+      );
+      const eyeRow = frames[inspectIdx!].split("\n")[eyeRowIndex("cactus")];
+      expect(eyeRow).toContain("<");
+      if (emotion !== "neutral") expect(eyeRow).not.toContain(otherEye);
+    }
+  });
+
+  test("LOOTDASH_ITEM_GLYPH is ANSI-free and survives mirrorFrame unchanged (MIRROR_SWAP-safe, defensive)", () => {
+    // The idle buddy is never actually mirrored (only the enemy sprite in
+    // combat is) — this is the same cheap defensive check props.ts's own
+    // glyphs and applyBossCrown's `♛` get.
+    expect(LOOTDASH_ITEM_GLYPH).not.toContain("\x1b");
+    const { frames, inspectIdx } = getStatusFrames(
+      bones(),
+      "neutral",
+      undefined,
+      undefined,
+      true,
+    );
+    const mirrored = mirrorFrame(frames[inspectIdx!].split("\n"));
+    expect(mirrored.join("\n")).toContain(LOOTDASH_ITEM_GLYPH);
   });
 });
 

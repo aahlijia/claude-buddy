@@ -14,6 +14,7 @@ import {
   gaitWalkOpts,
   stingerArc,
   spliceStingerArc,
+  stingerInspectOffsets,
   type WanderOpts,
 } from "./wander.ts";
 
@@ -388,5 +389,41 @@ describe("stinger arcs (living-world P1)", () => {
     expect(out[(4 + 5) % 6]).toBe(0);
     // All values remain non-negative (no negative or NaN corruption).
     for (const v of out) expect(v).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// ─── loot-dash inspect beat (living-world P4 Task 5) ─────────────────────
+
+describe("stingerInspectOffsets (living-world P4 Task 5)", () => {
+  test("lootdash reports the 3 explicit push(r, r, r) pause ticks, not the ramp's own arrival tick", () => {
+    const r = 3;
+    const arc = stingerArc("lootdash", r);
+    expect(arc).toEqual([1, 2, 3, 3, 3, 3, 2, 1, 0]); // no-teleport invariant pin, unchanged
+    const offsets = stingerInspectOffsets("lootdash", r);
+    expect(offsets).toEqual([3, 4, 5]);
+    // Every reported offset indexes a tick that actually sits at max reach.
+    for (const k of offsets) expect(arc[k]).toBe(r);
+    // The ramp's own arrival tick (index r-1 = 2) is deliberately excluded —
+    // it's still "arriving," not yet the inspect pause.
+    expect(offsets).not.toContain(r - 1);
+  });
+
+  test("offsets scale with range, floored at the same range≥3 clamp stingerArc itself applies", () => {
+    for (const range of [1, 2, 3, 5, 8]) {
+      const r = Math.max(3, Math.floor(range));
+      expect(stingerInspectOffsets("lootdash", range)).toEqual([r, r + 1, r + 2]);
+    }
+  });
+
+  test("victory and walkon report an empty span — no inspect beat for those kinds", () => {
+    expect(stingerInspectOffsets("victory", 5)).toEqual([]);
+    expect(stingerInspectOffsets("walkon", 5)).toEqual([]);
+  });
+
+  test("no-teleport invariant (stingerArc) is untouched by the new accessor — still ends at 0 for every kind", () => {
+    for (const kind of ["victory", "lootdash", "walkon"] as const) {
+      const arc = stingerArc(kind, 5);
+      expect(arc[arc.length - 1]).toBe(0);
+    }
   });
 });

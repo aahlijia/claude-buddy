@@ -418,6 +418,19 @@ export function applyPropKicked(
   if (prop.feet) overlayGlyph(art, anchors.feet, prop.feet);
 }
 
+// ─── Loot-dash inspect beat (living-world P4 Task 5) ──────────────────────
+
+/**
+ * The dropped-item glyph shown at the `ahead` prop anchor during the
+ * loot-dash stinger's inspect pause — distinct from every glyph `props.ts`
+ * draws for the day's own ambient prop, so the beat reads as "found
+ * something new," not just the usual pebble sitting still. ANSI-free, a
+ * single display cell, and absent from `MIRROR_SWAP` (art.test.ts pins
+ * both, the same defensive checks `props.ts`'s own glyphs get — the idle
+ * buddy is never actually mirrored).
+ */
+export const LOOTDASH_ITEM_GLYPH = "◇";
+
 /**
  * Raw, unclamped "steps since the last non-travel tick" per tick of a walk —
  * living-world P4 Task 4, the step-kick's pure mapper. Increments on every
@@ -816,6 +829,15 @@ export function getStatusFrames(
    *  cramped species never get this field, so their walk is untouched by
    *  Task 4 (still the single static anchor, Task 3's plain behavior). */
   kickIdx?: number[];
+  /** Index of the loot-dash "inspect" frame (living-world P4 Task 5): the
+   *  peek posture (eye "<", same fixed eye every peek frame already uses)
+   *  with `ahead` overridden to `LOOTDASH_ITEM_GLYPH` instead of the day's
+   *  own prop there — `feet` is untouched. Present whenever `gaitVariants`
+   *  was requested, unconditionally (unlike `kickIdx`): the `ahead` anchor
+   *  is `[4, 11]` for every species, already verified blank on this frame
+   *  too, so there's no cramped-species carve-out. `state.ts`'s stinger
+   *  splice points a lootdash arc's inspect-pause ticks at this index. */
+  inspectIdx?: number;
 } {
   // `prop` (living-world P4 Task 3) rides every frame this closure resolves —
   // idle 0-2, blink/glance, the P7 stretch frame, and the lean/peek frames
@@ -869,10 +891,31 @@ export function getStatusFrames(
         return idx;
       });
     }
+    // Living-world P4 Task 5 (the loot-dash inspect beat): appended LAST —
+    // strictly after any kick frames — so kickIdx's existing "peek + 1 + i"
+    // contiguous numbering (pinned in art.test.ts) is undisturbed. Peek eye
+    // "<" is hardcoded here, not `baseEye`: this is the SAME fixed-eye
+    // choice the existing peek frame above already makes (see the lean/peek
+    // comment on why "~"/"<" stay constant across every emotion) — not the
+    // `bones.eye` hardcoding bug the kick frames' own history warns about,
+    // since peek was never supposed to track the active emotion's eye in
+    // the first place. `ahead` is overridden to the dropped-item glyph
+    // instead of the day's own prop there; `feet` is left as-is (still
+    // whatever the day prop drew, if any) — only the ahead cell changes, so
+    // the beat reads as "something new appeared ahead," not a prop swap.
+    const inspectIdx = frames.length;
+    frames = [
+      ...frames,
+      renderSpeciesFrame(bones, 0, "<", seasonalHat, gear, {
+        feet: prop?.feet,
+        ahead: LOOTDASH_ITEM_GLYPH,
+      }),
+    ];
     return {
       ...r,
       frames,
       gaitIdx: { bob: 1, lean, peek },
+      inspectIdx,
       ...(kickIdx ? { kickIdx } : {}),
     };
   };

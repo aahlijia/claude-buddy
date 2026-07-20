@@ -234,6 +234,26 @@ export function stingerArc(kind: StingerKind, range: number): number[] {
   return out;
 }
 
+/** Tick offsets — indices into `stingerArc`'s own output array — that make up
+ *  the loot-dash's "inspect" pause (living-world P4 Task 5): the three
+ *  explicit `push(r, r, r)` beats in the `lootdash` branch above, NOT the
+ *  ramp's own arrival tick (which also sits at `r` but is still "arriving,"
+ *  not yet paused). `state.ts`'s splice block wraps these through the exact
+ *  same `(atTick + k) % len` math `spliceStingerArc` uses internally, so the
+ *  posed frame and the spliced position land on the same ticks by
+ *  construction. `victory`/`walkon` have no inspect beat and report an empty
+ *  array. A stand-alone accessor rather than a change to `stingerArc`'s own
+ *  return shape, so `stingerArc`'s existing signature — and every test
+ *  already pinned against it as a plain `number[]` — stays untouched. */
+export function stingerInspectOffsets(
+  kind: StingerKind,
+  range: number,
+): number[] {
+  if (kind !== "lootdash") return [];
+  const r = Math.max(3, Math.floor(range));
+  return [r, r + 1, r + 2];
+}
+
 /** Copy `horizontal` with `kind`'s arc written at `atTick` (modulo length).
  *  The arc's reach is the walk's observed extent with a 3-cell floor (from
  *  Math.max(...horizontal, 3)), so sedentary moods still get a legible sweep

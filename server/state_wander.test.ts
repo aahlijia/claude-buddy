@@ -25,6 +25,8 @@ import {
 } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { STINGER_DELAY_TICKS } from "./wander.ts";
+import { LOOTDASH_ITEM_GLYPH } from "./art.ts";
 
 const SERVER_DIR = import.meta.dir;
 const STATE_TS = JSON.stringify(join(SERVER_DIR, "state.ts"));
@@ -349,6 +351,55 @@ describe("writeStatusState — stinger opt (living-world P1)", () => {
   });
 });
 
+describe("writeStatusState — loot-dash inspect beat (living-world P4 Task 5)", () => {
+  // Same bracket idiom as the walkon stinger test above (before/after the
+  // subprocess's own write-time clock), plus the same pinned "focused" mood
+  // dependency: MOOD_WALK.focused range=2 never reaches 3, so the arc's
+  // reach floors at exactly 3 (Math.max(...horizontal, 3)) — which fixes
+  // stingerInspectOffsets("lootdash", 3) at [3, 4, 5], deterministically,
+  // without needing to reason about the ambient walk's actual values.
+  test("a lootdash stinger poses the inspect frame with the dropped-item glyph at its exact pause ticks", () => {
+    const before = Math.floor(Date.now() / 1000);
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true },
+      opts: { stinger: "lootdash" },
+      mood: "focused", // pinned dependency: MOOD_WALK.focused range=2 < 3
+    });
+    const after = Math.floor(Date.now() / 1000);
+    const frameSequence = state!.frameSequence as number[];
+    const frames = state!.frames as string[];
+    const len = frameSequence.length;
+    expect(len).toBeGreaterThan(0);
+
+    const offsets = [3, 4, 5]; // stingerInspectOffsets("lootdash", 3)
+    let hit = false;
+    for (let t = before; t <= after + 2 && !hit; t++) {
+      const at = (t + STINGER_DELAY_TICKS) % len;
+      hit = offsets.every((k) => {
+        const idx = frameSequence[(at + k) % len];
+        return frames[idx]?.includes(LOOTDASH_ITEM_GLYPH);
+      });
+    }
+    expect(hit).toBe(true);
+  });
+
+  test("a walkon stinger (no inspect beat) never poses the item glyph anywhere in frameSequence", () => {
+    // Control: victory/walkon report an empty inspect span (wander.test.ts
+    // pins the pure accessor); this confirms the state.ts wiring actually
+    // respects that — no frame the walk cycles through shows the item glyph.
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true },
+      opts: { stinger: "walkon" },
+      mood: "focused",
+    });
+    const frameSequence = state!.frameSequence as number[];
+    const frames = state!.frames as string[];
+    for (const idx of frameSequence) {
+      expect(frames[idx]).not.toContain(LOOTDASH_ITEM_GLYPH);
+    }
+  });
+});
+
 describe("writeStatusState — wander backfill (NFR3)", () => {
   test("old config.json (no wander keys) ⇒ DEFAULT_CONFIG enables wander", () => {
     // Pre-wander config: only gameFeel set. loadConfig merges DEFAULT_CONFIG,
@@ -525,7 +576,11 @@ describe("writeStatusState — ambient ground prop (living-world P4 Task 3)", ()
     });
     const frames = state!.frames as string[];
     expect(frames.length).toBeGreaterThan(0);
-    for (const frame of frames) {
+    // Last frame is the Task 5 loot-dash inspect frame — always appended
+    // when gaitVariants is on, and it intentionally shows the item glyph
+    // instead of the day's own prop at `ahead` (its own describe block
+    // below covers that swap).
+    for (const frame of frames.slice(0, -1)) {
       expect(frame).toContain(PROP.feet);
       expect(frame).toContain(PROP.ahead);
     }
@@ -580,7 +635,8 @@ describe("writeStatusState — ambient ground prop (living-world P4 Task 3)", ()
       stubProp: PROP,
     });
     const frames = state!.frames as string[];
-    for (const frame of frames) {
+    // See the "always appended last" note above.
+    for (const frame of frames.slice(0, -1)) {
       expect(frame).toContain(PROP.feet);
       expect(frame).toContain(PROP.ahead);
     }
@@ -620,7 +676,9 @@ describe("writeStatusState — prop kick (living-world P4 Task 4)", () => {
     });
     const frames = state!.frames as string[];
     expect(frames.length).toBeGreaterThan(0);
-    for (const frame of frames) {
+    // Last frame is the Task 5 loot-dash inspect frame — see the note in the
+    // "ambient ground prop" describe block above.
+    for (const frame of frames.slice(0, -1)) {
       expect(frame).toContain(PROP.feet);
       expect(frame).toContain(PROP.ahead);
     }
