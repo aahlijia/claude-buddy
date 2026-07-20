@@ -281,7 +281,9 @@ The standoff isn't just staring, either: every so often one of the two **walks o
 
 When you commit, the buddy actually fights the bug it's been staring down: a quick sword-swing duel (ready → wind-up → ⚔ strike → resolve), the same red damage pop landing on the bug when your buddy wins. Win and your buddy pockets skill points (and, now and then, an item); lose and the bug scuttles off. A win/flee toast rides the speech bubble, the fight plays for ~10 seconds, then your buddy goes back to idling. Your buddy keeps its usual chatter during the standoff, but the chat bubble steps aside for those 10 seconds so the duel has the stage.
 
-Like all the ambient animation the standoff only shows at game-feel `full`; `/buddy gamefeel subtle` keeps just the win/flee toast at commit, and `/buddy gamefeel off` disables fights entirely (no standoff, no spawns, no rewards, no render).
+Let a session run really wild (12+ errors deep) and the standoff **upgrades to a boss** — a crowned, wide-art enemy with a pip caption (`BOSS in myproject! ▰▱`) tracking a 2–3 stage fight. Each commit only lands one stage; the boss stays put between wins, so it can take several commits to bring down. The final stage guarantees a rare-or-better drop and unlocks the **Boss Slayer** 👑 badge. And every so often — no errors required, roughly 1 in 12 commits — a **wild buddy of a different species wanders through**, gives a friendly wave (a `♥` instead of a sword), and moves on, sometimes leaving a few points behind. Bosses always outrank a visitor; a visitor never shows up mid-fight.
+
+Like all the ambient animation the standoff (and its boss upgrade, and the visitor cameo) only shows at game-feel `full`; `/buddy gamefeel subtle` keeps just the toast at commit, and `/buddy gamefeel off` disables all of it (no standoff, no boss, no visitors, no spawns, no rewards, no render).
 
 > All multipliers stack multiplicatively but stay modest: rarity (≤×1.20) × prestige (≤×1.15) × collection (×1.05) caps around ×1.45. Every new reward back-fills cleanly onto existing buddies — nothing is lost on upgrade.
 

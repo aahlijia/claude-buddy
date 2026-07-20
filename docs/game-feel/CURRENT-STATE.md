@@ -4,17 +4,15 @@ A single top-level snapshot of the **whole** game-feel system as it stands today
 tying together the arcs that each have their own design/status docs. For the
 per-arc detail, follow the links in [Doc map](#doc-map).
 
-_Last updated: 2026-07-18 · branch `feature/interactive-fight-scene`_
-_Baseline: **874 tests, all pass** · `tsc --noEmit` clean · `bash -n` clean._
+_Last updated: 2026-07-20 · branch `feature/interactive-fight-scene`_
+_Baseline: **927 tests, all pass** · `tsc --noEmit` clean · `bash -n` clean._
 _Status: everything through
-[stat-leveling v2](#stat-leveling-v2--every-stat-behavioral-learning-wisdom-visible-gains-2026-07-17)
-is **committed**. Newest on top:
-[living-world arc — P1 movement vocabulary](#living-world-arc--p1-movement-vocabulary-2026-07-18)
-(mood gaits, event-choreography stingers, edge/panel lean/peek posture, plus
-the same-day D14 fix reviving the angry gait and the sprite-animation-round-1
-`!` emote from an auto-quiet coupling that made them unreachable) —
-**committed** through `cb7d061`; this docs pass is the remaining piece. No PR
-opened yet._
+[living-world arc — P2 encounter variety](#living-world-arc--p2-encounter-variety-2026-07-20)
+is **committed** (Tasks 1-7 on `feature/interactive-fight-scene`, code
+review approved). Newest on top: P2's boss bugs — multi-stage,
+threshold-triggered, crowned, badge-rewarding — and wild buddy visitors,
+both e2e-verified through the real shell in a throwaway profile (Task 8,
+this docs pass). No PR opened yet._
 
 > **What "game-feel" is.** A layer of optional juice on top of the buddy
 > companion: celebratory feedback, an expressive idle status line, light RPG
@@ -906,6 +904,104 @@ Commits: `eec901d`/`69ec9a9` (gait profiles), `c9abc33`/`b6a9708`/`584d52a`
 `8457e39` (stinger triggers), `6b11d28` (startle beat), `cb7d061` (D14 fix).
 This docs pass is the remaining uncommitted piece.
 
+### Living-world arc — P2 encounter variety (2026-07-20)
+
+Ships the second phase of the living-world arc — multi-stage **boss bugs**
+and **wild buddy visitors** — as an upgrade of the existing pending-encounter
+standoff and a new sibling side-channel, both still riding the "server
+bakes, bash cycles" invariant: **zero `buddy-status.sh` changes**. Full
+design + resolved decisions: [living-world/design.md](living-world/design.md)
+§P2; phased plan: [living-world/plan-p2.md](living-world/plan-p2.md).
+
+- **Boss bugs** (`session.ts` `BOSS_THRESHOLD=12`, `bossStages`,
+  `pendingAction`'s new `"boss"` decision; `combat.ts` `bossPips`,
+  `bossDrop`; `art.ts` `applyBossCrown`). When a standoff's error count
+  crosses the threshold it upgrades — deterministically, never rolled (D13)
+  — to a 2–3-stage boss (`kind: "boss"`), rendering a `♛` crown and a pip
+  caption (`BOSS in <project>! ▰▱`). Each commit fights **one stage** through
+  the existing seeded `resolveCombat`; a win advances the pips and the
+  standoff stays on the line, a flee leaves it untouched. The final stage
+  clears the standoff, guarantees a rare+ drop at well above a normal
+  tier-4 reward (`bossDrop`), unlocks the new **Boss Slayer** 👑 achievement
+  (`bosses_beaten` global counter), and plays the resolved kill scene.
+- **The G5 revision.** The original standoff invariant (G5) was "any commit
+  clears the pending encounter unconditionally" — true for an ordinary
+  standoff to this day. A boss revises it: `maybeFightBug` (session.ts)
+  branches on `pending?.kind === "boss"` *before* the unconditional clear,
+  resolves exactly one stage, and only calls `clearPendingEncounter()` on
+  the final-stage win (or on a vanished bug ID). **D12 is unchanged** —
+  `startSession`'s unconditional `clearPendingEncounter()` still fires
+  first thing, orphan or mid-boss alike, on every fresh session; a boss
+  that outlives its session dies quietly like any standoff always has.
+  A second chosen behavior from the Task 4 review: **`gameFeel off`
+  mid-boss discards the standoff** rather than freezing it for a later
+  re-enable — `maybeFightBug`'s `off` branch calls
+  `clearPendingEncounter()` unconditionally, boss or not, because opt-out
+  means opt-out: there is no stage-fight surface at `off` for a boss to
+  persist toward.
+- **Three-reader staleness exemption.** An ordinary standoff is dismissed as
+  "stale" whenever its `startedAt` no longer matches the live session
+  snapshot — necessary because an abandoned standoff from a dead session
+  shouldn't linger. A boss cannot use that guard: `awardSessionComplete`
+  rebaselines `startedAt` to "now" after **every** commit, so a literal
+  staleness check would kill a mid-fight boss at the very first commit
+  boundary — the exact persistence the feature exists to provide. One rule
+  — bosses are dismissed only by explicit lifecycle events (`startSession`'s
+  clear, the `off` clear, the final-stage kill), never by segment staleness
+  — is carried by **three separate reader call sites**, each independently
+  exempting `kind === "boss"` from its own `startedAt` match: `sightBug`'s
+  `sameSession` filter (session.ts, so a mid-boss error event doesn't get
+  treated as stale and spawn a fresh standoff over it), `maybeFightBug`'s
+  boss branch (session.ts, so the stage fight itself resolves regardless of
+  elapsed time), and `writeStatusState`'s pending-render branch (state.ts,
+  so the boss keeps *rendering* across the same gap — without this one the
+  boss would still resolve correctly but silently stop appearing on the
+  line the moment real time passed after a stage win). All three carry a
+  code comment cross-referencing the other two so a future edit can't drop
+  the exemption at just one site.
+- **Wild buddy visitors** (`server/visitor.ts`, new pure module + bake;
+  `session.ts` `maybeVisitBuddy`; own `visitor.json` side-channel, `state.ts`
+  render branch, `art.ts` `CelebrationKind: "visitor"`). At `session_complete`,
+  when this commit's own combat slot is untouched (no fight/boss-stage
+  resolved, no live standoff, no fresh resolved scene — combat always
+  outranks a visitor, checked in both `maybeVisitBuddy` and independently
+  again at render time), a ~1-in-12 seeded roll spawns a different-species
+  buddy that walks on, plays a short greet flipbook (a `♥` overlay pop
+  instead of damage), and walks off — ~25% of visits carry a small points
+  reward. `subtle` gets the toast only (`🐾 a wild <name> stopped by! left
+  <n> pts!`); `full` gets the toast plus the on-line scene.
+- **Caption override seam** (`combat.ts` — both `PendingEncounter` and
+  `EncounterRecord` gain an optional `caption` field). Landed first (Task 1)
+  so boss pips and visitor captions could both override the classic
+  "Bug fight in \<project\>!" text without a second render path; a
+  caption-less record still renders exactly the old text (back-compat pin).
+
+**Verified end-to-end** through the real award path in a throwaway
+`CLAUDE_CONFIG_DIR` profile, on the real shell: (a) 12 error events spawn a
+boss standoff — `♛` crown, caption `BOSS in claude-buddy! ▱▱`; (b) a winning
+commit advances the pips (`▰▱`, toast `⚔️ Stage 1/2 down — the boss
+staggers!`) while the standoff stays on the line, and the next winning
+commit clears it, plays the `👑 BOSS DOWN` kill scene, credits a guaranteed
+drop, and unlocks `boss_slayer` in `unlocked.json`; (c) a seed-searched
+visitor commit bakes and renders the octopus greet scene (walk-on → `♥` pop
+→ walk-off) with the toast `🐾 a wild octopus stopped by! left 4 pts!`.
+Tests: **927 pass** (unchanged from the P1 baseline — Task 8 is
+verification-only, no production code touched), `tsc --noEmit` + `bash -n`
+clean.
+
+**Known follow-ups, not fixed here (out of scope for Task 8 — docs only):**
+1. `applyBossCrown` (art.ts) silently no-ops if a tier-4 bug's row 0 is ever
+   non-blank — safe today because the only tier-4 entry (segfault_dragon)
+   has a blank row 0, but nothing guards or tests the invariant if the
+   tier-4 roster grows.
+2. `VisitorSpec.shiny` is rolled at the normal shiny-hatch odds but never
+   surfaced — `bakeVisitorScene` ignores it and the toast has no shiny
+   indicator, so a shiny visitor is indistinguishable from a normal one.
+3. (Carried forward from the Task 4 review.) `readVisitor()`'s render
+   branch in `writeStatusState` runs even at `gameFeel=subtle` — an extra
+   disk read discarded because the shell only surfaces scene fields at
+   `full`. Minor perf/cleanliness nit, not a bug.
+
 ---
 
 ## Going live
@@ -956,16 +1052,27 @@ bun run install-buddy   # copies the repo script into place
   commit, escalating tier, resolved-phase bubble suppression folded in. See
   [Pending encounter — the standoff](#pending-encounter--the-standoff-2026-07-08).
   Committed on `feature/interactive-fight-scene` (`22f6733`).
-- **Living-world arc**: P1 (movement vocabulary) is implemented and committed
-  (see above). Task 1's tick-ceiling measurement (P0 — how fast Claude Code
-  actually repaints the status line) is still pending and needs a
-  user-in-the-loop capture session; Task 10 (the one sanctioned
-  `buddy-status.sh` sub-second-tick change) is gated on that finding reading
-  PASS. P2 (encounter variety — boss bugs, wild buddy visitors) is the next
-  planned phase; no plan doc for it yet.
+- **Living-world arc**: P1 (movement vocabulary) and P2 (encounter variety —
+  boss bugs, wild buddy visitors) are both implemented, e2e-verified, and
+  committed on `feature/interactive-fight-scene` (see above; P2's own P0's
+  tick-ceiling measurement was P1's, not P2's — no new tick work in P2).
+  Task 1's tick-ceiling measurement (P0 — how fast Claude Code actually
+  repaints the status line) already came back FAIL-permanently (see
+  [design.md's P0 findings](living-world/design.md#p0-findings-measured-2026-07-18));
+  Task 10 (the one sanctioned `buddy-status.sh` sub-second-tick change) is
+  dropped, not deferred. P3 (idle economy — expeditions, gear-economy
+  round-out) is the next planned phase; no plan doc for it yet.
 - The stale top-level [`status.md`](status.md) is a point-in-time artifact for the
   quick-wins sub-arc (440 tests, `feature/leveling-system`) — superseded by this
   doc for the current picture.
+- **Living-world P2 latent notes** (found in code-quality review, 2026-07-20,
+  not fixed — see the
+  [P2 section](#living-world-arc--p2-encounter-variety-2026-07-20) for
+  detail): `applyBossCrown` silently no-ops if a future tier-4 bug's row 0
+  is ever non-blank (no guard/test today, safe only because the one
+  existing tier-4 entry happens to have a blank row 0); `VisitorSpec.shiny`
+  is rolled but never surfaced in the scene or toast; `readVisitor()`'s
+  render branch runs a discarded extra disk read at `gameFeel=subtle`.
 
 ---
 
@@ -985,7 +1092,8 @@ bun run install-buddy   # copies the repo script into place
 | [idle-rpg/design-sprite-animation.md](idle-rpg/design-sprite-animation.md) | idle emote row + dodge/parry bouts (**implemented** 2026-07-17) |
 | [idle-rpg/design-sprite-animation-v2.md](idle-rpg/design-sprite-animation-v2.md) | round 2: crit/counter bouts, per-kind flourish, idle glance, pilot art frame (**implemented** 2026-07-17) |
 | [idle-rpg/testing-guide.md](idle-rpg/testing-guide.md) | hands-on verification harnesses |
-| [living-world/design.md](living-world/design.md) | idle-RPG + animation + movement arc, P0-P4 (**P1 implemented** 2026-07-18, P0 measurement pending) |
+| [living-world/design.md](living-world/design.md) | idle-RPG + animation + movement arc, P0-P4 (**P1 + P2 implemented**, P0 measurement complete/FAIL — Task 10 dropped) |
 | [living-world/plan-p0-p1.md](living-world/plan-p0-p1.md) | phased P0/P1 implementation plan + task-by-task tracker |
+| [living-world/plan-p2.md](living-world/plan-p2.md) | phased P2 (boss bugs + wild visitors) implementation plan + task-by-task tracker |
 | [menu/](menu/) | interactive menu + nav channel |
 | [anaylsis.md](anaylsis.md) | earlier analysis notes |

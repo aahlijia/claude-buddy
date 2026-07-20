@@ -2,7 +2,8 @@
 
 _Drafted 2026-07-17 · branch `feature/interactive-fight-scene` · baseline 844
 tests, all pass._
-_Status: **P1 implemented (2026-07-18); P0 measurement pending.**_
+_Status: **P2 implemented (2026-07-20); P1 implemented (2026-07-18); P0
+measured (2026-07-18) — Task 10 dropped, see P0 findings below.**_
 
 One cohesive, phased expansion across three threads the user asked for
 together: **more idle-RPG features, more interactive animations/scenes, more
@@ -223,7 +224,7 @@ one lean frame; constant-width/height assertions on every new flipbook.
 
 ---
 
-## P2 — Encounter variety
+## P2 — Encounter variety (implemented 2026-07-20)
 
 ### 1. Boss bugs
 

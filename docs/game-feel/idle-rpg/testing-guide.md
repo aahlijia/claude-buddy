@@ -505,6 +505,139 @@ against your real profile.
 
 ---
 
+## 9. Living-world P2 — boss bugs and wild visitors
+
+The living-world arc's P2 phase ([living-world/design.md](../living-world/design.md)
+§P2) upgrades the standoff into a multi-stage **boss** past a threshold, and
+adds a wholly separate **wild visitor** cameo — both baked server-side, zero
+`buddy-status.sh` changes. Same idiom as §8: always export
+`CLAUDE_CONFIG_DIR` first, every process below (including the shell renders)
+must see it.
+
+**Setup (once, same companion as §8):**
+```bash
+cd /Users/austinahlijian/Projects/claude-buddy
+export CLAUDE_CONFIG_DIR=$(mktemp -d)
+ls "$CLAUDE_CONFIG_DIR"                                                     # confirm it's the throwaway, not $HOME/.claude-buddy
+bun -e '
+import { saveConfig, loadConfig, saveCompanion } from "./server/state.ts";
+saveCompanion({
+  name: "Waffle", personality: "",
+  bones: {
+    species: "cactus", rarity: "common", eye: "·", hat: "none",
+    shiny: false, peak: "SNARK", dump: "WISDOM",
+    stats: { DEBUGGING: 50, PATIENCE: 10, CHAOS: 10, WISDOM: 10, SNARK: 10 },
+  },
+});
+saveConfig({ ...loadConfig(), gameFeel: "full" });
+'
+```
+
+### a. Boss standoff — threshold trigger, pips, crown
+
+`BOSS_THRESHOLD = 12` (session.ts) — no roll, purely deterministic (D13). A
+single sighting at count ≥ 12 upgrades the standoff straight to a boss:
+```bash
+bun run server/award-xp.ts session_start
+bun -e 'import {incrementEvent} from "./server/achievements.ts"; incrementEvent("tests_failed", 12)'
+bun run server/award-xp.ts bug_sighted
+jq '{bugId, kind, stages, stagesCleared, caption}' \
+  "$CLAUDE_CONFIG_DIR/buddy-state/pending-encounter.json"
+BUDDY_FAKE_NOW=$(date +%s) bash statusline/buddy-status.sh < /dev/null
+```
+**Expect:** `kind: "boss"`, `stages: 2`, `stagesCleared: 0`, caption
+`BOSS in <project>! ▱▱` (`bossPips` — nothing cleared yet, both pips hollow).
+The rendered scene shows a `♛` crown over the enemy's blank row 0
+(`applyBossCrown`, the tier-4-fallback boss look) and the caption centered
+above the two-sprite standoff.
+
+**Stage-win → pip fill → persist (the G5 revision).** Unlike an ordinary
+standoff, a boss is **not** cleared by a commit unless it's the final stage —
+keep calling `session_complete` (not `session_start`, which would clear the
+whole standoff per D12) with a bumped error count each try until one wins
+(deterministic per `startedAt`+`errorsSeen`, so a bumped count re-seeds):
+```bash
+for i in 1 2 3 4 5; do
+  bun -e "import {incrementEvent} from './server/achievements.ts'; incrementEvent('tests_failed', $i)"
+  bun run server/award-xp.ts session_complete
+  jq -e '.stagesCleared == 1' "$CLAUDE_CONFIG_DIR/buddy-state/pending-encounter.json" \
+    >/dev/null 2>&1 && { echo "stage 1 win at i=$i"; break; }
+done
+jq '{stages, stagesCleared, caption}' "$CLAUDE_CONFIG_DIR/buddy-state/pending-encounter.json"
+```
+**Expect:** the pending file still exists (`stagesCleared: 1`, caption
+`▰▱`), and the win's toast reads `⚔️ Stage 1/2 down — the boss staggers!` —
+a stage clear, not a kill. The standoff (with its crown) is still what
+renders.
+
+**Final stage → kill scene, guaranteed drop, badge.** One more winning
+commit (same loop, without `session_start` in between — a boss survives
+across commits by design):
+```bash
+for i in 1 2 3 4 5; do
+  bun -e "import {incrementEvent} from './server/achievements.ts'; incrementEvent('tests_failed', $i)"
+  bun run server/award-xp.ts session_complete
+  [ -f "$CLAUDE_CONFIG_DIR/buddy-state/pending-encounter.json" ] || { echo "boss down at i=$i"; break; }
+done
+jq '.bosses_beaten' "$CLAUDE_CONFIG_DIR/buddy-state/events.json"
+jq 'map(select(.id=="boss_slayer"))' "$CLAUDE_CONFIG_DIR/buddy-state/unlocked.json"
+jq '{points: .bonusPoints, inventory}' "$CLAUDE_CONFIG_DIR/buddy-state/xp.json"
+```
+**Expect:** `pending-encounter.json` is gone, `bosses_beaten` is `1`, the
+`boss_slayer` 👑 badge appears in `unlocked.json`, and `inventory` gained a
+rare+ item on top of a points bump well above a normal tier-4 win — the
+guaranteed `bossDrop`. The next render (within the resolved-scene's ~10s
+TTL, keyed off the write's own wall-clock `encounterAt`) shows the `👑 BOSS
+DOWN` toast and the crowned kill scene.
+
+### b. Wild visitor — seeded roll, greet scene, toast
+
+Visitors roll only when the commit's own combat slot is untouched (no fight,
+no live standoff, no fresh resolved scene — combat always outranks a social
+call) at ~1-in-12 odds, seeded per `visitor:<user>:<startedAt>`. Rather than
+looping and hoping (odds this good rarely need it), search the pure core for
+a hit exactly like §8c searches for a win, then drive the real pipeline at
+that `startedAt`:
+```bash
+bun -e '
+import { rollVisitor } from "./server/visitor.ts";
+import { resolveUserId } from "./server/state.ts";
+import { hashString } from "./server/engine.ts";
+const user = resolveUserId();
+let found = null;
+for (let t = 0; t < 2000 && !found; t++) {
+  const v = rollVisitor(hashString(`visitor:${user}:${t}`), "cactus");
+  if (v && v.reward) found = { t, v };
+}
+console.log(JSON.stringify(found));
+'
+```
+Note the printed `t`, then force the session snapshot to that `startedAt`
+(baseline unchanged, so the commit delta stays zero ⇒ no fight competes for
+the combat slot) and run a commit:
+```bash
+bun -e '
+import { startSession, saveSnapshot } from "./server/session.ts";
+saveSnapshot({ ...startSession(), startedAt: T });   // substitute the found t
+'
+bun run server/award-xp.ts session_complete
+jq '{caption, enemyGlyph}' "$CLAUDE_CONFIG_DIR/buddy-state/visitor.json"
+jq '.celebration' "$CLAUDE_CONFIG_DIR/buddy-state/status.json"
+BUDDY_FAKE_NOW=$(( $(jq '.encounterAt/1000|floor' "$CLAUDE_CONFIG_DIR/buddy-state/status.json") + 8 )) \
+  bash statusline/buddy-status.sh < /dev/null
+```
+**Expect:** `visitor.json` carries the caption `A wild <species> stopped
+by!`; `status.json.celebration` is `{kind: "visitor", text: "🐾 a wild
+<species> stopped by! left <n> pts!"}`; the render at `+8` ticks (mid-loop)
+shows the visiting species walked on with a `♥` overlay pop over the greet
+beat. At `subtle` only the toast shows — the scene render is `full`-only,
+same gate as every other combat surface.
+
+**Cleanup:** `rm -rf "$CLAUDE_CONFIG_DIR"` when done — never run these
+against your real profile.
+
+---
+
 ## Gotchas
 
 - **Nothing animates?** Confirm `gameFeel=full` (`buddy_gamefeel`), and that
