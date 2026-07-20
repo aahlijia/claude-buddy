@@ -174,6 +174,24 @@ export function applyHat(species: Species, hat: Hat, art: string[]): void {
   }
 }
 
+/**
+ * The boss look (living-world P2 Task 6, decision-gate branch B): adding a
+ * dedicated wide boss species would leak into the hatch/adopt pools (`SPECIES`
+ * IS the pool — `generateBones`/`findByCriteria` in engine.ts draw straight
+ * from it, there's no separate explicit allow-list to exclude a new member
+ * from), so the boss look stays the curated tier-4 bug species plus a single
+ * `♛` composited onto the enemy's blank row 0 — the same blank-cell contract
+ * `applyHat` uses on the player side. `♛` has no entry in `MIRROR_SWAP`
+ * (symmetric glyph), so it survives the enemy's `mirrorFrame` pass unchanged.
+ * No-ops when row 0 is already occupied (defensive — no boss enemy wears a
+ * hat today, but this keeps the composite safe if that ever changes).
+ */
+export function applyBossCrown(art: string[]): void {
+  if (!art[0] || art[0].trim()) return;
+  const w = displayWidth(art[0]);
+  art[0] = overlayRow("♛", 0, w, w);
+}
+
 // ─── Gear overlays (equipped weapon / trinket on the sprite) ─────────────────
 
 /** Weapon/trinket glyphs to composite onto a rendered frame (see applyGear). */

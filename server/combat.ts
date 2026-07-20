@@ -31,6 +31,7 @@ import {
   eyeRowIndex,
   applyGear,
   applyHat,
+  applyBossCrown,
   overlayRow,
   trimBlankTopRows,
   type GearArt,
@@ -286,7 +287,10 @@ function scenePoses(
  *  standoff (`bakePendingScene`) so both stay pixel-identical in layout.
  *  Exported (living-world P2 Task 5, ≤3-export rule) so the wild-visitor
  *  greet scene (`visitor.ts`) reuses the exact same composition instead of
- *  forking it. */
+ *  forking it.
+ *  `crownEnemy` (living-world P2 Task 6): composites the boss `♛` onto the
+ *  enemy's blank row 0 before mirroring — see `applyBossCrown`. Absent/false
+ *  for every non-boss caller, so ordinary fights render byte-identically. */
 export function composePose(
   playerSpecies: Species,
   enemySpecies: Species,
@@ -294,6 +298,7 @@ export function composePose(
   sword: string,
   extras?: PoseExtras,
   look?: PlayerLook,
+  crownEnemy?: boolean,
 ): string {
   const playerRaw = getArtFrame(playerSpecies, pose.pEye, 0);
   if (look?.hat && look.hat !== "none") {
@@ -301,7 +306,9 @@ export function composePose(
   }
   applyGear(playerSpecies, playerRaw, look?.gear);
   const player = rectFrame(playerRaw);
-  const enemy = mirrorFrame(getArtFrame(enemySpecies, pose.eEye, 0));
+  const enemyRaw = getArtFrame(enemySpecies, pose.eEye, 0);
+  if (crownEnemy) applyBossCrown(enemyRaw);
+  const enemy = mirrorFrame(enemyRaw);
   const [pA, eA] = alignHeights(player, enemy);
   // Clash on the PLAYER's actual eye row (not the block center), shifted by any
   // top-padding alignHeights added when the player is the shorter sprite — so
@@ -344,6 +351,7 @@ function bakeScene(
   outcome: Outcome,
   damage: number,
   look?: PlayerLook,
+  crownEnemy?: boolean,
 ): { frames: string[]; sequence: number[] } {
   const sword = swingGlyph(weaponArt);
   // OQ4: on a win the strike shows the red pop over the enemy and the triumph
@@ -363,6 +371,7 @@ function bakeScene(
       sword,
       { overlay: { text: popFor(i), over: "enemy" } },
       look,
+      crownEnemy,
     ),
   );
   // Gentle oscillation: ready, wind-up, strike, strike, resolve, resolve.
@@ -424,6 +433,7 @@ function bakeBoutFrames(
   outcome: BoutOutcome,
   sword: string,
   look?: PlayerLook,
+  crownEnemy?: boolean,
 ): string[] {
   const defender = attacker === "player" ? "enemy" : "player";
   // The defender's own resting eye (the player rests at restingP, the enemy at
@@ -453,6 +463,7 @@ function bakeBoutFrames(
         overlay: { text, over },
       },
       look,
+      crownEnemy,
     );
   if (outcome === "dodge") {
     return [
@@ -516,6 +527,7 @@ export function bakePendingScene(
   seed: number = 0,
   tier: number = 1,
   look?: PlayerLook,
+  crownEnemy?: boolean,
 ): { frames: string[]; sequence: number[] } {
   const base = pendingPoses(playerEye, enemyEye).map((pose) =>
     // strike is always false ⇒ the sword arg is inert (gap stays blank).
@@ -526,6 +538,7 @@ export function bakePendingScene(
       DEFAULT_SWORD,
       { overlay: { text: null, over: "enemy" } },
       look,
+      crownEnemy,
     ),
   );
   // Seeded draws in a fixed order (determinism): first attacker, then per bout
@@ -576,6 +589,7 @@ export function bakePendingScene(
       outc,
       sword,
       look,
+      crownEnemy,
     );
   const frames = [
     ...base,
@@ -595,6 +609,7 @@ export function bakePendingScene(
     DEFAULT_SWORD,
     { overlay: { text: null, over: "enemy" } },
     look,
+    crownEnemy,
   );
   const startleIdx = frames.length;
   frames.push(startle);
@@ -648,7 +663,9 @@ function rollItemDrop(
  * stat upgrade must carry the same combat power a migrated buddy would have
  * had baked into bones. `owned` (the player's inventory ∪ equipped) is
  * excluded from item drops so the summary never announces loot the grant
- * would silently skip.
+ * would silently skip. `crownEnemy` (living-world P2 Task 6): the caller
+ * passes true for a boss's final-stage kill scene so it renders with the ♛
+ * look, matching the standoff it came from.
  */
 export function resolveCombat(
   bones: BuddyBones,
@@ -657,6 +674,7 @@ export function resolveCombat(
   seed: number,
   owned: ReadonlySet<ItemId> = new Set(),
   upgradeEffects: readonly UpgradeEffect[] = [],
+  crownEnemy?: boolean,
 ): CombatResult {
   // Seeded once, consumed in a fixed order ⇒ reproducible resolution.
   const rng = mulberry32(seed);
@@ -688,6 +706,7 @@ export function resolveCombat(
     outcome,
     damage,
     { hat: appearance.hat, gear: gearArtOf(appearance) },
+    crownEnemy,
   );
 
   let drop: DropSpec;

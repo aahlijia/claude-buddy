@@ -497,6 +497,10 @@ export function sightBug(slot?: string): void {
   } catch {
     // Cosmetics only — the standoff itself must still spawn.
   }
+  // Boss look (living-world P2 Task 6): the standoff bakes with the ♛ crown
+  // the moment `decision === "boss"` — the same bake that plays for every
+  // sighting/re-sighting of this standoff, so a boss always renders crowned
+  // from the very first frame it shows on the line.
   const scene = bakePendingScene(
     companion.bones.species,
     companion.bones.eye,
@@ -507,12 +511,12 @@ export function sightBug(slot?: string): void {
     pendingSeed(startedAt, tier),
     tier,
     look,
+    decision === "boss",
   );
   // Boss upgrade (living-world P2, D13): pendingAction() only ever returns
   // "boss" on the first upgrade (an existing boss standoff is immutable —
   // it returns "noop" and we bail above), so `stagesCleared` preservation
-  // below is defensive, not load-bearing today. Scene bake is unchanged; the
-  // boss LOOK upgrade is a later task.
+  // below is defensive, not load-bearing today.
   const project = currentProject();
   const isBoss = decision === "boss";
   const stages = isBoss ? bossStages(count) : undefined;
@@ -662,6 +666,11 @@ export function maybeFightBug(
   const xpState = getXpState();
   const { equipment, inventory } = xpState;
   const owned = ownedItems(inventory, equipment);
+  // Boss look (living-world P2 Task 6): the final-stage kill scene renders
+  // with the same ♛ crown the standoff wore throughout the fight. A mid-boss
+  // stage win never reaches this bake — it rewrites the pending record's
+  // pips without rebaking (see below), so the standoff's original crowned
+  // frames just keep playing.
   const result = resolveCombat(
     companion.bones,
     bug,
@@ -669,6 +678,7 @@ export function maybeFightBug(
     seed,
     owned,
     ownedUpgradeEffects(xpState),
+    isBoss,
   );
 
   if (!isBoss) {

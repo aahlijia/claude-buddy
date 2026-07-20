@@ -16,6 +16,7 @@ import {
   rectFrame,
   getArtFrame,
   applyGear,
+  applyBossCrown,
   overlayRow,
   trimBlankTopRows,
   trimSharedBlankTopRows,
@@ -606,6 +607,37 @@ describe("applyGear (gear overlays)", () => {
     const ansi = renderCompanionCard(bones(), "Waffle", "spiky", undefined, 0, 40, GEAR);
     expect(ansi).toContain(GEAR.weapon);
     expect(ansi).toContain(GEAR.trinket);
+  });
+});
+
+// ─── applyBossCrown (living-world P2 Task 6 — boss look, decision-gate branch B) ─
+//
+// Species stays the curated tier-4 bug roster (adding a dedicated boss species
+// would leak into the hatch/adopt pools — SPECIES is the pool, not an explicit
+// allow-list; see the task's report). The boss look is instead a `♛` crown
+// composited onto the enemy's blank row 0, mirroring the `applyHat` blank-cell
+// contract used on the player side.
+
+describe("applyBossCrown (boss look, P2 Task 6)", () => {
+  test("writes a centered crown into a blank row 0", () => {
+    const art = getArtFrame("dragon", "°", 0);
+    expect(art[0].trim()).toBe(""); // precondition: dragon frame 0 row 0 is blank
+    applyBossCrown(art);
+    expect(art[0]).toContain("♛");
+    expect(displayWidth(art[0])).toBe(displayWidth(getArtFrame("dragon", "°", 0)[0]));
+  });
+
+  test("no-ops when row 0 is already occupied", () => {
+    const art = ["taken", "  body  "];
+    applyBossCrown(art);
+    expect(art[0]).toBe("taken");
+  });
+
+  test("♛ is absent from MIRROR_SWAP, so it survives mirrorFrame unchanged", () => {
+    const art = getArtFrame("dragon", "°", 0);
+    applyBossCrown(art);
+    const mirrored = mirrorFrame(art);
+    expect(mirrored[0]).toContain("♛");
   });
 });
 

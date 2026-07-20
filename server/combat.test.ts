@@ -20,6 +20,7 @@ import {
   writePendingEncounter,
   bossDrop,
   BOSS_KILL_POINTS,
+  composePose,
   type PendingEncounter,
 } from "./combat";
 
@@ -1004,6 +1005,73 @@ describe("bossDrop (living-world P2 Task 4)", () => {
   });
 });
 
+// ─── Boss look — dedicated art, with a bounded fallback (P2 Task 6) ─────────
+//
+// DECISION GATE: `Species` (engine.ts) is `(typeof SPECIES)[number]` and every
+// pool that generates a companion — `generateBones` (hatch) and
+// `findByCriteria` (adopt/search) — draws straight from the `SPECIES` array
+// itself (`pick(rng, SPECIES)`). There is no separate explicit allow-list a
+// new "boss_hydra" member could be excluded from: adding it to `SPECIES`
+// would make it hatchable/adoptable immediately. So this takes the SKIP
+// branch: the boss stays the curated tier-4 bug species (`dragon`, via
+// `segfault_dragon` — the only tier-4 entry in bugs.ts) plus a `♛` crown
+// composited onto the enemy's blank row 0 (`applyBossCrown`, art.ts).
+
+describe("boss look — crownEnemy threading (P2 Task 6)", () => {
+  const readyPose = { pEye: "·" as const, eEye: "×" as const, strike: false };
+
+  test("composePose: crownEnemy renders ♛ on the enemy; omitted stays crown-free", () => {
+    const crowned = composePose("cactus", "dragon", readyPose, "/");
+    const withCrown = composePose("cactus", "dragon", readyPose, "/", undefined, undefined, true);
+    expect(crowned).not.toContain("♛");
+    expect(withCrown).toContain("♛");
+    // Crowning never changes the frame's line count or any line's width —
+    // it only fills an already-blank cell.
+    expect(withCrown.split("\n").length).toBe(crowned.split("\n").length);
+  });
+
+  test("resolveCombat: crownEnemy renders every frame with the ♛ look", () => {
+    const plain = resolveCombat(bones(50), t4, {}, 7);
+    const boss = resolveCombat(bones(50), t4, {}, 7, undefined, undefined, true);
+    for (const frame of plain.frames) expect(frame).not.toContain("♛");
+    for (const frame of boss.frames) expect(frame).toContain("♛");
+    // Only the crown differs — outcome/summary/drop/enemyGlyph/sequence are
+    // driven by the same seed and untouched by the look flag.
+    expect(boss.outcome).toBe(plain.outcome);
+    expect(boss.sequence).toEqual(plain.sequence);
+  });
+
+  test("bakePendingScene: crownEnemy renders ♛ in every frame — ready, glare, and every skirmish bout beat", () => {
+    const plain = bakePendingScene("cactus", "·", "dragon", "×", 3, 4);
+    const boss = bakePendingScene("cactus", "·", "dragon", "×", 3, 4, undefined, true);
+    expect(plain.frames.length).toBe(boss.frames.length);
+    for (const frame of plain.frames) expect(frame).not.toContain("♛");
+    for (const frame of boss.frames) expect(frame).toContain("♛");
+  });
+
+  test("bakePendingScene: crownEnemy keeps constant width/height across the whole flipbook", () => {
+    // Row 0 is dead space in the plain bake (`trimBlankTopRows` reclaims it —
+    // no frame uses it), but crowning fills it on EVERY frame, so it's no
+    // longer shared-blank and survives the trim: the boss bake is exactly one
+    // row taller than the plain bake, not "inert" on height. Width is
+    // unaffected either way (the crown only fills an already-blank cell).
+    const plain = bakePendingScene("cactus", "·", "dragon", "×", 3, 4);
+    const boss = bakePendingScene("cactus", "·", "dragon", "×", 3, 4, undefined, true);
+    const heights = new Set(boss.frames.map((f) => f.split("\n").length));
+    expect(heights.size).toBe(1); // constant height across the boss flipbook
+    expect([...heights][0]).toBe(plain.frames[0].split("\n").length + 1);
+    const widths = new Set(
+      boss.frames.map((f) => Math.max(...f.split("\n").map(displayWidth))),
+    );
+    // Every frame rectangular at the same overall width.
+    for (const frame of boss.frames) {
+      const lineWidths = new Set(frame.split("\n").map(displayWidth));
+      expect(lineWidths.size).toBe(1);
+    }
+    expect(widths.size).toBe(1);
+  });
+});
+
 // ─── Boss sighting — standoffs escalate into multi-stage bosses (P2 Task 3) ──
 //
 // pendingAction()/bossStages()/BOSS_THRESHOLD already land in session.ts
@@ -1126,5 +1194,38 @@ describe("boss sighting escalation (living-world P2, fresh process)", () => {
     } finally {
       rmSync(cfgDir, { recursive: true, force: true });
     }
+  });
+
+  test("the boss standoff's baked frames all wear the ♛ look; an ordinary standoff never does (P2 Task 6)", () => {
+    const script = `
+      ${BOSS_SETUP}
+      incrementEvent("errors_seen", 12);
+      sightBug();
+      const boss = readPendingEncounter();
+      console.log(JSON.stringify({
+        allCrowned: boss.frames.every((f) => f.includes("\\u265b")),
+      }));
+    `;
+    const out = runBossScript(script) as unknown as { allCrowned: boolean };
+    expect(out.allCrowned).toBe(true);
+  });
+
+  test("an ordinary (non-boss) standoff never wears the ♛ look", () => {
+    const script = `
+      ${BOSS_SETUP}
+      incrementEvent("errors_seen", 1); // tier 1 — nowhere near BOSS_THRESHOLD
+      sightBug();
+      const pending = readPendingEncounter();
+      console.log(JSON.stringify({
+        kind: pending?.kind ?? null,
+        anyCrowned: pending.frames.some((f) => f.includes("\\u265b")),
+      }));
+    `;
+    const out = runBossScript(script) as unknown as {
+      kind: string | null;
+      anyCrowned: boolean;
+    };
+    expect(out.kind).toBeNull();
+    expect(out.anyCrowned).toBe(false);
   });
 });

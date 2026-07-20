@@ -657,6 +657,34 @@ describe("bosses survive commit rebaselining (fresh process)", () => {
     expect(out.after).toEqual(out.before);
   });
 
+  // Boss look (living-world P2 Task 6): the standoff bakes crowned from the
+  // first sighting (proven in combat.test.ts's sighting suite); this proves
+  // the OTHER end — the final-stage kill scene, baked separately by
+  // resolveCombat inside maybeFightBug — also wears the ♛ look, and that a
+  // mid-fight (non-final) stage win never writes an encounter record at all
+  // (the standoff persists instead — see the G5 revision above).
+  test("the final-stage kill scene also wears the ♛ look (P2 Task 6)", () => {
+    const script = `
+      ${SETUP}
+      const { readEncounter } = await import("./server/combat.ts");
+      let final = null;
+      for (let i = 0; i < 500 && final === null; i++) {
+        incrementEvent("errors_seen", i + 1);
+        const completion = awardSessionComplete();
+        if (completion.fightWon) final = completion;
+      }
+      const enc = readEncounter();
+      console.log(JSON.stringify({
+        final,
+        allCrowned: enc ? enc.frames.every((f) => f.includes("\\u265b")) : null,
+      }));
+    `;
+    const out = runBossScript(script);
+    expect(out.final).not.toBeNull();
+    expect(out.final.fightWon).toBe(true);
+    expect(out.allCrowned).toBe(true);
+  });
+
   // The state.ts persistence fix (session.ts sightBug/maybeFightBug) is not
   // the only staleness reader: `writeStatusState`'s pending render branch
   // (state.ts) has its OWN `snap.startedAt === pending.startedAt` guard,
