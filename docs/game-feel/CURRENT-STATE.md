@@ -5,14 +5,17 @@ tying together the arcs that each have their own design/status docs. For the
 per-arc detail, follow the links in [Doc map](#doc-map).
 
 _Last updated: 2026-07-20 · branch `feature/interactive-fight-scene`_
-_Baseline: **927 tests, all pass** · `tsc --noEmit` clean · `bash -n` clean._
+_Baseline: **1003 tests, all pass** · `tsc --noEmit` clean · `bash -n` clean._
 _Status: everything through
-[living-world arc — P2 encounter variety](#living-world-arc--p2-encounter-variety-2026-07-20)
+[living-world arc — P4 world dressing](#living-world-arc--p4-world-dressing-2026-07-20)
 is **committed** (Tasks 1-7 on `feature/interactive-fight-scene`, code
-review approved). Newest on top: P2's boss bugs — multi-stage,
-threshold-triggered, crowned, badge-rewarding — and wild buddy visitors,
-both e2e-verified through the real shell in a throwaway profile (Task 8,
-this docs pass). No PR opened yet._
+review approved on every task). Newest on top: P4's ground props (daily
+sprout + kickable pebble), the prop step-kick, a loot-dash inspect beat
+over a dropped item, and sparse weather FX — all e2e-verified through the
+real shell in a throwaway profile (Task 7, this docs pass). **This closes
+the living-world arc** — P0, P1, P2, and P4 are all implemented and
+verified; P3 (idle economy) was never built, see
+[Open follow-ups](#open-follow-ups). No PR opened yet._
 
 > **What "game-feel" is.** A layer of optional juice on top of the buddy
 > companion: celebratory feedback, an expressive idle status line, light RPG
@@ -1002,6 +1005,144 @@ clean.
    disk read discarded because the shell only surfaces scene fields at
    `full`. Minor perf/cleanliness nit, not a bug.
 
+### Living-world arc — P4 world dressing (2026-07-20)
+
+Ships the fourth and **final** phase of the living-world arc — ambient
+**ground props**, **prop interaction** (a step-kick + a loot-dash inspect
+beat), and **weather FX** — still riding the "server bakes, bash cycles"
+invariant: **zero `buddy-status.sh` changes**, the arc's shell stays frozen.
+Full design + resolved decisions:
+[living-world/design.md](living-world/design.md) §P4; phased plan:
+[living-world/plan-p4.md](living-world/plan-p4.md).
+
+- **Zero-rows, by construction.** There is no scenery layer — props are
+  extra glyphs composited into the **idle** flipbook through the exact
+  `applyGear` blank-cells-only / ANSI-refused contract (`overlayGlyph`,
+  art.ts), so they never flicker or clobber body pixels, and they never
+  compete in the render priority ladder: idle frames and combat/pending/
+  visitor scenes are separate baked channels (`writeStatusState`,
+  state.ts) — the shell shows one or the other, so a prop simply isn't
+  drawn while a scene is up.
+- **Prop anchors** (`PROP_ANCHORS`, art.ts — Task 1) are a **parallel
+  table** beside `GEAR_ANCHORS`, not an extra field on it: props are
+  ambient world-dressing, gear is owned equipment, and the two systems
+  test independently. `ahead` is `[4, 11]` (the last column of every
+  species' box) for all 20 species; `feet` is hand-placed per species,
+  clear of both `ahead` and the two-cell footprint the one existing
+  trinket (`rubber_duck`, `,>`) occupies — verified blank across every
+  idle frame, the P7 stretch frame, and the gait lean/peek postures by the
+  same blank-cell probe methodology `GEAR_ANCHORS` used originally.
+- **Prop selection** (`server/props.ts`, new pure module — Task 2):
+  `pickDayProp(now, species)` day-seeds a daily-constant sprout/clover/
+  flower motif for `feet` and a pebble glyph for `ahead`
+  (`hashString`+`mulberry32`, the established seed seam), plus a
+  time-of-day palette bucket (dawn/day/dusk/night) from the injected hour.
+  Season GATE Branch A: reuses the existing `activeSeasonal` holiday-window
+  calendar (the beanie hat's own mechanism) rather than inventing a
+  meteorological month→season map — a live seasonal window swaps the
+  `feet` motif to a matching glyph (❅ winter, ✧ new-year). Pure: the date
+  is injected, never read from the clock inside the module — `new Date()`
+  is called exactly once, at the `writeStatusState` write site (Task 3).
+- **Wired into the idle bake** (Task 3) gated on `idleGate === "full"` —
+  the already-clamped gate that also carries the D14 angry-auto-quiet
+  exemption "for free," so an error-driven angry idle still gets its prop.
+  **No new persisted file** — the prop is re-derived from the current date
+  on every write, so nothing was added to `TRANSIENT_PREFIXES`.
+- **The step-kick — Task 4's saga.** The pebble's `ahead` glyph slides
+  through per-species columns on the walk's own step ticks
+  (`PROP_KICK_COLUMNS`, `applyPropKicked`, `propKickFrameSequence`,
+  art.ts). This is the one task in P4 that needed **two real fix rounds**
+  after its first landing, both caught by code review reading the actual
+  rendered behavior rather than trusting the commit message — worth
+  recording in detail for whoever next touches gait/prop code:
+  1. **First landing (`d1bc9a3`)** implemented "Branch B": the pebble
+     stayed pinned to its single anchor and was *withheld* (removed
+     entirely, then redrawn) on the walk's lean/peek direction-flip
+     frames. It was justified with "no species has a safe second column"
+     — but that blank-cell probe had checked columns 7–11 in **aggregate
+     across all 20 species** instead of **per-species** with each
+     species' own `feet` column excluded, so it never found the columns
+     that were actually free.
+  2. **Fix round 1 (`efc7b59`)** — a code review of `d1bc9a3` caught two
+     real bugs: the "kick" fired on `phase===2/3`, the ticks where the
+     buddy has **stopped** — the literal inverse of "a kick as the buddy
+     ambles," inverting the design's own step-tick trigger; and
+     withholding a static glyph (removing it, then redrawing it
+     unmoved) reads as flicker, which design.md §P4 explicitly forbids.
+     Re-running the corrected **per-species** probe found 11 of 20
+     species genuinely have a spare column (duck, goose, owl, penguin,
+     turtle, snail, axolotl, cactus, mushroom, wyvern, pikachu); the fix
+     implemented real sliding motion for those 11 via
+     `PROP_KICK_COLUMNS` + `applyPropKicked`, keyed to `phase===1` (the
+     actual step tick) through `propKickFrameSequence`. The other 9
+     species (blob, cat, dragon, octopus, ghost, capybara, robot,
+     rabbit, chonk) are genuinely cramped and keep the single static
+     anchor — no kick, never withheld.
+  3. **Fix round 2 (`656879b`)** — a code review of the fix **itself**
+     caught a fresh regression the first fix had introduced: the
+     appended kick frames hardcoded `bones.eye` instead of the active
+     emotion's eye. During any non-neutral emotional walk on a kick
+     species, this flipped the buddy's eyes
+     emotion→neutral→emotion on every single step tick — a real
+     per-tick expression flicker, invisible in every prior test because
+     they all used `emotion: "neutral"`, where `bones.eye` and the
+     emotion eye happen to coincide. Fixed by threading the actual base
+     eye the caller's cycle was using into the kick-frame bake instead
+     of re-deriving (or hardcoding) it.
+  The lesson for future gait/prop work: a per-species blank-cell claim
+  needs a genuinely per-species check (not an aggregate one), a "withheld
+  glyph" is flicker even if the position never seems to move, and a fix
+  for one flicker bug needs the same "render it and look" scrutiny the
+  original bug did — the second regression shipped inside the very commit
+  meant to fix the first.
+- **Loot-dash inspect beat** (`server/wander.ts` `stingerInspectOffsets`,
+  `server/art.ts` `inspectIdx`, Task 5): the loot-dash stinger's 3-tick
+  pause at max reach now poses the buddy in the existing peek (`<`)
+  posture with a dropped-item glyph (`◇`) composited at the `ahead` prop
+  anchor — no new frame art, reuses P1's peek pose + Task 1's compositor.
+  `stingerInspectOffsets(kind, range)` is a standalone accessor (not a
+  change to `stingerArc`'s return shape), reporting `[r, r+1, r+2]` for
+  `lootdash` and an empty span for `victory`/`walkon`.
+- **Weather FX** (`server/art.ts` `overlayFxRow`, Task 6): a sparse
+  drizzle mark (`'`) during a rough error streak, drifting sparkles (`*`)
+  during a clean one — composited into the **same** idle FX row the emote
+  glyph already uses (Branch A of the task's decision gate), so it costs
+  zero new rows: the row is non-blank and kept only while weather is
+  active, reclaimed by `trimSharedBlankTopRows` otherwise, exactly the
+  emote row's own contract. Drizzle reads the session's live error count
+  (`combatErrorCount`, thresholded at `tierForErrors ≥ 2`) and rides the
+  D14 angry-exemption; sparkle reads the account-scoped clean streak and
+  takes the plain clamped gate, no exemption — a simultaneous rough count
+  wins over a streak (bad news is the more actionable signal).
+
+**Verified end-to-end** through the real render path in a throwaway
+`CLAUDE_CONFIG_DIR` profile, on the real shell, with a cactus buddy
+wearing a crown hat and an equipped rubber-duck trinket (the crowded-
+sprite worst case): (a) the day's prop (`♣` clover at feet) rendered on
+every idle tick alongside the still-intact trinket (`,>`) — no clobber;
+(b) across ticks the pebble (`∘`) visibly kicked inward column-by-column
+(`col 11 → col 10 → …`), confirmed on the rendered line, not just the
+baked JSON; (c) a forced loot-dash stinger showed the peek posture
+(`<  <` eyes) with the dropped-item glyph (`◇`) replacing the pebble for
+exactly the pause's 3 ticks, then reverted; (d) an error-count fixture
+(`errors_seen: 4`, tier 2) rendered a drizzle row (`' '    ' '`) above the
+sprite, and — after resetting the session baseline and setting a clean
+streak — the same profile rendered sparkles (`* *    * *`) instead, both
+adding exactly one row with no clipping; (e) both a forced bug standoff
+and a seed-searched wild visitor scene rendered with the feet prop, the
+pebble, and the weather row all absent — only the combat/visitor frames
+showed, confirming props/weather ride idle frames exclusively. All five
+checks rendered exactly as designed. Tests: **1003 pass** (up from the 927
+P2 baseline — 76 net new across Tasks 1-6, plus the two Task 4 fix-round
+deltas folded in),
+`tsc --noEmit` + `bash -n` clean. No production code touched by this
+docs/verification pass (Task 7).
+
+**No known follow-ups from this pass** — code review approved every task
+(Task 4 needed the two fix rounds above before approval; every other task
+passed clean or with only non-blocking notes), and the e2e sweep above
+found nothing to report.
+
 ---
 
 ## Going live
@@ -1052,16 +1193,21 @@ bun run install-buddy   # copies the repo script into place
   commit, escalating tier, resolved-phase bubble suppression folded in. See
   [Pending encounter — the standoff](#pending-encounter--the-standoff-2026-07-08).
   Committed on `feature/interactive-fight-scene` (`22f6733`).
-- **Living-world arc**: P1 (movement vocabulary) and P2 (encounter variety —
-  boss bugs, wild buddy visitors) are both implemented, e2e-verified, and
-  committed on `feature/interactive-fight-scene` (see above; P2's own P0's
-  tick-ceiling measurement was P1's, not P2's — no new tick work in P2).
-  Task 1's tick-ceiling measurement (P0 — how fast Claude Code actually
-  repaints the status line) already came back FAIL-permanently (see
+- ~~**Living-world arc**~~ **complete 2026-07-20** — P0 (measured), P1
+  (movement vocabulary), P2 (encounter variety — boss bugs, wild buddy
+  visitors), and P4 (world dressing — props, prop-kick, inspect beat,
+  weather FX) are all implemented, e2e-verified, and committed on
+  `feature/interactive-fight-scene` (see above). Task 1's tick-ceiling
+  measurement (P0 — how fast Claude Code actually repaints the status
+  line) came back FAIL-permanently (see
   [design.md's P0 findings](living-world/design.md#p0-findings-measured-2026-07-18));
   Task 10 (the one sanctioned `buddy-status.sh` sub-second-tick change) is
-  dropped, not deferred. P3 (idle economy — expeditions, gear-economy
-  round-out) is the next planned phase; no plan doc for it yet.
+  dropped, not deferred. **P3 (idle economy — expeditions,
+  gear-economy round-out) was never implemented** — deprioritized in favor
+  of jumping straight to P4 (plan-p4.md's own recon confirms
+  `server/expedition.ts` doesn't exist and no P4 task assumes it landed
+  first); no plan doc for P3 was ever written, and none is currently
+  planned. The arc closes at four of its five originally-designed phases.
 - The stale top-level [`status.md`](status.md) is a point-in-time artifact for the
   quick-wins sub-arc (440 tests, `feature/leveling-system`) — superseded by this
   doc for the current picture.
@@ -1092,8 +1238,9 @@ bun run install-buddy   # copies the repo script into place
 | [idle-rpg/design-sprite-animation.md](idle-rpg/design-sprite-animation.md) | idle emote row + dodge/parry bouts (**implemented** 2026-07-17) |
 | [idle-rpg/design-sprite-animation-v2.md](idle-rpg/design-sprite-animation-v2.md) | round 2: crit/counter bouts, per-kind flourish, idle glance, pilot art frame (**implemented** 2026-07-17) |
 | [idle-rpg/testing-guide.md](idle-rpg/testing-guide.md) | hands-on verification harnesses |
-| [living-world/design.md](living-world/design.md) | idle-RPG + animation + movement arc, P0-P4 (**P1 + P2 implemented**, P0 measurement complete/FAIL — Task 10 dropped) |
+| [living-world/design.md](living-world/design.md) | idle-RPG + animation + movement arc — **arc complete**: P0 measured/FAIL (Task 10 dropped), P1 + P2 + P4 implemented; P3 never built |
 | [living-world/plan-p0-p1.md](living-world/plan-p0-p1.md) | phased P0/P1 implementation plan + task-by-task tracker |
 | [living-world/plan-p2.md](living-world/plan-p2.md) | phased P2 (boss bugs + wild visitors) implementation plan + task-by-task tracker |
+| [living-world/plan-p4.md](living-world/plan-p4.md) | phased P4 (props, prop-kick, inspect beat, weather FX) implementation plan + task-by-task tracker |
 | [menu/](menu/) | interactive menu + nav channel |
 | [anaylsis.md](anaylsis.md) | earlier analysis notes |

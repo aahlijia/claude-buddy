@@ -638,6 +638,129 @@ against your real profile.
 
 ---
 
+## 10. Living-world P4 — props, prop-kick, inspect beat, weather
+
+The living-world arc's P4 phase ([living-world/design.md](../living-world/design.md)
+§P4) adds ambient ground props (a daily sprout by the feet, a kickable
+pebble ahead), a loot-dash inspect beat over a dropped item, and sparse
+weather FX — all baked server-side, zero `buddy-status.sh` changes. Same
+idiom as §8/§9: always export `CLAUDE_CONFIG_DIR` first and confirm it's
+the throwaway (`ls "$CLAUDE_CONFIG_DIR"`, not `$HOME/.claude-buddy`) before
+any write — every process below, including the shell renders, must see it.
+
+**Setup (once) — the crowded-sprite worst case: hat + gear + props at
+once.** Cactus is one of the 11 species with a spare kick column
+(`PROP_KICK_COLUMNS`, art.ts), so it's the species to use if you want to
+see the pebble actually slide, not just sit still:
+```bash
+cd /Users/austinahlijian/Projects/claude-buddy
+export CLAUDE_CONFIG_DIR=$(mktemp -d)
+ls "$CLAUDE_CONFIG_DIR"                                      # confirm it's the throwaway
+bun -e '
+import { saveConfig, loadConfig, saveCompanion } from "./server/state.ts";
+import { writeFileSync, mkdirSync } from "fs";
+import { join } from "path";
+saveCompanion({
+  name: "Waffle", personality: "",
+  bones: {
+    species: "cactus", rarity: "common", eye: "·", hat: "crown",
+    shiny: false, peak: "SNARK", dump: "WISDOM",
+    stats: { DEBUGGING: 50, PATIENCE: 10, CHAOS: 10, WISDOM: 10, SNARK: 10 },
+  },
+});
+saveConfig({ ...loadConfig(), gameFeel: "full", wanderEnabled: true });
+const stateDir = join(process.env.CLAUDE_CONFIG_DIR, "buddy-state");
+mkdirSync(stateDir, { recursive: true });
+writeFileSync(join(stateDir, "xp.json"), JSON.stringify({
+  totalXp: 0, equipment: { trinket: "rubber_duck" }, upgradeEffectsDerived: true,
+}));
+'
+bun run server/award-xp.ts session_start
+```
+
+### a. Props coexist with gear + the pebble kicks
+```bash
+jq -r '.frames[] | select(length>0)' "$CLAUDE_CONFIG_DIR/buddy-state/status.json" | tail -6
+for n in 0 1 2 3 4 5 6 7 8; do
+  BUDDY_FAKE_NOW=$(( $(date +%s) + n )) bash statusline/buddy-status.sh <<< '{}'
+done
+```
+**Expect:** every idle frame's row 4 carries `,>` (the equipped rubber-duck
+trinket, cols 0-1) **and** a daily-constant clover/sprout glyph a couple
+cells in (`♣`/`⚘`/`✿`/`☘` — whichever the day-seed drew) — no clobber
+between the two. Over the ticks the pebble at the far-right column drifts
+inward (col 11 → 10 → 9 → 7 for cactus) on the walk's step ticks, then
+resets — the real per-species sliding motion (Task 4, after its two fix
+rounds — see [CURRENT-STATE.md's P4
+section](../CURRENT-STATE.md#living-world-arc--p4-world-dressing-2026-07-20)
+for the saga), not a withheld toggle.
+
+### b. Loot-dash inspect beat over a dropped item
+```bash
+bun -e '
+import { loadCompanion, writeStatusState } from "./server/state.ts";
+writeStatusState(loadCompanion(), { stinger: "lootdash" });
+console.log(JSON.stringify({ at: Math.floor(Date.now()/1000) }));
+'
+# note the printed "at" as W, then find which frameSequence offsets are
+# the peek/inspect frame (index 10 in the fixture above — the last baked
+# idle frame) and render across that span:
+jq -c '.frameSequence | to_entries | map(select(.value==10)) | map(.key)' \
+  "$CLAUDE_CONFIG_DIR/buddy-state/status.json"
+```
+Render a few ticks straddling the reported offsets (`(W + offset) % 180`,
+`STINGER_DELAY_TICKS` after the write). **Expect:** for exactly the
+inspect pause's 3 ticks the buddy shows the peek posture (`<  <` eyes) with
+a dropped-item glyph (`◇`) at the pebble's `ahead` anchor, then reverts to
+the normal walking pose and the day's own pebble.
+
+### c. Weather — drizzle on a rough streak, sparkle on a clean one
+```bash
+# Drizzle: bump this session's live error count past the rough threshold.
+bun -e 'import { incrementEvent } from "./server/achievements.ts"; incrementEvent("errors_seen", 4);'
+bun -e 'import { loadCompanion, writeStatusState } from "./server/state.ts"; writeStatusState(loadCompanion(), {});'
+BUDDY_FAKE_NOW=$(date +%s) bash statusline/buddy-status.sh <<< '{}'
+```
+**Expect:** a drizzle row (`'` marks) above the sprite — one new row, not a
+clipped one.
+```bash
+# Sparkle: reset the session baseline to the current counters (so the
+# error delta drops back to 0) and set a clean streak.
+bun -e '
+import { saveSnapshot, extractCounters } from "./server/session.ts";
+import { loadEvents } from "./server/achievements.ts";
+import { writeFileSync } from "fs";
+import { join } from "path";
+saveSnapshot({ startedAt: Math.floor(Date.now()/1000), baseline: extractCounters(loadEvents()) });
+writeFileSync(join(process.env.CLAUDE_CONFIG_DIR, "buddy-state", "streak.json"),
+  JSON.stringify({ current: 3, longest: 3, lastSessionAt: Date.now(), lastStartAt: Date.now() }));
+'
+bun -e 'import { loadCompanion, writeStatusState } from "./server/state.ts"; writeStatusState(loadCompanion(), {});'
+BUDDY_FAKE_NOW=$(date +%s) bash statusline/buddy-status.sh <<< '{}'
+```
+**Expect:** sparkles (`*` marks) in the same row instead of drizzle — a
+rough error count always wins over a simultaneous clean streak, so the
+error delta must actually be reset first, same as above.
+
+### d. Props/weather vanish while a scene is up
+```bash
+rm -f "$CLAUDE_CONFIG_DIR/buddy-state/pending-encounter.json"   # visitor never shows mid-fight
+bun run server/award-xp.ts bug_sighted   # spawns a standoff (errors_seen is already >0 from step c)
+BUDDY_FAKE_NOW=$(date +%s) bash statusline/buddy-status.sh <<< '{}'
+```
+**Expect:** the two-sprite bug-fight scene renders — no feet prop, no
+pebble, no weather row above it. Props and weather ride **idle** frames
+only; combat/pending/visitor scenes are a separate baked channel the shell
+shows *instead of* idle, never alongside it (design.md's zero-rows
+architecture note). The equipped trinket still shows on the combat pose
+(gear is a different, always-on channel) — only the ambient props/weather
+disappear.
+
+**Cleanup:** `rm -rf "$CLAUDE_CONFIG_DIR"` when done — never run these
+against your real profile.
+
+---
+
 ## Gotchas
 
 - **Nothing animates?** Confirm `gameFeel=full` (`buddy_gamefeel`), and that

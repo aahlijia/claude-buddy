@@ -2,8 +2,15 @@
 
 _Drafted 2026-07-17 · branch `feature/interactive-fight-scene` · baseline 844
 tests, all pass._
-_Status: **P2 implemented (2026-07-20); P1 implemented (2026-07-18); P0
-measured (2026-07-18) — Task 10 dropped, see P0 findings below.**_
+_Status: **Arc complete (2026-07-20) — P4 implemented (2026-07-20); P2
+implemented (2026-07-20); P1 implemented (2026-07-18); P0 measured
+(2026-07-18) — Task 10 dropped, see P0 findings below. P3 (idle economy —
+expeditions) was never implemented: deprioritized in favor of jumping
+straight to P4, no plan doc was ever written for it, and
+`server/expedition.ts` does not exist. The arc closes here, at four of its
+five originally-designed phases — see
+[CURRENT-STATE.md's P4 section](../CURRENT-STATE.md#living-world-arc--p4-world-dressing-2026-07-20)
+for the full e2e verification.**_
 
 One cohesive, phased expansion across three threads the user asked for
 together: **more idle-RPG features, more interactive animations/scenes, more
@@ -308,7 +315,15 @@ sell/refund round-trip + cap units; e2e: fake `lastActivityAt` → session start
 
 ---
 
-## P4 — World dressing
+## P4 — World dressing (implemented 2026-07-20)
+
+> **Shipped.** All four bullets below landed across Tasks 1-6 (`server/art.ts`
+> `PROP_ANCHORS`/`applyProp`/`applyPropKicked`, `server/props.ts` new pure
+> module, `server/wander.ts` `stingerInspectOffsets`, `server/state.ts`
+> wiring), e2e-verified through the real shell in a throwaway profile
+> (Task 7). Full writeup, the exact rendered verification, and the Task 4
+> two-round fix saga:
+> [CURRENT-STATE.md §Living-world arc — P4 world dressing](../CURRENT-STATE.md#living-world-arc--p4-world-dressing-2026-07-20).
 
 Zero-rows shapes this hard: **there is no scenery layer** — only things that
 live inside blocks that already exist.

@@ -271,6 +271,8 @@ Default on; toggle with `/buddy wander [on|off]`. `/buddy wander hop` adds a sma
 
 The walk itself reflects mood — happy skips in quick two-cell hops, angry paces a tight span fast, bored settles into a long, slow shuffle — and reacts to events with a one-off flourish: a quick victory lap after a won fight, a dart-and-inspect after a loot drop, a walk-on entrance at the start of a session.
 
+The line itself has a little world in it, too: a daily-changing sprout or pebble rides along with your buddy (a different one each day, seasonal on holidays), the pebble genuinely kicks forward a cell as the buddy ambles, a loot-dash pauses to inspect the dropped item it just found, and a rough error streak drizzles the line while a clean one sparkles. All of it is cosmetic, `full`-only, and never costs an extra row when it's not active.
+
 **Motion feels distracting?** Stop the amble with `/buddy wander off`, or dial all the celebratory animation down with `/buddy gamefeel subtle` (brief toasts only) or `/buddy gamefeel off` (silent — the classic status line). Both are read live, no restart needed.
 
 ### Bug fights
