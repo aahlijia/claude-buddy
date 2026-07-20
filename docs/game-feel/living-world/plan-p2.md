@@ -216,7 +216,7 @@ mulberry32(seed); first draw gates `1/VISITOR_ODDS`; species drawn from the cura
 
 - [ ] **Step 1 — manual e2e** (temp CLAUDE_CONFIG_DIR, testing-guide idioms): (a) 12 error events → boss standoff with pips caption on the real shell; (b) two winning commits → stage pip fills, then kill scene + badge in `buddy_achievements`; (c) forced-seed visitor → greet scene + toast. STOP/BLOCKED on any failure.
 - [ ] **Step 2:** full validation sweep (`bun test`, `tsc`, `bash -n`), exact totals.
-- [ ] **Step 3:** docs in the established voice; CURRENT-STATE notes the G5 revision (bosses persist mid-fight; D12 unchanged) explicitly.
+- [ ] **Step 3:** docs in the established voice; CURRENT-STATE notes the G5 revision (bosses persist mid-fight; D12 unchanged) explicitly, INCLUDING two chosen behaviors from Task 4's review: `gameFeel off` mid-boss discards the standoff (opt-out means opt-out), and boss records are exempt from segment staleness at ALL THREE reader sites (sightBug, maybeFightBug, and writeStatusState's render branch — one rule, three readers).
 - [ ] **Step 4:** Commit: `docs(living-world): P2 shipped — bosses + visitors` (+ trailer).
 
 ---
