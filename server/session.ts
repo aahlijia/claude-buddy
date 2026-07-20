@@ -107,7 +107,14 @@ export interface SessionSnapshot {
   baseline: SessionCounters;
 }
 
-function extractCounters(g: EventCounters): SessionCounters {
+/**
+ * Narrow the full lifetime `EventCounters` blob down to the bonus/combat
+ * slice `SessionCounters` cares about. Exported for the weather FX signal
+ * (living-world P4 Task 6), which mirrors `sightBug`'s live error-count read
+ * (`combatErrorCount(counterDelta(current, baseline))`) from `state.ts`
+ * rather than re-deriving its own counter.
+ */
+export function extractCounters(g: EventCounters): SessionCounters {
   return {
     all_green: g.all_green,
     large_diffs: g.large_diffs,

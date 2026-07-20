@@ -30,6 +30,8 @@ import {
   trimSharedBlankTopRows,
   emoteFor,
   finalizeIdleBlock,
+  overlayFxRow,
+  type Weather,
   renderCompanionCard,
   renderCompanionCardMarkdown,
   STATUS_FRAME_SEQUENCE,
@@ -1406,6 +1408,114 @@ describe("finalizeIdleBlock", () => {
     const r = finalizeIdleBlock(idle, undefined, emoteFor("surprised"));
     expect(heights(r.idle)).toEqual(new Set([7])); // +1 for the emote row
     for (const f of r.idle) expect(f.split("\n")[0]).toContain("?");
+  });
+});
+
+// ─── Weather FX overlay (living-world P4 Task 6) ─────────────────────────────
+//
+// Branch A (see the task's decision-gate report): weather shares the SAME
+// single FX row `finalizeIdleBlock` already unshifts for the idle emote — no
+// second row (constraint 3). `overlayFxRow` is `overlayRow`'s twin: it
+// centers the emote exactly like `overlayRow` always has (precedence: the
+// emote's own centered span, plus a one-cell buffer, is inviolate), then
+// scatters sparse weather glyphs into the row's OTHER cells.
+
+describe("overlayFxRow (weather compositor, living-world P4 Task 6)", () => {
+  test("every weather row is exactly totalW display cells wide (overlayRow contract)", () => {
+    for (const w of [5, 8, 12, 20, 40]) {
+      for (const weather of ["drizzle", "sparkle", null] as (Weather | null)[]) {
+        for (const text of [null, "!", "zZz"]) {
+          const row = overlayFxRow(text, weather, w);
+          expect(displayWidth(row)).toBe(w);
+        }
+      }
+    }
+  });
+
+  test("weather composites alongside an active emote without overwriting it", () => {
+    const w = 20;
+    const row = overlayFxRow("!", "drizzle", w);
+    expect(displayWidth(row)).toBe(w);
+    expect(row).toContain("!"); // the angry emote survives at center
+    expect(row).toContain("'"); // drizzle occupies another cell
+  });
+
+  test("weather still renders when there is no active emote", () => {
+    const row = overlayFxRow(null, "sparkle", 20);
+    expect(displayWidth(row)).toBe(20);
+    expect(row).toContain("*");
+  });
+
+  test("no emote and no weather ⇒ an all-blank row (so trimSharedBlankTopRows still reclaims it)", () => {
+    const row = overlayFxRow(null, null, 12);
+    expect(row).toBe(" ".repeat(12));
+    expect(row.trim()).toBe("");
+  });
+
+  test("weather glyphs are ANSI-free and survive mirrorFrame unchanged (MIRROR_SWAP-safe, defensive — idle is never actually mirrored)", () => {
+    for (const weather of ["drizzle", "sparkle"] as Weather[]) {
+      const row = overlayFxRow(null, weather, 20);
+      expect(row).not.toContain("\x1b");
+      const mirrored = mirrorFrame([row]);
+      // Containment survives the swap table regardless of position reversal —
+      // proves the glyph itself isn't one of MIRROR_SWAP's directional pairs.
+      const glyph = weather === "drizzle" ? "'" : "*";
+      expect(mirrored[0]).toContain(glyph);
+    }
+  });
+
+  test("back-compat: a bare emote call (no weather) is byte-identical to overlayRow(text, 0, w, w)", () => {
+    for (const text of [null, "!", "zZz", "♪"]) {
+      expect(overlayFxRow(text, null, 20)).toBe(overlayRow(text, 0, 20, 20));
+    }
+  });
+});
+
+describe("finalizeIdleBlock — weather (living-world P4 Task 6)", () => {
+  const bones = (o: Partial<BuddyBones> = {}): BuddyBones => ({
+    rarity: "common",
+    species: "duck",
+    eye: "°",
+    hat: "none",
+    shiny: false,
+    stats: { DEBUGGING: 50, PATIENCE: 50, CHAOS: 50, WISDOM: 50, SNARK: 50 },
+    peak: "DEBUGGING",
+    dump: "PATIENCE",
+    ...o,
+  });
+
+  test("no emotion, no weather: FX row still fully reclaims (height identical to the no-feature case)", () => {
+    const idle = getStatusFrames(bones(), "neutral").frames;
+    const withoutWeatherParam = finalizeIdleBlock(idle, undefined, null);
+    const withNullWeather = finalizeIdleBlock(idle, undefined, null, null);
+    expect(heights(withNullWeather.idle)).toEqual(heights(withoutWeatherParam.idle));
+    expect(heights(withNullWeather.idle)).toEqual(new Set([4])); // duck row 0 is dead
+  });
+
+  test("drizzle alone (no emotion) still adds and keeps the FX row", () => {
+    const idle = getStatusFrames(bones(), "neutral").frames;
+    const r = finalizeIdleBlock(idle, undefined, null, "drizzle");
+    expect(heights(r.idle)).toEqual(new Set([5]));
+    for (const f of r.idle) expect(f.split("\n")[0]).toContain("'");
+  });
+
+  test("sparkle composites alongside an angry emote in the same row without overwriting it", () => {
+    const idle = getStatusFrames(bones(), "angry").frames;
+    const r = finalizeIdleBlock(idle, undefined, emoteFor("angry"), "sparkle");
+    expect(heights(r.idle)).toEqual(new Set([5])); // still just +1, one shared row
+    for (const f of r.idle) {
+      const row = f.split("\n")[0];
+      expect(row).toContain("!");
+      expect(row).toContain("*");
+    }
+  });
+
+  test("never widens the block past the raw art (weather adds no columns)", () => {
+    for (const species of SPECIES) {
+      const idle = getStatusFrames(bones({ species }), "neutral").frames;
+      const r = finalizeIdleBlock(idle, undefined, null, "drizzle");
+      expect(maxWidth(r.idle)).toBe(maxWidth(idle));
+    }
   });
 });
 

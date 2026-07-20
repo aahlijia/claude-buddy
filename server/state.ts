@@ -1298,6 +1298,63 @@ export function writeStatusState(
     }
   }
 
+  // Weather FX (living-world P4 Task 6): a sparse drizzle mark during a rough
+  // error streak, drifting sparkles during a clean one — composited into the
+  // SAME idle FX row the emote already uses (Branch A of the task's decision
+  // gate; art.ts's `overlayFxRow`/`finalizeIdleBlock`). Two different EXISTING
+  // signals, reused rather than a new counter:
+  //  - Drizzle reads this session's LIVE error count — the identical
+  //    `combatErrorCount(counterDelta(current, baseline))` read the P2 boss
+  //    standoff already does (`sightBug`, session.ts) — thresholded at
+  //    `tierForErrors` ≥ 2 (a genuine rough stretch, not a single blip).
+  //  - Sparkle reads `streak` (just above): the account-scoped consecutive
+  //    net-positive-session counter already loaded for the prestige/streak
+  //    badge (FR2.4) — the "clean-run tracking system" already in this file.
+  // A rough error count wins over a simultaneous clean streak (bad news is
+  // the more actionable signal) when, rarely, both are true at once.
+  //
+  // Gating is DELIBERATELY asymmetric between the two, each independently
+  // justified:
+  //  - Drizzle rides `idleGate`, reusing the D14 angry-exemption "for free"
+  //    the way props/gait already do: it is error-BORN in the same sense the
+  //    angry emote/gait are (D14) — it literally cannot exist without errors.
+  //    The exemption only ever fires while `emotion === "angry"`, which
+  //    itself requires a FRESH, TTL-live "error"/"test-fail" reaction — NOT
+  //    every SPIKE_REASON (e.g. "build-fail" clamps the gate too but isn't in
+  //    REASON_EMOTION, so emotion stays neutral and idleGate reduces to the
+  //    plain clamped `gate` there). So the exemption can't leak into the
+  //    unrelated deep-focus clamp (which requires NO fresh error to engage at
+  //    all) or into non-angry spikes — it only ever coincides with the exact
+  //    window the angry emote already breaks through, reinforcing the same
+  //    alert rather than adding new noise.
+  //  - Sparkle takes the PLAIN clamped `gate` — no exemption. A clean streak
+  //    never CAUSES a clamp the way an error does, so there is no
+  //    self-defeating-suppression case to correct; it just respects whatever
+  //    comfort level the user (or auto-quiet) currently sits at, like any
+  //    other non-alert decoration.
+  const WEATHER_ROUGH_TIER = 2; // tierForErrors ≥ 2 ⇒ 3+ errors this session
+  const WEATHER_CLEAN_STREAK = 1; // any active streak ⇒ "on a streak" (matches the 🔥 badge's own threshold)
+  let weather: import("./art.ts").Weather | null = null;
+  if (idleGate === "full") {
+    try {
+      const { loadSnapshot, counterDelta, combatErrorCount, extractCounters } =
+        require("./session.ts") as typeof import("./session.ts");
+      const { loadEvents } =
+        require("./achievements.ts") as typeof import("./achievements.ts");
+      const { tierForErrors } = require("./bugs.ts") as typeof import("./bugs.ts");
+      const snap = loadSnapshot();
+      const current = extractCounters(loadEvents());
+      const baseline = snap?.baseline ?? current;
+      const errCount = combatErrorCount(counterDelta(current, baseline));
+      if (tierForErrors(errCount) >= WEATHER_ROUGH_TIER) weather = "drizzle";
+    } catch {
+      // Weather is a best-effort delighter — a failure just leaves it null.
+    }
+  }
+  if (!weather && gate === "full" && streak >= WEATHER_CLEAN_STREAK) {
+    weather = "sparkle";
+  }
+
   // Idle FX row + dead-row reclaim (design-sprite-animation §4). Must run after
   // the flourish bake: the shell swaps frame source on $celeb_fresh, so both
   // flipbooks need ONE shared drop set or a celebration would jump the line a
@@ -1310,6 +1367,7 @@ export function writeStatusState(
       rawFrames,
       flFrames,
       idleGate === "full" ? emoteFor(emotion) : null,
+      weather,
     );
     frames = finalized.idle;
     flFrames = finalized.flourish;

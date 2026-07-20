@@ -753,6 +753,86 @@ export function emoteFor(emotion: Emotion): string | null {
   return emotion === "neutral" ? null : EMOTION_EMOTE[emotion];
 }
 
+// ─── Weather FX overlay (living-world P4 Task 6) ─────────────────────────────
+//
+// A sparse drizzle mark during a rough error streak, drifting sparkles during
+// a clean one — sharing the SAME idle FX row `emoteFor`/`finalizeIdleBlock`
+// already carry (Branch A of the task's decision gate; see its report for the
+// full reasoning). "Drifting" is spatial spread across the row, not per-tick
+// animation: `finalizeIdleBlock` bakes one static row shared by every idle
+// frame (exactly like the emote already does), so no new frame/sequence
+// channel is needed — zero per-event cost, per the arc's standing constraints.
+
+/** Which weather is active on the idle FX row. `state.ts` derives this from
+ *  the session's live error count (drizzle) or the account-scoped streak
+ *  (sparkle) — this module stays signal-agnostic, same separation `Emotion`
+ *  keeps from the reaction system that resolves it. */
+export type Weather = "drizzle" | "sparkle";
+
+/** Single-cell, ANSI-free glyphs — `'` and `*` are absent from `MIRROR_SWAP`
+ *  (defensive; the idle buddy is never actually mirrored, same posture as
+ *  `LOOTDASH_ITEM_GLYPH` and `applyBossCrown`'s `♛`). */
+const WEATHER_GLYPH: Record<Weather, string> = {
+  drizzle: "'",
+  sparkle: "*",
+};
+
+/** Deterministic column offsets a weather glyph may land on — positive counts
+ *  in from the left edge, negative in from the right, checked in this order.
+ *  Spread across both edges so a narrow row still gets a mark and a wide one
+ *  gets a scattered few; short and fixed rather than randomized, so the FX
+ *  row needs no seed/state of its own. */
+const WEATHER_OFFSETS: readonly number[] = [1, -2, 3, -4];
+
+/**
+ * Compose the idle FX row: the emote centered exactly as `overlayRow` always
+ * has, plus sparse weather glyphs filling the OTHER cells of that SAME row
+ * (living-world P4 Task 6, Branch A — one shared row; constraint 3 forbids a
+ * second).
+ *
+ * Precedence: the emote's own centered span (plus a one-cell buffer on each
+ * side) is inviolate — a weather offset that would land inside it is skipped
+ * rather than overwriting it. Sparser weather beats crowding the emote.
+ *
+ * `weather` null behaves exactly like a bare `overlayRow(text, 0, totalW,
+ * totalW)` call — back-compat pin for the pre-Task-6 emote-only row. Both
+ * `text` and `weather` null ⇒ an all-blank row, so `trimSharedBlankTopRows`
+ * still reclaims it exactly as before Task 6 existed. Pure.
+ *
+ * @param text: The centered emote glyph (`emoteFor`), or null.
+ * @param weather: The active weather kind, or null.
+ * @param totalW: Display width of the row (and, by the FX-row contract,
+ *     every frame in the flipbook).
+ * @returns The composed row, exactly `totalW` display cells wide.
+ */
+export function overlayFxRow(
+  text: string | null,
+  weather: Weather | null,
+  totalW: number,
+): string {
+  const base = overlayRow(text, 0, totalW, totalW);
+  if (!weather || totalW <= 0) return base;
+  const cells = Array.from(base);
+  const occupied = new Set<number>();
+  if (text) {
+    // Mirrors overlayRow's own centering math (spanStart=0, spanW=totalW) so
+    // the buffer lines up with what it actually rendered above.
+    const w = displayWidth(text);
+    const centered = Math.floor((totalW - w) / 2);
+    const col = Math.max(0, Math.min(centered, totalW - w));
+    for (let i = col - 1; i <= col + w; i++) occupied.add(i);
+  }
+  const glyph = WEATHER_GLYPH[weather];
+  for (const off of WEATHER_OFFSETS) {
+    const col = off >= 0 ? off : totalW + off;
+    if (col < 0 || col >= totalW) continue;
+    if (occupied.has(col)) continue;
+    if (cells[col] !== " ") continue; // extra safety; shouldn't trigger
+    cells[col] = glyph;
+  }
+  return cells.join("");
+}
+
 // 2 sub-frames (art frames 0/1) on a gentle 6-tick oscillation.
 const EMOTION_FRAME_SEQUENCE: readonly number[] = [0, 0, 0, 1, 1, 1];
 
@@ -1015,24 +1095,28 @@ function blockWidth(flipbooks: string[][]): number {
  * @param idle: The idle flipbook from `getStatusFrames`.
  * @param flourish: The co-present flourish flipbook, if one was baked.
  * @param emote: The idle emote glyph (`emoteFor`), or null when neutral.
+ * @param weather: The active weather kind (living-world P4 Task 6), or null.
+ *     Composited into the SAME row as `emote` via `overlayFxRow` — Branch A
+ *     of the task's decision gate — rather than a second row (constraint 3).
  * @returns Both flipbooks, same order, sharing one height.
  */
 export function finalizeIdleBlock(
   idle: string[],
   flourish: string[] | undefined,
   emote: string | null,
+  weather: Weather | null = null,
 ): { idle: string[]; flourish?: string[] } {
   const fl = flourish ?? [];
   const [tIdle, tFl] = trimSharedBlankTopRows([idle, fl]);
   const pack = (i: string[], f: string[]): { idle: string[]; flourish?: string[] } =>
     flourish ? { idle: i, flourish: f } : { idle: i };
-  if (!emote) return pack(tIdle, tFl);
+  if (!emote && !weather) return pack(tIdle, tFl);
   const w = blockWidth([tIdle, tFl]);
-  const add = (frames: string[], text: string | null): string[] => {
-    const row = overlayRow(text, 0, w, w);
+  const add = (frames: string[], text: string | null, wx: Weather | null): string[] => {
+    const row = overlayFxRow(text, wx, w);
     return frames.map((f) => `${row}\n${f}`);
   };
-  return pack(add(tIdle, emote), add(tFl, null));
+  return pack(add(tIdle, emote, weather), add(tFl, null, null));
 }
 
 // ─── Ascension frame flourish (game-feel FR-A3; per-kind since round 2) ──────

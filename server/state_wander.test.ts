@@ -72,6 +72,23 @@ interface RenderCase {
    *  before `buildWanderSequence`) but its return value is unused once
    *  `buildWanderSequence` itself is replaced. */
   stubPhases?: number[];
+  /** Weather FX (living-world P4 Task 6): seed a live "rough session" error
+   *  count. Writes `events.json` (global counters, merged over EMPTY_GLOBAL)
+   *  with these values PLUS a `session.default.json` snapshot whose baseline
+   *  zeros the same keys — combatErrorCount reads a DELTA, and a counter
+   *  absent from the baseline diffs to 0 (session.ts's counterDelta), so the
+   *  baseline must exist and explicitly zero every key this sets or the
+   *  "rough" signal silently reads as 0 no matter what events.json says. */
+  errorEvents?: Partial<
+    Record<
+      "errors_seen" | "tests_failed" | "type_errors" | "lint_fails" | "build_fails",
+      number
+    >
+  >;
+  /** Weather FX (living-world P4 Task 6): seed streak.json's `current` (the
+   *  same account-scoped consecutive-net-positive-session counter already
+   *  read for the prestige/streak badge, FR2.4). */
+  streak?: number;
 }
 
 /** Run writeStatusState in a fresh subprocess under a temp config dir and return
@@ -102,6 +119,30 @@ function render(c: RenderCase): Record<string, unknown> | null {
         recentErrors: 0,
         recentTests: 0,
         recentDiffs: 0,
+      }),
+    );
+  }
+  if (c.errorEvents) {
+    writeFileSync(join(stateDir, "events.json"), JSON.stringify(c.errorEvents));
+    const zeroed = Object.fromEntries(
+      Object.keys(c.errorEvents).map((k) => [k, 0]),
+    );
+    writeFileSync(
+      join(stateDir, "session.default.json"),
+      JSON.stringify({
+        startedAt: Math.floor(Date.now() / 1000) - 60,
+        baseline: zeroed,
+      }),
+    );
+  }
+  if (typeof c.streak === "number") {
+    writeFileSync(
+      join(stateDir, "streak.json"),
+      JSON.stringify({
+        current: c.streak,
+        longest: c.streak,
+        lastSessionAt: Math.floor(Date.now() / 1000),
+        lastStartAt: 0,
       }),
     );
   }
@@ -736,5 +777,147 @@ describe("writeStatusState — prop kick (living-world P4 Task 4)", () => {
       expect(frame).toContain(PROP.ahead);
       expect(aheadColumn(frame)).toBe(11);
     }
+  });
+});
+
+describe("writeStatusState — weather FX (living-world P4 Task 6)", () => {
+  // Drizzle ('), sparkle (*) — the idle FX row's weather glyphs, checked on
+  // the very first (top) row of each rendered frame, exactly like the emote
+  // tests above check for "!"/"zZz".
+  const topRow = (frame: string): string => frame.split("\n")[0];
+
+  test("full + a rough session error count ⇒ drizzle in the idle FX row", () => {
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true },
+      mood: "focused",
+      errorEvents: { tests_failed: 4 }, // tierForErrors(4) = 2, ≥ the rough cutoff
+    });
+    const frames = state!.frames as string[];
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames) expect(topRow(frame)).toContain("'");
+  });
+
+  test("full + an active net-positive session streak (no errors) ⇒ sparkle in the idle FX row", () => {
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true },
+      mood: "focused",
+      streak: 4,
+    });
+    const frames = state!.frames as string[];
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames) expect(topRow(frame)).toContain("*");
+  });
+
+  test("subtle: weather is full-only idle juice — neither drizzle nor sparkle, even with both signals armed", () => {
+    const state = render({
+      config: { gameFeel: "subtle", wanderEnabled: true },
+      errorEvents: { tests_failed: 4 },
+      streak: 4,
+    });
+    const frames = state!.frames as string[];
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames) {
+      expect(topRow(frame)).not.toContain("'");
+      expect(topRow(frame)).not.toContain("*");
+    }
+  });
+
+  test("off: neither drizzle nor sparkle", () => {
+    const state = render({
+      config: { gameFeel: "off", wanderEnabled: true },
+      errorEvents: { tests_failed: 4 },
+      streak: 4,
+    });
+    const frames = state!.frames as string[];
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames) {
+      expect(topRow(frame)).not.toContain("'");
+      expect(topRow(frame)).not.toContain("*");
+    }
+  });
+
+  test("a small (below-cutoff) error count does not read as 'rough' ⇒ no drizzle", () => {
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true },
+      mood: "focused",
+      errorEvents: { errors_seen: 1 }, // tierForErrors(1) = 1, below the rough cutoff
+    });
+    const frames = state!.frames as string[];
+    for (const frame of frames) expect(topRow(frame)).not.toContain("'");
+  });
+
+  test("no streak at all (0) ⇒ no sparkle", () => {
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true },
+      mood: "focused",
+    });
+    const frames = state!.frames as string[];
+    for (const frame of frames) expect(topRow(frame)).not.toContain("*");
+  });
+
+  test("precedence: a rough error count wins over a simultaneous clean streak (drizzle, not sparkle)", () => {
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true },
+      mood: "focused",
+      errorEvents: { tests_failed: 4 },
+      streak: 4,
+    });
+    const frames = state!.frames as string[];
+    for (const frame of frames) {
+      expect(topRow(frame)).toContain("'");
+      expect(topRow(frame)).not.toContain("*");
+    }
+  });
+
+  // D14-style exemption (living-world P1): the SAME "error" reaction that
+  // drives angry emotion is also a SPIKE_REASON that clamps gate full→subtle.
+  // Drizzle is error-BORN in the same sense the angry emote/gait are, so it
+  // rides `idleGate` and pierces the clamp exactly when emotion is angry.
+  test("a live 'error' reaction at configured full still shows drizzle (D14 exemption: angry is error-born, so it survives the very clamp the error causes)", () => {
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true },
+      reaction: { reaction: "ugh, an error", reason: "error" },
+      errorEvents: { tests_failed: 4 },
+    });
+    const frames = state!.frames as string[];
+    for (const frame of frames) expect(topRow(frame)).toContain("'");
+  });
+
+  // The counterfactual that proves the exemption is scoped to angry — not to
+  // "any spike reason" — matching the reasoning in the task report: "build-fail"
+  // is ALSO a SPIKE_REASON (clamps gate to subtle) but is UNMAPPED in
+  // REASON_EMOTION, so emotion stays "neutral", idleGate reduces to the plain
+  // clamped `gate`, and drizzle — bound to idleGate — is correctly suppressed
+  // even though the session is just as "rough" by the numbers.
+  test("a live 'build-fail' reaction (a spike, but NOT angry) at configured full does NOT show drizzle — the exemption doesn't leak past the angry-emotion window", () => {
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true },
+      reaction: { reaction: "build broke", reason: "build-fail" },
+      errorEvents: { tests_failed: 4 },
+    });
+    const frames = state!.frames as string[];
+    for (const frame of frames) expect(topRow(frame)).not.toContain("'");
+  });
+
+  test("sparkle takes the PLAIN clamp — an active error-spike (angry) suppresses it even though drizzle would survive at the same tick (no drizzle signal here, streak only)", () => {
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true },
+      reaction: { reaction: "ugh, an error", reason: "error" },
+      streak: 4, // clean streak, no rough errors this session
+    });
+    const frames = state!.frames as string[];
+    for (const frame of frames) {
+      expect(topRow(frame)).not.toContain("*"); // gate clamped to subtle, no exemption for sparkle
+      expect(topRow(frame)).not.toContain("'"); // no rough error count either
+    }
+  });
+
+  test("no fixtures at all (real events/streak files absent): write never breaks — weather is best-effort", () => {
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true },
+      mood: "focused",
+    });
+    expect(Array.isArray(state!.frames)).toBe(true);
+    expect((state!.frames as string[]).length).toBeGreaterThan(0);
   });
 });
