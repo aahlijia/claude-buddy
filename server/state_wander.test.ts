@@ -479,10 +479,14 @@ describe("writeStatusState — ambient ground prop (living-world P4 Task 3)", ()
     });
     const frames = state!.frames as string[];
     expect(frames.length).toBeGreaterThan(0);
-    for (const frame of frames) {
+    // wanderEnabled:true appends the lean/peek gait frames (P1) — the LAST
+    // two entries — and P4 Task 4's step-kick withholds `ahead` on exactly
+    // those two (see the "prop kick" describe block below); every other
+    // frame still carries both glyphs.
+    frames.forEach((frame, i) => {
       expect(frame).toContain(PROP.feet);
-      expect(frame).toContain(PROP.ahead);
-    }
+      if (i < frames.length - 2) expect(frame).toContain(PROP.ahead);
+    });
   });
 
   test("subtle: props are full-only idle juice — absent", () => {
@@ -534,10 +538,11 @@ describe("writeStatusState — ambient ground prop (living-world P4 Task 3)", ()
       stubProp: PROP,
     });
     const frames = state!.frames as string[];
-    for (const frame of frames) {
+    // Same lean/peek (last-two) exception as above — P4 Task 4.
+    frames.forEach((frame, i) => {
       expect(frame).toContain(PROP.feet);
-      expect(frame).toContain(PROP.ahead);
-    }
+      if (i < frames.length - 2) expect(frame).toContain(PROP.ahead);
+    });
   });
 
   test("no stub (real pickDayProp): write never breaks — props are best-effort", () => {
@@ -547,5 +552,84 @@ describe("writeStatusState — ambient ground prop (living-world P4 Task 3)", ()
     });
     expect(Array.isArray(state!.frames)).toBe(true);
     expect((state!.frames as string[]).length).toBeGreaterThan(0);
+  });
+});
+
+describe("writeStatusState — prop kick (living-world P4 Task 4)", () => {
+  // Neither glyph occurs in any species' innate art, so containment proves
+  // the prop landed (a collision would silently skip the overlay).
+  const PROP = { feet: "❦", ahead: "•" };
+
+  test("the walk's lean/peek gait frames (last two of `frames`) withhold the pebble; every other frame keeps it", () => {
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true },
+      mood: "focused",
+      stubProp: PROP,
+    });
+    const frames = state!.frames as string[];
+    // Precondition (P1's "gait lockstep" test above): gaitVariants appended
+    // exactly two frames (lean, peek) after the base cycle.
+    expect(frames.length).toBeGreaterThanOrEqual(7);
+    const kicked = new Set([frames.length - 2, frames.length - 1]);
+    frames.forEach((frame, i) => {
+      expect(frame).toContain(PROP.feet);
+      if (kicked.has(i)) {
+        expect(frame).not.toContain(PROP.ahead);
+      } else {
+        expect(frame).toContain(PROP.ahead);
+      }
+    });
+  });
+
+  test("the actual rendered sprite differs between a step tick and a direction-flip tick", () => {
+    // This is the state_wander-level proof that the kick reaches the real
+    // baked write, not just getStatusFrames in isolation: find a tick in the
+    // walk-length frameSequence that lands on an ordinary frame (pebble
+    // present) and one that lands on the appended lean/peek frame (pebble
+    // withheld), and confirm the two rendered frames actually differ.
+    //
+    // `writeStatusState` seeds the walk off the real `Date.now()` (no test
+    // seam to pin it — same as the pre-existing P1 "carries lean frames"
+    // test above, which has the identical dependency), so whether a given
+    // 180-tick walk happens to visit the range edge (the only way `idx.lean`
+    // gets selected — `idx.peek` needs `showStats`, off by default) is
+    // probabilistic. "chaotic" mood (range 6, dwellMin 2) makes it land on
+    // the edge on all but a sliver of seeds; retrying a bounded few times
+    // over fresh real-clock seeds collapses that sliver to negligible
+    // without pinning a seed this harness doesn't expose.
+    let ordinaryFrame: string | undefined;
+    let kickedFrame: string | undefined;
+    for (let attempt = 0; attempt < 8 && !kickedFrame; attempt++) {
+      const state = render({
+        config: { gameFeel: "full", wanderEnabled: true },
+        mood: "chaotic",
+        stubProp: PROP,
+      });
+      const frames = state!.frames as string[];
+      const frameSequence = state!.frameSequence as number[];
+      const kickedIdx = new Set([frames.length - 2, frames.length - 1]);
+      const ordinaryTick = frameSequence.findIndex((f) => !kickedIdx.has(f));
+      const kickedTick = frameSequence.findIndex((f) => kickedIdx.has(f));
+      if (ordinaryTick >= 0 && kickedTick >= 0) {
+        ordinaryFrame = frames[frameSequence[ordinaryTick]];
+        kickedFrame = frames[frameSequence[kickedTick]];
+      }
+    }
+    expect(kickedFrame).toBeDefined();
+    expect(ordinaryFrame).not.toBe(kickedFrame);
+    expect(ordinaryFrame).toContain(PROP.ahead);
+    expect(kickedFrame).not.toContain(PROP.ahead);
+  });
+
+  test("gaitVariants off (wanderEnabled:false) ⇒ no lean/peek frames exist, so the kick never triggers — every frame keeps the pebble", () => {
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: false },
+      stubProp: PROP,
+    });
+    const frames = state!.frames as string[];
+    for (const frame of frames) {
+      expect(frame).toContain(PROP.feet);
+      expect(frame).toContain(PROP.ahead);
+    }
   });
 });

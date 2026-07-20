@@ -279,9 +279,41 @@ export function applyGear(
  * so a prop and an equipped trinket can render at once (Task 6's
  * crowded-sprite case).
  */
+/**
+ * `ahead` sits a couple cells past the body on the ground — a daily-constant
+ * pebble glyph (P4 Task 2). It is *withheld* on the two gait frames that mark
+ * the walk's direction-flip beats (P4 Task 4's step-kick, `kickedProp` below)
+ * — see the "prop kick" decision-gate note in art.test.ts for why a
+ * multi-column advance was rejected in favor of this present/withheld toggle.
+ * `feet` rests beside the buddy — a daily-seeded sprout/mushroom (P4 Task 2),
+ * untouched by the kick.
+ */
 export interface PropArt {
   ahead?: string;
   feet?: string;
+}
+
+/**
+ * The prop as it renders on the walk's direction-flip gait frames (lean/peek
+ * — living-world P4 Task 4, "the step-kick"). Pure: strips `ahead` (the
+ * pebble reads as mid-kick, off its rest anchor) and keeps `feet` (the daily
+ * sprout is untouched by the kick) untouched. `undefined` in ⇒ `undefined`
+ * out, so a propless render stays propless.
+ *
+ * DECISION GATE (plan-p4.md Task 4 Step 1): a per-tick sliding pebble-column
+ * family (the plan's "Branch A") was rejected — a blank-cell probe over row 4
+ * cols 7-11 (Task 1's own methodology) found no third column blank across
+ * every species free of both body pixels *and* the `feet` anchor (which
+ * already sits at col 10 — the one otherwise-blank column short of the
+ * existing `ahead` anchor at col 11 — for 7 of 20 species). This is "Branch
+ * B": the pebble stays pinned to its single anchor and instead re-seats
+ * (is withheld) at the walk's existing lean/peek edge-beats, reusing the
+ * exact phase→frame wiring P1 already built — no new frames, no new signal.
+ */
+export function kickedProp(prop?: PropArt): PropArt | undefined {
+  if (!prop) return undefined;
+  const { ahead: _ahead, ...rest } = prop;
+  return rest;
 }
 
 /**
@@ -695,14 +727,23 @@ export function getStatusFrames(
   // keeping existing indices stable. Lean is "~" (strained lean-out) because ">"
   // collides with the angry emotion eye and the pose must stay visible mid-gait
   // for every emotion.
+  //
+  // Living-world P4 Task 4 (the step-kick, decision-gate Branch B — see the
+  // "prop kick" note in art.test.ts): lean and peek are the walk's own
+  // direction-flip beats (edge-dwell / home-linger), so the pebble is kicked
+  // off its anchor for exactly these two frames — `kickedProp` strips `ahead`
+  // and keeps `feet`. No new frames are appended beyond P1's original two.
+  const kicked = kickedProp(prop);
   const withGait = (
     r: { frames: string[]; frameSequence: number[] },
   ): ReturnType<typeof getStatusFrames> => {
     if (!gaitVariants) return r;
     const lean = r.frames.length;
+    const resolveKicked = (frameIdx: number, eye: string): string =>
+      renderSpeciesFrame(bones, frameIdx, eye, seasonalHat, gear, kicked);
     return {
       ...r,
-      frames: [...r.frames, resolveFrame(0, "~"), resolveFrame(0, "<")],
+      frames: [...r.frames, resolveKicked(0, "~"), resolveKicked(0, "<")],
       gaitIdx: { bob: 1, lean, peek: lean + 1 },
     };
   };
