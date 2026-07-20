@@ -269,6 +269,91 @@ export function applyGear(
   if (gear.trinket) overlayGlyph(art, anchors.trinket, gear.trinket);
 }
 
+// ─── Ambient ground props (living-world P4) ───────────────────────────────
+
+/**
+ * Ambient ground props composited onto a rendered frame (living-world P4).
+ * `ahead` sits a couple cells past the body on the ground (kicked forward on
+ * step ticks — P4 Task 4); `feet` rests beside the buddy, a daily-seeded
+ * sprout/mushroom (P4 Task 2). Distinct from the owned-gear `trinket` anchor
+ * so a prop and an equipped trinket can render at once (Task 6's
+ * crowded-sprite case).
+ */
+export interface PropArt {
+  ahead?: string;
+  feet?: string;
+}
+
+/**
+ * Hand-tuned per-species anchor cells for ambient props, `[row, col]` into
+ * the *rendered* frame — the same coordinate space `GEAR_ANCHORS` uses, but a
+ * **parallel table** rather than an extra `GEAR_ANCHORS` field: props are
+ * ambient world-dressing, not owned equipment, and the two systems read and
+ * test independently (this file's blank-cell probes cover each table on its
+ * own, exactly as `applyGear`'s already does for `GEAR_ANCHORS`).
+ *
+ * `ahead` is `[4, 11]` — the last column of every species' box — for all
+ * twenty species, verified blank across every idle frame, the P7 stretch
+ * frame, and the gait lean/peek postures by the blank-cell probe in
+ * art.test.ts (the same probe that originally chose `GEAR_ANCHORS`'s cells).
+ *
+ * `feet` is NOT simply "the cell beside `trinket`": the one trinket item that
+ * exists today (`rubber_duck`, art `",>"`) is **two** display cells wide, so
+ * it occupies both `trinket`'s anchor column and the one immediately right of
+ * it. `feet` therefore sits clear of that whole two-cell footprint (and of
+ * `ahead`), so a sprout and an equipped rubber duck render at once (Task 6's
+ * crowded-sprite case) rather than the prop silently losing the blank-cell
+ * race. Most species land this on row 4 beside the body; `robot`/`chonk` have
+ * no third blank cell left on row 4 once the trinket's two columns and
+ * `ahead` are excluded, so their `feet` sits one row up (row 3) instead —
+ * still reads as "beside the buddy," verified blank the same way.
+ */
+export const PROP_ANCHORS: Record<
+  Species,
+  { feet: [number, number]; ahead: [number, number] }
+> = {
+  duck:     { feet: [4, 2],  ahead: [4, 11] },
+  goose:    { feet: [4, 2],  ahead: [4, 11] },
+  blob:     { feet: [4, 10], ahead: [4, 11] },
+  cat:      { feet: [4, 10], ahead: [4, 11] },
+  dragon:   { feet: [4, 10], ahead: [4, 11] },
+  octopus:  { feet: [4, 10], ahead: [4, 11] },
+  owl:      { feet: [4, 2],  ahead: [4, 11] },
+  penguin:  { feet: [4, 7],  ahead: [4, 11] },
+  turtle:   { feet: [4, 5],  ahead: [4, 11] },
+  snail:    { feet: [4, 9],  ahead: [4, 11] },
+  ghost:    { feet: [4, 10], ahead: [4, 11] },
+  axolotl:  { feet: [4, 5],  ahead: [4, 11] },
+  capybara: { feet: [4, 10], ahead: [4, 11] },
+  cactus:   { feet: [4, 2],  ahead: [4, 11] },
+  robot:    { feet: [3, 1],  ahead: [4, 11] }, // row 4 has only trinket's 2 cols + ahead's col free
+  rabbit:   { feet: [4, 10], ahead: [4, 11] },
+  mushroom: { feet: [4, 2],  ahead: [4, 11] },
+  chonk:    { feet: [3, 2],  ahead: [4, 11] }, // row 4 has only trinket's 2 cols + ahead's col free
+  wyvern:   { feet: [4, 0],  ahead: [4, 11] }, // trinket owns [4,9-10]; col 0 is untouched by it
+  pikachu:  { feet: [4, 2],  ahead: [4, 11] },
+};
+
+/**
+ * Composite ambient prop glyphs onto a rendered frame at the species' prop
+ * anchors, under the identical blank-cells-only / ANSI-refused contract
+ * `applyGear` uses (delegates to the same private `overlayGlyph`): a shifted
+ * or already-occupied cell skips the glyph rather than clobbering it.
+ *
+ * Not yet called from `renderSpeciesFrame` — P4 Task 3 wires that in. Until
+ * then this function is inert and every render stays byte-identical.
+ */
+export function applyProp(
+  species: Species,
+  art: string[],
+  prop?: PropArt,
+): void {
+  if (!prop) return;
+  const anchors = PROP_ANCHORS[species];
+  if (prop.ahead) overlayGlyph(art, anchors.ahead, prop.ahead);
+  if (prop.feet) overlayGlyph(art, anchors.feet, prop.feet);
+}
+
 const SHINY_COLOR = "\x1b[93m"; // bright yellow
 const BOLD = "\x1b[1m";
 const DIM = "\x1b[2m";

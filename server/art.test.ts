@@ -16,6 +16,7 @@ import {
   rectFrame,
   getArtFrame,
   applyGear,
+  applyProp,
   applyBossCrown,
   overlayRow,
   trimBlankTopRows,
@@ -607,6 +608,141 @@ describe("applyGear (gear overlays)", () => {
     const ansi = renderCompanionCard(bones(), "Waffle", "spiky", undefined, 0, 40, GEAR);
     expect(ansi).toContain(GEAR.weapon);
     expect(ansi).toContain(GEAR.trinket);
+  });
+});
+
+// ─── applyProp (ground props — living-world P4 Task 1) ───────────────────────
+//
+// Structural twin of applyGear/GEAR_ANCHORS above, but a parallel table
+// (PROP_ANCHORS): props are ambient world-dressing, not owned gear, so the
+// two systems stay independently testable. Not wired into renderSpeciesFrame
+// yet (P4 Task 3's job) — these tests exercise applyProp directly.
+
+describe("applyProp (ground props — living-world P4)", () => {
+  const bones = (overrides: Partial<BuddyBones> = {}): BuddyBones => ({
+    rarity: "common",
+    species: "cactus",
+    eye: "°",
+    hat: "none",
+    shiny: false,
+    stats: { DEBUGGING: 50, PATIENCE: 50, CHAOS: 50, WISDOM: 50, SNARK: 50 },
+    peak: "DEBUGGING",
+    dump: "PATIENCE",
+    ...overrides,
+  });
+  // Neither glyph occurs in any species art, so containment proves it landed
+  // (a collision would silently skip the overlay).
+  const PROP = { feet: "❦", ahead: "•" };
+
+  test("every species' prop anchors are blank across all three idle frames", () => {
+    for (const species of SPECIES) {
+      for (let f = 0; f < 3; f++) {
+        const art = getArtFrame(species, "°", f);
+        applyProp(species, art, PROP);
+        const joined = art.join("\n");
+        expect(joined).toContain(PROP.feet);
+        expect(joined).toContain(PROP.ahead);
+      }
+    }
+  });
+
+  test("the P7 stretch frame's prop anchors are also blank (duck/cat/robot)", () => {
+    for (const species of ["duck", "cat", "robot"] as const) {
+      const art = getArtFrame(species, "°", 3);
+      applyProp(species, art, PROP);
+      const joined = art.join("\n");
+      expect(joined).toContain(PROP.feet);
+      expect(joined).toContain(PROP.ahead);
+    }
+  });
+
+  test("prop coexists with a trinket at [4,0] — neither clobbers the other", () => {
+    for (const species of SPECIES) {
+      const art = getArtFrame(species, "°", 0);
+      applyGear(species, art, { trinket: ",>" });
+      applyProp(species, art, PROP);
+      const joined = art.join("\n");
+      expect(joined).toContain(",>");
+      expect(joined).toContain(PROP.feet);
+      expect(joined).toContain(PROP.ahead);
+    }
+  });
+
+  test("overlays only ever fill blank cells — body pixels are never clobbered", () => {
+    for (const species of SPECIES) {
+      for (let f = 0; f < 3; f++) {
+        const base = getArtFrame(species, "°", f);
+        const propped = getArtFrame(species, "°", f);
+        applyProp(species, propped, PROP);
+        for (let r = 0; r < propped.length; r++) {
+          const b = [...(base[r] ?? "")];
+          const p = [...propped[r]];
+          for (let c = 0; c < p.length; c++) {
+            if ((b[c] ?? " ") !== p[c]) {
+              // Changed cell ⇒ it must have been blank (or past end) before.
+              expect(b[c] ?? " ").toBe(" ");
+            }
+          }
+        }
+      }
+    }
+  });
+
+  test("wyvern: prop lands and the ANSI fire frame stays intact (wyvern rule)", () => {
+    const art = getArtFrame("wyvern", "°", 1); // frame 1 carries the ANSI fire tail
+    const fireLineBefore = art[art.length - 1];
+    applyProp("wyvern", art, PROP);
+    expect(art.join("\n")).toContain(PROP.feet);
+    expect(art.join("\n")).toContain(PROP.ahead);
+    expect(art[art.length - 1]).toBe(fireLineBefore); // ANSI row untouched
+  });
+
+  test("no prop (undefined or empty) leaves the frame untouched", () => {
+    const base = getArtFrame("cactus", "°", 0);
+    const noProp = getArtFrame("cactus", "°", 0);
+    applyProp("cactus", noProp);
+    expect(noProp).toEqual(base);
+    const emptyProp = getArtFrame("cactus", "°", 0);
+    applyProp("cactus", emptyProp, {});
+    expect(emptyProp).toEqual(base);
+  });
+
+  test("chosen prop glyphs are absent from MIRROR_SWAP (defensive) — survive mirroring unchanged", () => {
+    // The idle buddy is never mirrored (only the enemy sprite in combat is),
+    // so this is a cheap defensive assertion, not a hard blocker.
+    const art = getArtFrame("duck", "°", 0);
+    applyProp("duck", art, PROP);
+    const mirrored = mirrorFrame(art).join("\n");
+    expect(mirrored).toContain(PROP.feet);
+    expect(mirrored).toContain(PROP.ahead);
+  });
+
+  test("gait lean/peek postures keep the prop anchors blank", () => {
+    for (const species of SPECIES) {
+      const { frames, gaitIdx } = getStatusFrames(
+        bones({ species }),
+        "neutral",
+        undefined,
+        undefined,
+        true,
+      );
+      expect(gaitIdx).toBeDefined();
+      for (const idx of [gaitIdx!.lean, gaitIdx!.peek]) {
+        const rows = frames[idx].split("\n");
+        applyProp(species, rows, PROP);
+        const joined = rows.join("\n");
+        expect(joined).toContain(PROP.feet);
+        expect(joined).toContain(PROP.ahead);
+      }
+    }
+  });
+
+  test("getStatusFrames without a prop arg stays byte-identical (applyProp not wired in yet)", () => {
+    // Task 1 must stay inert: applyProp exists and is directly callable, but
+    // renderSpeciesFrame/getStatusFrames don't call it until Task 3.
+    const before = getStatusFrames(bones());
+    const after = getStatusFrames(bones());
+    expect(after).toEqual(before);
   });
 });
 
