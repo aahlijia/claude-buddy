@@ -26,7 +26,8 @@ import {
 import { tmpdir } from "os";
 import { join } from "path";
 import { STINGER_DELAY_TICKS } from "./wander.ts";
-import { LOOTDASH_ITEM_GLYPH } from "./art.ts";
+import { LOOTDASH_ITEM_GLYPH, displayWidth } from "./art.ts";
+import { pickSessionGround } from "./ground.ts";
 
 const SERVER_DIR = import.meta.dir;
 const STATE_TS = JSON.stringify(join(SERVER_DIR, "state.ts"));
@@ -89,6 +90,36 @@ interface RenderCase {
    *  same account-scoped consecutive-net-positive-session counter already
    *  read for the prestige/streak badge, FR2.4). */
   streak?: number;
+  /** Living ground (living-world follow-up): pin `session.default.json`'s
+   *  `startedAt` so the ground's session seed is deterministic (the terrain is
+   *  seeded off this value). Writes a snapshot with a zeroed baseline unless
+   *  `errorEvents` already wrote one (that path folds this in). */
+  sessionStartedAt?: number;
+  /** Stub server/ground.ts's pickSessionWeather/isWeatherActive/buildWeatherTile
+   *  to a fixed result (living-world ground-weather Task 2) — same idiom as
+   *  stubProp above. The schedule is seeded off startedAt (the same value the
+   *  elapsed-time check also depends on), so picking a startedAt that lands
+   *  "inside the window" by brute-force search would be circular (the
+   *  hash-based RNG isn't continuous in the seed) — a fixed-result stub sidesteps
+   *  that entirely. MUST also re-export pickSessionGround with a fixed terrain
+   *  or terrain rendering breaks in the same write-site block (state.ts's
+   *  ground block calls pickSessionGround before the weather check). */
+  stubGroundWeather?: {
+    active: boolean;
+    glyph?: string;
+    color?: string;
+    tile?: string;
+  };
+  /** Combat-weather Task 1 (design-combat-weather.md D3): seed a fake pending
+   *  standoff by writing `pending-encounter.json` directly, bypassing
+   *  combat.ts's real bakePendingScene entirely — `readPendingEncounter`
+   *  (combat.ts) only validates `frames`/`bugId`/`startedAt`, and state.ts's
+   *  combat block derives `artWidth` from `frames`' own displayWidth (no
+   *  caption/project override here), so a single `width`-wide line is
+   *  sufficient to pin a known `artWidth` without reproducing composePose.
+   *  `startedAt` must match `sessionStartedAt` (session.ts's staleness guard,
+   *  §5.3) — pass both together. */
+  pendingEncounter?: { width: number };
 }
 
 /** Run writeStatusState in a fresh subprocess under a temp config dir and return
@@ -130,9 +161,16 @@ function render(c: RenderCase): Record<string, unknown> | null {
     writeFileSync(
       join(stateDir, "session.default.json"),
       JSON.stringify({
-        startedAt: Math.floor(Date.now() / 1000) - 60,
+        startedAt: c.sessionStartedAt ?? Math.floor(Date.now() / 1000) - 60,
         baseline: zeroed,
       }),
+    );
+  } else if (typeof c.sessionStartedAt === "number") {
+    // Ground tests need a session snapshot (its terrain is seeded off
+    // startedAt) but no rough-error baseline — write a minimal snapshot.
+    writeFileSync(
+      join(stateDir, "session.default.json"),
+      JSON.stringify({ startedAt: c.sessionStartedAt, baseline: {} }),
     );
   }
   if (typeof c.streak === "number") {
@@ -143,6 +181,20 @@ function render(c: RenderCase): Record<string, unknown> | null {
         longest: c.streak,
         lastSessionAt: Math.floor(Date.now() / 1000),
         lastStartAt: 0,
+      }),
+    );
+  }
+  if (c.pendingEncounter) {
+    writeFileSync(
+      join(stateDir, "pending-encounter.json"),
+      JSON.stringify({
+        bugId: "gnat",
+        tier: 1,
+        frames: ["X".repeat(c.pendingEncounter.width)],
+        sequence: [0],
+        sightedAt: Date.now(),
+        startedAt:
+          c.sessionStartedAt ?? Math.floor(Date.now() / 1000) - 60,
       }),
     );
   }
@@ -206,12 +258,36 @@ export function buildWanderSequence(){
 }});
 `
     : "";
+  // Same idiom again: fixes ground.ts's whole module (terrain selection PLUS
+  // the weather schedule/active-check/weave) to a deterministic result so a
+  // test can assert an exact active/inactive outcome regardless of the real
+  // startedAt-seeded roll.
+  const groundWeatherStubBlock = c.stubGroundWeather
+    ? `
+plugin({ name: "stub-ground-weather", setup(b) {
+  b.onLoad({ filter: /ground\\.ts$/ }, () => ({
+    loader: "js",
+    contents: ${JSON.stringify(
+      `export function pickSessionGround(){return {name:"meadow",tile:"„.",color:"4a7c3f"};}
+export function pickSessionWeather(){return ${c.stubGroundWeather.active ? "({kind:\"snow\",startMs:0,durationMs:999999})" : "null"};}
+export function isWeatherActive(){return ${c.stubGroundWeather.active};}
+export function buildWeatherTile(){return {tile:${JSON.stringify(
+        c.stubGroundWeather.tile ?? "„.+„.",
+      )},glyph:${JSON.stringify(
+        c.stubGroundWeather.glyph ?? "+",
+      )},color:${JSON.stringify(c.stubGroundWeather.color ?? "e8f0f7")}};}`,
+    )},
+  }));
+}});
+`
+    : "";
+
   const pluginImport =
-    throwBlock || propsStubBlock || stubPhasesBlock
+    throwBlock || propsStubBlock || stubPhasesBlock || groundWeatherStubBlock
       ? `import { plugin } from "bun";\n`
       : "";
 
-  const childSrc = `${pluginImport}${throwBlock}${propsStubBlock}${stubPhasesBlock}
+  const childSrc = `${pluginImport}${throwBlock}${propsStubBlock}${stubPhasesBlock}${groundWeatherStubBlock}
 import { writeStatusState } from ${STATE_TS};
 import { generateBones } from ${ENGINE_TS};
 const companion = {
@@ -919,5 +995,528 @@ describe("writeStatusState — weather FX (living-world P4 Task 6)", () => {
     });
     expect(Array.isArray(state!.frames)).toBe(true);
     expect((state!.frames as string[]).length).toBeGreaterThan(0);
+  });
+});
+
+describe("writeStatusState — worldDressing opt-out (living-world P4)", () => {
+  // The granular toggle silences BOTH ambient layers (props + weather) at
+  // full without dropping gameFeel — so the emote/wander still render but the
+  // day-seeded specks and weather glyphs do not. PROP glyphs are absent from
+  // every species' innate art; weather rides the top FX row (' / *).
+  const PROP = { feet: "❦", ahead: "•" };
+  const topRow = (frame: string): string => frame.split("\n")[0];
+
+  test("worldDressing=false at full: the day's prop is suppressed", () => {
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true, worldDressing: false },
+      mood: "focused",
+      stubProp: PROP,
+    });
+    const frames = state!.frames as string[];
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames) {
+      expect(frame).not.toContain(PROP.feet);
+      expect(frame).not.toContain(PROP.ahead);
+    }
+  });
+
+  test("worldDressing=false at full: sparkle is suppressed even with an active streak", () => {
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true, worldDressing: false },
+      mood: "focused",
+      streak: 4,
+    });
+    const frames = state!.frames as string[];
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames) expect(topRow(frame)).not.toContain("*");
+  });
+
+  test("worldDressing=false at full: drizzle is suppressed even with a rough error count", () => {
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true, worldDressing: false },
+      mood: "focused",
+      errorEvents: { tests_failed: 4 },
+    });
+    const frames = state!.frames as string[];
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames) expect(topRow(frame)).not.toContain("'");
+  });
+
+  test("worldDressing=false is surgical: the idle wander still animates", () => {
+    // Proves the toggle only strips ambient dressing, not the rest of the
+    // full-gate juice — wanderSequence must still be present.
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true, worldDressing: false },
+      mood: "focused",
+    });
+    expect(Array.isArray(state!.wanderSequence)).toBe(true);
+    expect((state!.wanderSequence as number[]).length).toBeGreaterThan(0);
+  });
+
+  test("old config.json (no worldDressing key) ⇒ DEFAULT_CONFIG enables dressing (prop present)", () => {
+    // NFR3 backfill: loadConfig merges DEFAULT_CONFIG, so a pre-P4 config with
+    // no worldDressing key inherits the default (true) and still gets its prop.
+    const state = render({
+      config: { gameFeel: "full", wanderEnabled: true },
+      mood: "focused",
+      stubProp: PROP,
+    });
+    const frames = state!.frames as string[];
+    expect(frames.length).toBeGreaterThan(0);
+    // Last frame is the loot-dash inspect frame (swaps the ahead prop for the
+    // item glyph) — same carve-out the Task 3 block documents.
+    for (const frame of frames.slice(0, -1)) {
+      expect(frame).toContain(PROP.feet);
+      expect(frame).toContain(PROP.ahead);
+    }
+  });
+});
+
+describe("writeStatusState — living ground (living-world follow-up)", () => {
+  // The ground is a standalone status.json field (tile + colour), NOT baked
+  // into frames — the shell paints it as a fixed full-width bottom row. It is
+  // session-seeded off the snapshot's startedAt, so these tests pin startedAt
+  // and assert against the pure pickSessionGround() the write wires to.
+  const STARTED = 1_700_000_000;
+  const TERRAIN = pickSessionGround(STARTED);
+
+  test("full + groundEnabled + a session snapshot ⇒ ground tile + colour match the session seed", () => {
+    const state = render({
+      config: { gameFeel: "full", groundEnabled: true },
+      mood: "focused",
+      sessionStartedAt: STARTED,
+    });
+    expect(state!.ground).toBe(TERRAIN.tile);
+    expect(state!.groundColor).toBe(TERRAIN.color);
+  });
+
+  test("the ground is stable within a session (same startedAt ⇒ identical terrain)", () => {
+    const a = render({
+      config: { gameFeel: "full", groundEnabled: true },
+      mood: "focused",
+      sessionStartedAt: STARTED,
+    });
+    const b = render({
+      config: { gameFeel: "full", groundEnabled: true },
+      mood: "focused",
+      sessionStartedAt: STARTED,
+    });
+    expect(a!.ground).toBe(b!.ground);
+    expect(a!.groundColor).toBe(b!.groundColor);
+  });
+
+  test("subtle: the ground is full-only ⇒ absent", () => {
+    const state = render({
+      config: { gameFeel: "subtle", groundEnabled: true },
+      sessionStartedAt: STARTED,
+    });
+    expect(state!.ground).toBeUndefined();
+    expect(state!.groundColor).toBeUndefined();
+  });
+
+  test("off: no ground", () => {
+    const state = render({
+      config: { gameFeel: "off", groundEnabled: true },
+      sessionStartedAt: STARTED,
+    });
+    expect(state!.ground).toBeUndefined();
+  });
+
+  test("groundEnabled=false at full: the ground opt-out suppresses the row", () => {
+    const state = render({
+      config: { gameFeel: "full", groundEnabled: false },
+      mood: "focused",
+      sessionStartedAt: STARTED,
+    });
+    expect(state!.ground).toBeUndefined();
+    expect(state!.groundColor).toBeUndefined();
+  });
+
+  test("ground is surgical: it never touches the wander sequence or the sprite frames", () => {
+    // Toggling ground off leaves the rest of the full-gate juice intact.
+    const on = render({
+      config: { gameFeel: "full", wanderEnabled: true, groundEnabled: true },
+      mood: "focused",
+      sessionStartedAt: STARTED,
+    });
+    const off = render({
+      config: { gameFeel: "full", wanderEnabled: true, groundEnabled: false },
+      mood: "focused",
+      sessionStartedAt: STARTED,
+    });
+    expect(Array.isArray(on!.wanderSequence)).toBe(true);
+    expect(Array.isArray(off!.wanderSequence)).toBe(true);
+    // The sprite frames are identical whether or not the ground row is on —
+    // ground lives entirely outside the flipbook.
+    expect(off!.frames).toEqual(on!.frames);
+  });
+
+  test("no session snapshot (pre-first-session): the write never breaks, ground just absent", () => {
+    const state = render({
+      config: { gameFeel: "full", groundEnabled: true },
+      mood: "focused",
+    });
+    expect(Array.isArray(state!.frames)).toBe(true);
+    expect(state!.ground).toBeUndefined();
+  });
+
+  test("old config.json (no groundEnabled key) ⇒ DEFAULT_CONFIG enables the ground", () => {
+    // NFR3 backfill: loadConfig merges DEFAULT_CONFIG, so a config predating this
+    // feature inherits groundEnabled=true and still paints the floor.
+    const state = render({
+      config: { gameFeel: "full" },
+      mood: "focused",
+      sessionStartedAt: STARTED,
+    });
+    expect(state!.ground).toBe(TERRAIN.tile);
+  });
+});
+
+describe("writeStatusState — ground weather (living-world follow-up)", () => {
+  // The schedule is derived off startedAt at write time — no persisted
+  // schedule file (unlike combat.ts's writeEncounter side channel). A fixed
+  // stub of ground.ts's whole module sidesteps the circularity of trying to
+  // brute-force a startedAt that lands "inside the window" for a real roll.
+  const STARTED = 1_700_000_000;
+
+  test("full + groundEnabled + active window ⇒ status.json carries the woven tile + weather fields", () => {
+    const state = render({
+      config: { gameFeel: "full", groundEnabled: true },
+      mood: "focused",
+      sessionStartedAt: STARTED,
+      stubGroundWeather: {
+        active: true,
+        glyph: "+",
+        color: "e8f0f7",
+        tile: "„.+„.",
+      },
+    });
+    expect(state!.ground).toBe("„.+„.");
+    expect(state!.groundWeatherGlyph).toBe("+");
+    expect(state!.groundWeatherColor).toBe("e8f0f7");
+  });
+
+  test("full + groundEnabled + inactive window ⇒ plain terrain tile, no weather fields", () => {
+    const state = render({
+      config: { gameFeel: "full", groundEnabled: true },
+      mood: "focused",
+      sessionStartedAt: STARTED,
+      stubGroundWeather: { active: false },
+    });
+    expect(state!.ground).toBe("„."); // the stub's plain pickSessionGround terrain
+    expect(state!.groundWeatherGlyph).toBeUndefined();
+    expect(state!.groundWeatherColor).toBeUndefined();
+  });
+
+  test("groundEnabled: false ⇒ no ground field at all regardless of the schedule (D3)", () => {
+    const state = render({
+      config: { gameFeel: "full", groundEnabled: false },
+      mood: "focused",
+      sessionStartedAt: STARTED,
+      stubGroundWeather: { active: true },
+    });
+    expect(state!.ground).toBeUndefined();
+    expect(state!.groundWeatherGlyph).toBeUndefined();
+  });
+
+  test("subtle/off ⇒ no ground field, no weather fields, regardless of the schedule", () => {
+    for (const gameFeel of ["subtle", "off"] as const) {
+      const state = render({
+        config: { gameFeel, groundEnabled: true },
+        sessionStartedAt: STARTED,
+        stubGroundWeather: { active: true },
+      });
+      expect(state!.ground).toBeUndefined();
+      expect(state!.groundWeatherGlyph).toBeUndefined();
+    }
+  });
+});
+
+describe("writeStatusState — falling weather sky band (living-world follow-up, Task 2)", () => {
+  // Reuses the SAME stubGroundWeather idiom as the ground-weather describe
+  // block above — buildFallingWeatherGapBand (weatherfall.ts) is pure and
+  // seeded off startedAt/schedule.kind only, so it needs no clock/day stub of
+  // its own; pinning ground.ts's schedule via stubGroundWeather is sufficient
+  // to make the whole write deterministic (plan-falling-weather.md Task 2).
+  const STARTED = 1_700_000_000;
+
+  test("full + groundEnabled + active window ⇒ status.json carries the field + its sequence", () => {
+    const state = render({
+      config: { gameFeel: "full", groundEnabled: true },
+      mood: "focused",
+      sessionStartedAt: STARTED,
+      stubGroundWeather: { active: true },
+    });
+    expect(Array.isArray(state!.weatherFallGapFrames)).toBe(true);
+    expect((state!.weatherFallGapFrames as unknown[]).length).toBeGreaterThan(0);
+    expect(Array.isArray(state!.weatherFallSequence)).toBe(true);
+    expect((state!.weatherFallSequence as unknown[]).length).toBe(
+      (state!.weatherFallGapFrames as unknown[]).length,
+    );
+    // design-weather-frontlayer.md F9: the separately-baked, SGR-carrying ART
+    // band that used to reserve sky rows above the sprite is gone entirely —
+    // not merely unread by the shell. A payload jq re-parses every second
+    // should not carry a layer nothing consumes.
+    expect(state!.weatherFallFrames).toBeUndefined();
+    // NOW % len indexing (every other baked sequence's contract) needs a
+    // plain 0..len-1 index array, not e.g. frame indices out of range.
+    const seq = state!.weatherFallSequence as number[];
+    seq.forEach((idx, i) => expect(idx).toBe(i));
+  });
+
+  test("full + groundEnabled + inactive window ⇒ neither field is present (byte-identical to ground-only render)", () => {
+    const state = render({
+      config: { gameFeel: "full", groundEnabled: true },
+      mood: "focused",
+      sessionStartedAt: STARTED,
+      stubGroundWeather: { active: false },
+    });
+    expect(state!.weatherFallSequence).toBeUndefined();
+  });
+
+  test("ground rendered with NO stubGroundWeather at all (real, unstubbed schedule) never carries falling-weather fields unless a real window happens to be open — back-compat pin: existing ground tests stay green", () => {
+    const state = render({
+      config: { gameFeel: "full", groundEnabled: true },
+      mood: "focused",
+      sessionStartedAt: STARTED,
+    });
+    // Doesn't assert on/off (a real roll off a fixed seed may or may not be
+    // active) — just that the two fields are only ever a matched pair, never
+    // one without the other, exactly like groundWeatherGlyph/Color already are.
+    const hasFrames = state!.weatherFallGapFrames !== undefined;
+    const hasSeq = state!.weatherFallSequence !== undefined;
+    expect(hasFrames).toBe(hasSeq);
+  });
+
+  test("groundEnabled: false ⇒ no falling-weather fields regardless of the schedule (D11)", () => {
+    const state = render({
+      config: { gameFeel: "full", groundEnabled: false },
+      mood: "focused",
+      sessionStartedAt: STARTED,
+      stubGroundWeather: { active: true },
+    });
+    expect(state!.weatherFallGapFrames).toBeUndefined();
+    expect(state!.weatherFallSequence).toBeUndefined();
+  });
+
+  test("subtle/off ⇒ no falling-weather fields, regardless of the schedule", () => {
+    for (const gameFeel of ["subtle", "off"] as const) {
+      const state = render({
+        config: { gameFeel, groundEnabled: true },
+        sessionStartedAt: STARTED,
+        stubGroundWeather: { active: true },
+      });
+      expect(state!.weatherFallGapFrames).toBeUndefined();
+      expect(state!.weatherFallSequence).toBeUndefined();
+    }
+  });
+
+  // design-combat-weather.md Task 1 (D3) used to bake the band at the active
+  // combat scene's artWidth, because a band fixed at the idle SKY_FALL_WIDTH=14
+  // would visually truncate over just the player. design-weather-frontlayer.md
+  // F2 dissolves that problem rather than solving it: there is one full-width
+  // field composited over the entire line, so no scene width can outgrow it.
+  describe("the field is scene-width-independent (design-combat-weather.md D3, dissolved by F2)", () => {
+    for (const [label, pendingEncounter] of [
+      ["combat active (pending standoff, artWidth 24)", { width: 24 }],
+      ["idle only (no combat)", undefined],
+    ] as const) {
+      test(`${label} + weather active ⇒ the SAME MAX_GAP_WIDTH field, never a scene-sized one`, () => {
+        const state = render({
+          config: { gameFeel: "full", groundEnabled: true },
+          mood: "focused",
+          sessionStartedAt: STARTED,
+          stubGroundWeather: { active: true },
+          ...(pendingEncounter ? { pendingEncounter } : {}),
+        });
+        const frames = state!.weatherFallGapFrames as string[];
+        expect(Array.isArray(frames)).toBe(true);
+        expect(frames.length).toBeGreaterThan(0);
+        for (const frame of frames) {
+          for (const line of frame.split("\n")) {
+            expect(displayWidth(line)).toBe(110);
+          }
+        }
+      });
+    }
+
+    test("combat and idle bake the byte-identical field at the same seed (no width branch survives)", () => {
+      const base = {
+        config: { gameFeel: "full", groundEnabled: true } as const,
+        mood: "focused" as const,
+        sessionStartedAt: STARTED,
+        stubGroundWeather: { active: true } as const,
+      };
+      const combat = render({ ...base, pendingEncounter: { width: 24 } });
+      expect(combat!.artWidth).toBe(24);
+      const idle = render({ ...base });
+      expect(idle!.artWidth).toBeUndefined();
+      expect(combat!.weatherFallGapFrames).toEqual(idle!.weatherFallGapFrames);
+    });
+  });
+});
+
+describe("writeStatusState — full-width falling weather GAP band (plan-fullwidth-weather.md Task 2)", () => {
+  // Same stubGroundWeather idiom as the sibling describe blocks above —
+  // buildFallingWeatherGapBand (weatherfall.ts) is pure and seeded off
+  // startedAt/schedule.kind only, no clock/day stub of its own needed.
+  const STARTED = 1_700_000_000;
+
+  test("full + groundEnabled + active window ⇒ status.json carries weatherFallGapFrames + weatherFallGapGlyph + weatherFallGapColor", () => {
+    const state = render({
+      config: { gameFeel: "full", groundEnabled: true },
+      mood: "focused",
+      sessionStartedAt: STARTED,
+      stubGroundWeather: { active: true },
+    });
+    expect(Array.isArray(state!.weatherFallGapFrames)).toBe(true);
+    expect((state!.weatherFallGapFrames as unknown[]).length).toBeGreaterThan(0);
+    expect(state!.weatherFallGapGlyph).toBe("❄");
+    expect(state!.weatherFallGapColor).toBe("e8f0f7"); // dark theme default
+    // Every gap-band frame line must measure MAX_GAP_WIDTH=110 display cells —
+    // the fixed, generously-wide bake width bash later clips to the live ROAM.
+    const frames = state!.weatherFallGapFrames as string[];
+    for (const frame of frames) {
+      for (const line of frame.split("\n")) {
+        expect(displayWidth(line)).toBe(110);
+      }
+    }
+    // D3: the gap band must be PLAIN (ANSI-free) — the ART band's own
+    // weatherFallFrames carries embedded SGR, this must NOT.
+    for (const frame of frames) {
+      expect(frame).not.toContain("\x1b");
+    }
+  });
+
+  // Task 2's checklist calls for the glyph/color to match the active
+  // kind/THEME, but every other gap-band test above runs at the default dark
+  // theme — so state.ts:1629's `SKY_FALL_COLOR[theme][kind]` indexing was
+  // unpinned: hardcoding the dark palette there would leave them all green.
+  // That is precisely the line behind this arc's user-reported "snow is
+  // invisible on my white background" bug, so it gets its own pin. (The
+  // weatherfall.ts-level theme test covers the PALETTE; this covers state.ts
+  // actually THREADING cfg.theme into it.)
+  test("cfg.theme: light ⇒ gap-band color is the light-theme hex, not the dark default", () => {
+    const state = render({
+      config: { gameFeel: "full", groundEnabled: true, theme: "light" },
+      mood: "focused",
+      sessionStartedAt: STARTED,
+      stubGroundWeather: { active: true },
+    });
+    expect(state!.weatherFallGapColor).toBe("4a6f94"); // light-theme snow
+    expect(state!.weatherFallGapColor).not.toBe("e8f0f7");
+    // The glyph is theme-independent — only the tint changes.
+    expect(state!.weatherFallGapGlyph).toBe("❄");
+  });
+
+  test('cfg.theme: "auto"/absent ⇒ gap-band color resolves to the dark palette (state.ts\'s documented auto⇒dark rule)', () => {
+    for (const theme of ["auto", undefined]) {
+      const cfg: Record<string, unknown> = { gameFeel: "full", groundEnabled: true };
+      if (theme !== undefined) cfg.theme = theme;
+      const state = render({
+        config: cfg,
+        mood: "focused",
+        sessionStartedAt: STARTED,
+        stubGroundWeather: { active: true },
+      });
+      expect(state!.weatherFallGapColor).toBe("e8f0f7");
+    }
+  });
+
+  test("weatherFallSequence (already computed for the ART band) is reused for the gap band too — no second sequence field", () => {
+    const state = render({
+      config: { gameFeel: "full", groundEnabled: true },
+      mood: "focused",
+      sessionStartedAt: STARTED,
+      stubGroundWeather: { active: true },
+    });
+    const gapFrames = state!.weatherFallGapFrames as string[];
+    const seq = state!.weatherFallSequence as number[];
+    expect(seq.length).toBe(gapFrames.length);
+    // No separate weatherFallGapSequence field exists.
+    expect(state!.weatherFallGapSequence).toBeUndefined();
+  });
+
+  test("full + groundEnabled + inactive window ⇒ none of the three gap fields are present", () => {
+    const state = render({
+      config: { gameFeel: "full", groundEnabled: true },
+      mood: "focused",
+      sessionStartedAt: STARTED,
+      stubGroundWeather: { active: false },
+    });
+    expect(state!.weatherFallGapFrames).toBeUndefined();
+    expect(state!.weatherFallGapGlyph).toBeUndefined();
+    expect(state!.weatherFallGapColor).toBeUndefined();
+  });
+
+  test("groundEnabled: false ⇒ no gap-band fields regardless of the schedule", () => {
+    const state = render({
+      config: { gameFeel: "full", groundEnabled: false },
+      mood: "focused",
+      sessionStartedAt: STARTED,
+      stubGroundWeather: { active: true },
+    });
+    expect(state!.weatherFallGapFrames).toBeUndefined();
+    expect(state!.weatherFallGapGlyph).toBeUndefined();
+    expect(state!.weatherFallGapColor).toBeUndefined();
+  });
+
+  test("subtle/off ⇒ no gap-band fields, regardless of the schedule", () => {
+    for (const gameFeel of ["subtle", "off"] as const) {
+      const state = render({
+        config: { gameFeel, groundEnabled: true },
+        sessionStartedAt: STARTED,
+        stubGroundWeather: { active: true },
+      });
+      expect(state!.weatherFallGapFrames).toBeUndefined();
+      expect(state!.weatherFallGapGlyph).toBeUndefined();
+      expect(state!.weatherFallGapColor).toBeUndefined();
+    }
+  });
+
+  // design-weather-frontlayer.md F9: the ART band is retired, so what used to
+  // be an "additive, not a replacement" pin now pins the opposite — one layer,
+  // and it is the PLAIN one. Both halves matter: a leftover SGR-carrying band
+  // would be dead payload, and a field that started carrying SGR would break
+  // the shell's character-indexed slice and splice (D3).
+  test("exactly ONE weather layer ships, and it is ANSI-free (F9)", () => {
+    const state = render({
+      config: { gameFeel: "full", groundEnabled: true },
+      mood: "focused",
+      sessionStartedAt: STARTED,
+      stubGroundWeather: { active: true },
+    });
+    expect(state!.weatherFallFrames).toBeUndefined();
+    const frames = state!.weatherFallGapFrames as string[];
+    expect(Array.isArray(frames)).toBe(true);
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames.some((f) => f.includes("❄"))).toBe(true);
+    expect(frames.some((f) => f.includes("\x1b"))).toBe(false);
+    // And it is tall enough to cover a whole widget block, not a 3-row strip.
+    for (const frame of frames) {
+      expect(frame.split("\n").length).toBe(14);
+    }
+  });
+
+  // design-combat-weather.md D3's own width-aware bake doesn't apply to the
+  // gap band (D2: it always bakes at the fixed MAX_GAP_WIDTH regardless of
+  // combat, since it's a SEPARATE canvas from the sprite's own art column —
+  // see plan-fullwidth-weather.md D8/§4.1, "no combat-specific MAX_GAP_WIDTH").
+  test("combat active (pending standoff, artWidth 24) + weather active ⇒ gap band still bakes at the fixed MAX_GAP_WIDTH=110, not artWidth", () => {
+    const state = render({
+      config: { gameFeel: "full", groundEnabled: true },
+      mood: "focused",
+      sessionStartedAt: STARTED,
+      stubGroundWeather: { active: true },
+      pendingEncounter: { width: 24 },
+    });
+    expect(state!.artWidth).toBe(24);
+    const gapFrames = state!.weatherFallGapFrames as string[];
+    expect(Array.isArray(gapFrames)).toBe(true);
+    for (const frame of gapFrames) {
+      for (const line of frame.split("\n")) {
+        expect(displayWidth(line)).toBe(110);
+      }
+    }
   });
 });

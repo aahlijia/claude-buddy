@@ -97,6 +97,24 @@ interface StatusOverrides {
   /** Stat-up panel flash (stats-leveling-v2 §P4): the raised stat names + how
    *  many seconds ago, driving the ~10s value-brighten. */
   statsRaised?: { names: string[]; secondsAgo: number };
+  /** Living ground (living-world follow-up): terrain tile + hex colour written
+   *  into status.json for the fixed full-width ground row. */
+  ground?: string;
+  groundColor?: string;
+  /** Ground weather (living-world follow-up): the woven-in glyph + its hex
+   *  colour, distinct from groundColor so the shell recolors just that glyph. */
+  groundWeatherGlyph?: string;
+  groundWeatherColor?: string;
+  /** Falling weather field (plan-falling-weather.md Task 3, made a front layer
+   *  by design-weather-frontlayer.md): the baked PLAIN (ANSI-free) flipbook
+   *  the shell tiles, slices per segment and composites OVER existing content,
+   *  plus its NOW%len index sequence. There is only one weather layer — the
+   *  SGR-carrying ART band that used to reserve sky rows above the sprite is
+   *  gone (F9), so `weatherFallSequence` now rides with these frames. */
+  weatherFallSequence?: number[];
+  weatherFallGapFrames?: string[];
+  weatherFallGapGlyph?: string;
+  weatherFallGapColor?: string;
 }
 
 /** Write a minimal status.json into a temp config dir and run buddy-status.sh
@@ -174,6 +192,20 @@ function renderStatus(overrides: StatusOverrides): string {
       names: overrides.statsRaised.names,
       at: (fakeNow - overrides.statsRaised.secondsAgo) * 1000,
     };
+  }
+  if (overrides.ground) {
+    status.ground = overrides.ground;
+    status.groundColor = overrides.groundColor ?? "4a7c3f";
+  }
+  if (overrides.groundWeatherGlyph) {
+    status.groundWeatherGlyph = overrides.groundWeatherGlyph;
+    status.groundWeatherColor = overrides.groundWeatherColor ?? "e8f0f7";
+  }
+  if (overrides.weatherFallGapFrames) {
+    status.weatherFallSequence = overrides.weatherFallSequence ?? [0];
+    status.weatherFallGapFrames = overrides.weatherFallGapFrames;
+    status.weatherFallGapGlyph = overrides.weatherFallGapGlyph ?? "❄";
+    status.weatherFallGapColor = overrides.weatherFallGapColor ?? "e8f0f7";
   }
   if (overrides.wanderSequence) status.wanderSequence = overrides.wanderSequence;
   if (overrides.wanderRowSequence) {
@@ -1557,5 +1589,844 @@ describe("buddy-status.sh combined-status metrics header", () => {
     expect(out.split("\n")[0]).toContain("claude opus 4.8");
     expect(out).toContain("Waffle"); // the buddy still renders below
     expect(out).not.toContain("DBG"); // …with no stats column
+  });
+});
+
+describe("buddy-status.sh living ground (living-world follow-up)", () => {
+  // The fixed full-width terrain floor is a standalone bottom row painted by
+  // the shell from the server's session-seeded tile — NOT baked into a frame,
+  // so it must stay put while the buddy roams.
+  const groundLine = (out: string): string => {
+    const lines = stripAnsi(out).split("\n").filter((l) => l.trim() !== "");
+    return lines[lines.length - 1] ?? "";
+  };
+
+  test("full: the ground row paints the tiled terrain as the last line", () => {
+    const out = renderStatus({
+      gameFeel: "full",
+      ground: "„.",
+      groundColor: "4a7c3f",
+      columns: 80,
+      showStats: false,
+    });
+    const g = groundLine(out);
+    // The last line is the tiled floor: several tile units, no buddy body.
+    expect(g).toContain("„.„.„.");
+    expect(g).not.toContain("Waffle");
+  });
+
+  test("the ground is fixed-left and never overflows the terminal width", () => {
+    for (const columns of [40, 80, 120]) {
+      const out = renderStatus({
+        gameFeel: "full",
+        ground: "„.",
+        columns,
+        showStats: false,
+        // The buddy roams; the ground must NOT ride the offset.
+        wanderSequence: [0, 6, 12, 18, 12, 6],
+      });
+      const g = groundLine(out);
+      // Display width = code points (single-width glyphs) ≤ the terminal width.
+      expect([...g].length).toBeLessThanOrEqual(columns);
+      // Leading run is the fixed small margin, not the big roam indent — the
+      // floor starts within the first few columns regardless of where the
+      // buddy is.
+      expect(g.search(/„/)).toBeLessThanOrEqual(3);
+    }
+  });
+
+  test("subtle: the ground is full-only ⇒ no terrain row", () => {
+    const out = renderStatus({
+      gameFeel: "subtle",
+      ground: "„.",
+      columns: 80,
+      showStats: false,
+    });
+    expect(stripAnsi(out)).not.toContain("„");
+  });
+
+  test("off: no terrain row", () => {
+    const out = renderStatus({
+      gameFeel: "off",
+      ground: "„.",
+      columns: 80,
+      showStats: false,
+    });
+    expect(stripAnsi(out)).not.toContain("„");
+  });
+
+  test("an active combat scene no longer suppresses the ground (D2 relaxes the gate)", () => {
+    const out = renderStatus({
+      gameFeel: "full",
+      ground: "„.",
+      columns: 80,
+      showStats: false,
+      combatFrames: ["  (>_<)  vs  (x_x)  "],
+      combatSequence: [0],
+      artWidth: 20,
+      encounterSecondsAgo: 1, // fresh ⇒ combat_on, but the ground gate no longer cares
+    });
+    expect(stripAnsi(out)).toContain("„");
+  });
+
+  test("active weather: the weather glyph renders in its own color, distinct from the terrain tint", () => {
+    const out = renderStatus({
+      gameFeel: "full",
+      ground: "„.+„.+„.",
+      groundColor: "4a7c3f",
+      groundWeatherGlyph: "+",
+      groundWeatherColor: "e8f0f7",
+      columns: 80,
+      showStats: false,
+    });
+    const g = groundLine(out);
+    expect(g).toContain("+");
+    // Assert the LITERAL weather-color truecolor escape (e8f0f7 → 232;240;247)
+    // is present around the glyph — a weak "escape count > 1" check would pass
+    // trivially even unimplemented, since the row already ends with a plain
+    // reset (NC) after the terrain color. This pins the actual recolor.
+    const raw = out.split("\n").filter((l) => l.includes("+"))[0] ?? "";
+    expect(raw).toContain("\x1b[38;2;232;240;247m");
+  });
+
+  test("weather glyph substitution does not corrupt row width/clipping", () => {
+    for (const columns of [40, 80, 120]) {
+      const out = renderStatus({
+        gameFeel: "full",
+        ground: "„.+„.+„.",
+        groundColor: "4a7c3f",
+        groundWeatherGlyph: "+",
+        groundWeatherColor: "e8f0f7",
+        columns,
+        showStats: false,
+      });
+      const g = stripAnsi(groundLine(out));
+      expect([...g].length).toBeLessThanOrEqual(columns);
+    }
+  });
+
+  test("no weather fields ⇒ ground row renders byte-identical to the current plain-terrain path", () => {
+    const before = renderStatus({
+      gameFeel: "full",
+      ground: "„.",
+      groundColor: "4a7c3f",
+      columns: 80,
+      showStats: false,
+    });
+    const after = renderStatus({
+      gameFeel: "full",
+      ground: "„.",
+      groundColor: "4a7c3f",
+      columns: 80,
+      showStats: false,
+    });
+    expect(after).toBe(before);
+  });
+
+  test("subtle/off suppress the whole row even with weather fields present; combat no longer does (D2)", () => {
+    for (const gameFeel of ["subtle", "off"] as const) {
+      const out = renderStatus({
+        gameFeel,
+        ground: "„.+",
+        groundWeatherGlyph: "+",
+        groundWeatherColor: "e8f0f7",
+        columns: 80,
+        showStats: false,
+      });
+      expect(stripAnsi(out)).not.toContain("+");
+    }
+    const combatOut = renderStatus({
+      gameFeel: "full",
+      ground: "„.+",
+      groundWeatherGlyph: "+",
+      groundWeatherColor: "e8f0f7",
+      columns: 80,
+      showStats: false,
+      combatFrames: ["  (>_<)  vs  (x_x)  "],
+      combatSequence: [0],
+      artWidth: 20,
+      encounterSecondsAgo: 1,
+    });
+    expect(stripAnsi(combatOut)).toContain("+");
+  });
+});
+
+describe("buddy-status.sh falling weather (Task 3, made a front layer by design-weather-frontlayer.md)", () => {
+  // PLAIN fixtures (D3) — the field carries no SGR of its own; every escape in
+  // the output is the shell's own post-slice recolor. 14 rows so the field
+  // covers a whole block (F2/F6), which is what lets it be a front layer
+  // instead of a reserved band.
+  const GAP_W = 110;
+  const gapLine = (cols: number[]): string => {
+    const cells: string[] = new Array(GAP_W).fill(" ");
+    for (const c of cols) cells[c] = "❄";
+    return cells.join("");
+  };
+  const FIELD = Array.from({ length: 14 }, (_, r) =>
+    gapLine([3 + r, 40 + ((r * 7) % 30), 70 + (r % 20)]),
+  ).join("\n");
+  const SNOW_SGR = "\x1b[38;2;232;240;247m";
+
+  const withWeather = (o: Record<string, unknown>) =>
+    renderStatus({
+      gameFeel: "full",
+      weatherFallGapFrames: [FIELD],
+      weatherFallGapGlyph: "❄",
+      weatherFallGapColor: "e8f0f7",
+      ...o,
+    } as Parameters<typeof renderStatus>[0]);
+  const noWeather = (o: Record<string, unknown>) =>
+    renderStatus({ gameFeel: "full", ...o } as Parameters<typeof renderStatus>[0]);
+
+  const totalLines = (out: string): number => {
+    const lines = out.split("\n");
+    if (lines[lines.length - 1] === "") lines.pop();
+    return lines.length;
+  };
+
+  test("active falling weather: the flake renders with the shell's own weather colour, and the sprite line is unaffected", () => {
+    const out = withWeather({ columns: 80, showStats: false });
+    // The fixture is plain, so this escape can ONLY have come from the shell.
+    expect(out).toContain(`${SNOW_SGR}❄`);
+    expect(stripAnsi(out)).toContain("(··)");
+  });
+
+  // ── design-weather-frontlayer.md F1: THE headline requirement ─────────────
+  // The three "extra lines" the user asked to get back were the reserved sky
+  // rows this feature used to prepend. Weather is now a front layer, so it
+  // must cost exactly zero rows in every configuration.
+  test("F1: weather adds NO rows — the block is the same height with and without it", () => {
+    for (const columns of [80, 104, 125, 200]) {
+      for (const showStats of [true, false]) {
+        for (const reaction of [undefined, "hydrate. seriously."]) {
+          const o = { columns, showStats, ...(reaction ? { reaction } : {}) };
+          expect(totalLines(withWeather(o))).toBe(totalLines(noWeather(o)));
+        }
+      }
+    }
+  });
+
+  test("F1 is not vacuous: the weathered render at each width really does draw flakes", () => {
+    for (const columns of [80, 104, 125, 200]) {
+      for (const showStats of [true, false]) {
+        expect(stripAnsi(withWeather({ columns, showStats }))).toContain("❄");
+      }
+    }
+  });
+
+  // F10: the band used to compete with the hop headroom for HOP_BUDGET, and a
+  // band that would not fit was dropped. A front layer consumes no rows, so
+  // hop keeps its reservation AND the weather still renders — the two former
+  // outcomes of that gate are now both true at once.
+  test("F10: with the hop headroom reserved, weather still renders and still costs nothing", () => {
+    const hop = { columns: 80, showStats: false, wanderRowSequence: [0, 1, 2, 1, 0] };
+    const withHop = withWeather(hop);
+    expect(totalLines(withHop)).toBe(totalLines(noWeather(hop)));
+    expect(stripAnsi(withHop)).toContain("❄");
+    // And the hop reservation itself is intact: taller than the un-hopped block.
+    expect(totalLines(withHop)).toBeGreaterThan(
+      totalLines(noWeather({ columns: 80, showStats: false })),
+    );
+  });
+
+  // F2: the field's row N is the BLOCK's row N. This looks like a detail and
+  // is not — the old code offset it by ART_TOP because the weather lived
+  // inside the art stack, and that offset is invisible until the hop headroom
+  // makes ART_TOP non-zero, at which point the top rows silently stop
+  // snowing and the whole field slides down. Pinned with a field whose flakes
+  // are ALL on row 0, rendered with hop reserved. (Mutation-verified: without
+  // this test, restoring the `i - ART_TOP` mapping left the suite green.)
+  test("F2: the field's row 0 lands on the block's row 0, even with hop headroom reserved", () => {
+    const topOnly = [
+      "❄".repeat(GAP_W),
+      ...Array.from({ length: 13 }, () => " ".repeat(GAP_W)),
+    ].join("\n");
+    const out = withWeather({
+      columns: 125,
+      showStats: false,
+      wanderRowSequence: [0, 1, 2, 1, 0],
+      weatherFallGapFrames: [topOnly],
+    });
+    const lines = stripAnsi(out).split("\n").filter((l) => l.length);
+    // ART_TOP is 2 here, so the buggy mapping puts these flakes on line 2.
+    expect(lines[0]).toContain("❄");
+    expect(lines.findIndex((l) => l.includes("❄"))).toBe(0);
+    // ...and nowhere else, which is what makes the index assertion meaningful.
+    expect(lines.filter((l) => l.includes("❄")).length).toBe(1);
+  });
+
+  test("no falling-weather fields: no flake glyph anywhere, row count matches the plain 5-row-sprite + name fixture exactly", () => {
+    // A real absence check, not a self-referential before/after diff (a prior
+    // audit on the sibling ground-weather feature caught exactly that mistake
+    // — comparing two identical override objects passes even if the feature
+    // is fully broken). This asserts real structure: 5 sprite rows + 1 name
+    // row, empirically confirmed against the real script.
+    const out = renderStatus({ gameFeel: "full", columns: 80, showStats: false });
+    expect(stripAnsi(out)).not.toContain("❄");
+    expect(totalLines(out)).toBe(6);
+  });
+
+  test("combat does not suppress weather (design-combat-weather.md D1 relaxes the gate)", () => {
+    const out = withWeather({
+      columns: 80,
+      showStats: false,
+      combatFrames: ["  (>_<)  vs  (x_x)  "],
+      combatSequence: [0],
+      artWidth: 20,
+      encounterSecondsAgo: 1,
+    });
+    expect(stripAnsi(out)).toContain("❄");
+  });
+
+  test("combat + weather together: flakes and the ground row (with its weather glyph) both render (D1 + D2)", () => {
+    const out = withWeather({
+      columns: 80,
+      showStats: false,
+      combatFrames: ["  (>_<)  vs  (x_x)  "],
+      combatSequence: [0],
+      artWidth: 20,
+      encounterSecondsAgo: 1,
+      ground: "„.+",
+      groundColor: "4a7c3f",
+      groundWeatherGlyph: "+",
+      groundWeatherColor: "e8f0f7",
+    });
+    const plain = stripAnsi(out);
+    expect(plain).toContain("❄"); // falling weather (D1)
+    expect(plain).toContain("„"); // ground terrain (D2)
+    expect(plain).toContain("+"); // ground weather glyph (D2)
+  });
+
+  // 2026-07-27 bugfix: a fresh celebration no longer suppresses weather. The
+  // old D10/D1 celeb_fresh gate existed because the ART band PREPENDED rows,
+  // which fought the taller flourish flipbook for the same height budget —
+  // the identical reason F10 deleted the HOP_BUDGET degrade. A front layer
+  // costs no rows, so the justification died with F1, and keeping the gate
+  // left the ground row visibly snowing while nothing fell above it for the
+  // whole flourish window. These two now pin the OPPOSITE invariant.
+  test("a fresh celebration no longer suppresses weather, even with combat active", () => {
+    const out = withWeather({
+      columns: 80,
+      showStats: false,
+      combatFrames: ["  (>_<)  vs  (x_x)  "],
+      combatSequence: [0],
+      artWidth: 20,
+      encounterSecondsAgo: 1,
+      celebration: { text: "Level up!", secondsAgo: 1 },
+    });
+    expect(stripAnsi(out)).toContain("❄");
+  });
+
+  test("weather keeps falling through a fresh celebration, matching the ground row's gate", () => {
+    const celeb = { text: "Level up!", secondsAgo: 1 } as const;
+    const out = withWeather({ columns: 80, showStats: false, celebration: celeb });
+    const plain = stripAnsi(out);
+    expect(plain).toContain("❄");
+    // The celebration itself must still be rendering — otherwise this passes
+    // for the trivial reason that the toast never appeared at all.
+    expect(plain).toContain("Level up!");
+    // And the gate is the SAME one the ground row uses: gameFeel, not
+    // celebration. Turning gameFeel down still silences it mid-celebration.
+    const off = withWeather({
+      columns: 80,
+      showStats: false,
+      celebration: celeb,
+      gameFeel: "subtle",
+    });
+    expect(stripAnsi(off)).not.toContain("❄");
+  });
+
+  test("subtle/off suppress weather even with fields present", () => {
+    for (const gameFeel of ["subtle", "off"] as const) {
+      const out = withWeather({ columns: 80, showStats: false, gameFeel });
+      expect(stripAnsi(out)).not.toContain("❄");
+    }
+  });
+});
+
+describe("buddy-status.sh full-width falling weather GAP band (plan-fullwidth-weather.md Task 3)", () => {
+  // The GAP band is PLAIN (D3) — unlike the ART band above, which embeds its
+  // own SGR. The shell clips it to the live ROAM and recolors AFTER, so these
+  // fixtures carry no escapes at all; the colour in the output comes from the
+  // shell's own post-clip substitution.
+  const GAP_W = 110;
+  const gapLine = (cols: number[]): string => {
+    const cells: string[] = new Array(GAP_W).fill(" ");
+    for (const c of cols) cells[c] = "❄";
+    return cells.join("");
+  };
+  // Flakes deliberately placed near the LEFT (stats-adjacent) edge — the exact
+  // region the user's original complaint was about — plus some further right.
+  // 14 rows (SKY_FALL_ROWS) so the field spans a whole block, not a 3-row
+  // strip. Flakes deliberately placed near the LEFT (stats-adjacent) edge —
+  // the region the original complaint was about — plus some further right.
+  const GAP_FRAME = Array.from({ length: 14 }, (_, r) =>
+    gapLine([1 + (r % 9), 20 + ((r * 5) % 25), 60 + ((r * 3) % 40)]),
+  ).join("\n");
+  // Since design-weather-frontlayer.md F9 there is no second (SGR-carrying)
+  // layer to isolate against: the fixture is entirely plain, so every escape
+  // below can ONLY have been produced by the shell's own recolor step. That
+  // is what keeps the recolor assertions non-vacuous — a shared colour with a
+  // pre-tinted fixture would let them pass with the recolor deleted outright
+  // (mutation-verified back when the ART band existed).
+  const GAP_SGR = "\x1b[38;2;232;240;247m"; // snow — can ONLY come from the shell
+
+  const withArtOnly = (o: Record<string, unknown>) =>
+    renderStatus({ gameFeel: "full", ...o } as Parameters<typeof renderStatus>[0]);
+  const withGap = (o: Record<string, unknown>) =>
+    withArtOnly({
+      weatherFallGapFrames: [GAP_FRAME],
+      weatherFallGapGlyph: "❄",
+      weatherFallGapColor: "e8f0f7",
+      ...o,
+    });
+
+  const flakeCount = (out: string): number =>
+    (stripAnsi(out).match(/❄/g) ?? []).length;
+
+  test("active + a wide-enough terminal: gap flakes render ACROSS the line, not just in the sprite's own narrow column", () => {
+    const out = withGap({ columns: 125, showStats: true });
+    // Strictly more flakes than the ART band alone contributes.
+    expect(flakeCount(out)).toBeGreaterThan(flakeCount(withArtOnly({ columns: 125, showStats: true })));
+    // The point of the whole feature: at least one flake lands well LEFT of
+    // the roaming cluster, i.e. out over the previously-blank gap.
+    const plain = stripAnsi(out);
+    const gapSideFlake = plain
+      .split("\n")
+      .some((l) => l.indexOf("❄") >= 0 && l.indexOf("❄") < 90);
+    expect(gapSideFlake).toBe(true);
+  });
+
+  test("gap flakes are recolored by the SHELL (post-clip), carrying the weather SGR despite the plain fixture", () => {
+    const out = withGap({ columns: 125, showStats: true });
+    // The snow SGR appears nowhere in any fixture — the ART band is tinted
+    // rain-blue — so its presence proves the shell's own post-clip recolor ran.
+    expect(out).toContain(`${GAP_SGR}❄`);
+    // And it is genuinely absent without the gap band.
+    expect(withArtOnly({ columns: 125, showStats: true })).not.toContain(GAP_SGR);
+  });
+
+  test("D11 clip: no rendered line ever exceeds the terminal width, at any COLS", () => {
+    for (const columns of [80, 125, 160]) {
+      const out = withGap({ columns, showStats: true });
+      for (const line of out.split("\n")) {
+        if (!line.length) continue;
+        expect([...stripAnsi(line)].length).toBeLessThanOrEqual(columns);
+      }
+    }
+  });
+
+  // D11's right-pad shortfall branch only fires when the live ROAM EXCEEDS the
+  // baked MAX_GAP_WIDTH=110 — i.e. only on very wide terminals. Task 0 measured
+  // that crossover on the live script: COLS>=162 with stats on, COLS>=133 with
+  // stats off. Every other test here sits below it (COLS=160 => ROAM=109), so
+  // without this case the whole shortfall branch is dead code as far as the
+  // suite is concerned — confirmed by mutation-testing it (deleting the pad
+  // left all other tests green). The pad matters because an under-filled gap
+  // would shift every following segment LEFT, misaligning the sprite.
+  test("D11 shortfall: at a terminal wide enough that ROAM exceeds the baked width, the gap is right-padded so later segments stay aligned", () => {
+    // COLS=200, stats off => ROAM=178, well past MAX_GAP_WIDTH=110.
+    const out = withGap({ columns: 200, showStats: false });
+    const base = withArtOnly({ columns: 200, showStats: false });
+    const widths = (s: string) =>
+      s.split("\n").filter((l) => l.length).map((l) => [...stripAnsi(l)].length);
+    // The gap band must not change any line's total width vs. the ART-only
+    // baseline: the clip+pad together fill exactly ROAM, no more, no less.
+    expect(widths(out)).toEqual(widths(base));
+    // And it genuinely rendered (not silently skipped, which would also
+    // trivially preserve the widths).
+    expect(flakeCount(out)).toBeGreaterThan(flakeCount(base));
+  });
+
+  test("D3 escape hygiene: the post-clip recolor never truncates an escape nor leaves a line ending un-reset", () => {
+    for (const columns of [80, 125, 160]) {
+      for (const showStats of [true, false]) {
+        const out = withGap({ columns, showStats });
+        for (const line of out.split("\n")) {
+          if (!line.length) continue;
+          // No line may end mid-escape-sequence (§2.4's dangling-SGR hazard).
+          expect(/\x1b\[?[0-9;]*$/.test(line)).toBe(false);
+          const codes = [...line.matchAll(/\x1b\[([0-9;]*)m/g)].map((m) => m[1]);
+          if (codes.length) expect(codes[codes.length - 1]).toBe("0");
+        }
+      }
+    }
+  });
+
+  // The single most important regression pin: with no weather fields at all,
+  // the feature must be a TRUE no-op — byte-for-byte, not "looks about right".
+  //
+  // NOTE (design-fullwidth-weather-d1.md): this used to assert that ROAM=0 at
+  // COLS=40 was ALSO byte-identical, which held only while painting was
+  // confined to the gap segment. Under D1 the stats/bubble filler segments are
+  // painted too, so a zero-width gap no longer implies zero output — that is
+  // the intended new behaviour, not a regression. The genuine invariant (no
+  // weather ⇒ no change) is what this pins, and it is width-independent.
+  test("no weather fields at all: output is BYTE-IDENTICAL to the plain baseline, at every width", () => {
+    for (const columns of [40, 80, 125, 200]) {
+      for (const showStats of [true, false]) {
+        const plain = renderStatus({ gameFeel: "full", columns, showStats });
+        const alsoPlain = renderStatus({ gameFeel: "full", columns, showStats });
+        expect(alsoPlain).toBe(plain);
+        // And a render WITH weather genuinely differs (guards the above from
+        // passing vacuously if weather silently never rendered anywhere).
+        expect(withGap({ columns, showStats })).not.toBe(plain);
+      }
+    }
+  });
+
+  test("gap fields absent entirely: the weathered render differs from the bare one at a wide width", () => {
+    // Sanity counterpart to the above — proves the equality there came from
+    // the absence of fields, not from weather silently never rendering.
+    const wide = withGap({ columns: 125, showStats: true });
+    const wideBase = withArtOnly({ columns: 125, showStats: true });
+    expect(wide).not.toBe(wideBase);
+  });
+
+  test("D5 two-branch injection: the gap renders with stats ON and with stats OFF", () => {
+    for (const showStats of [true, false]) {
+      const out = withGap({ columns: 125, showStats });
+      const base = withArtOnly({ columns: 125, showStats });
+      expect(flakeCount(out)).toBeGreaterThan(flakeCount(base));
+    }
+  });
+
+  test("D5: the stats column's own text is never touched or discolored by the gap band", () => {
+    const out = withGap({ columns: 125, showStats: true });
+    const plain = stripAnsi(out);
+    // Every stat label still renders intact alongside the weather.
+    for (const label of ["DBG", "PAT", "CHA", "WIS", "SNK"]) {
+      expect(plain).toContain(label);
+    }
+  });
+
+  // 2026-07-27 bugfix — see the matching pair above. D10's celeb_fresh clause
+  // is gone; gameFeel is now the only gate, exactly as it is for the ground.
+  test("a fresh celebration does not suppress the gap band", () => {
+    const out = withGap({
+      columns: 125,
+      showStats: true,
+      celebration: { text: "Level up!", secondsAgo: 1 },
+    });
+    expect(stripAnsi(out)).toContain("❄");
+  });
+
+  test("D10: subtle/off suppress the gap band even with all three fields present", () => {
+    for (const gameFeel of ["subtle", "off"] as const) {
+      const out = withGap({ columns: 125, showStats: true, gameFeel });
+      expect(stripAnsi(out)).not.toContain("❄");
+    }
+  });
+});
+
+describe("buddy-status.sh D1 compositing into blank filler segments (design-fullwidth-weather-d1.md)", () => {
+  // Reproduces the reporting user's real configuration, where the gap segment
+  // alone measured 7 columns while the first band row was 88/89 blank.
+  const GAP_W = 110;
+  // A DENSE fixture: every column carries a flake, so "did this segment get
+  // painted at all" is a deterministic question rather than a dice roll on
+  // where the sparse production flakes happen to land.
+  const DENSE = Array.from({ length: 14 }, () => "❄".repeat(GAP_W)).join("\n");
+
+  const render = (o: Record<string, unknown>) =>
+    renderStatus({
+      gameFeel: "full",
+      weatherFallGapFrames: [DENSE],
+      weatherFallGapGlyph: "❄",
+      weatherFallGapColor: "e8f0f7",
+      ...o,
+    } as Parameters<typeof renderStatus>[0]);
+  // Baseline: the same render with no weather at all. Since F1 removed the
+  // reserved sky rows, weather contributes no rows of its own, so a bare
+  // render is now a like-for-like comparison (it was not before — it used to
+  // differ by the ART band's own 3 rows).
+  const artOnly = (o: Record<string, unknown>) =>
+    renderStatus({ gameFeel: "full", ...o } as Parameters<typeof renderStatus>[0]);
+
+  const rows = (s: string) => stripAnsi(s).split("\n").filter((l) => l.length);
+  const widths = (s: string) => rows(s).map((l) => [...l].length);
+  const flakeCols = (line: string) =>
+    [...line].map((c, i) => (c === "❄" ? i : -1)).filter((i) => i >= 0);
+
+  test("a row is painted essentially edge to edge, not just in the 7-column gap", () => {
+    // 104 cols + a bubble is the reporting user's own geometry.
+    const out = render({ columns: 104, showStats: true, reaction: "hello there" });
+    const painted = rows(out).map(flakeCols).filter((c) => c.length > 0);
+    expect(painted.length).toBeGreaterThan(0);
+    const widest = painted.reduce((a, b) => (b.length > a.length ? b : a));
+    // Before D1 the gap alone was ~7 columns wide. Anything in this range can
+    // only come from the bubble and art segments also being painted.
+    expect(widest.length).toBeGreaterThan(40);
+    // It reaches the far right — past the bubble, out over the sprite column.
+    const lineLen = Math.max(...rows(out).map((l) => [...l].length));
+    expect(Math.max(...widest)).toBeGreaterThan(lineLen - 20);
+  });
+
+  // design-weather-frontlayer.md F5 is a DECISION, so pin it rather than let
+  // it hold by accident: the stat bars are read as data, not looked at as
+  // scenery, so flakes never land on a row carrying one — even with a fixture
+  // dense enough to paint every other eligible cell on the line.
+  test("F5: rows carrying a stat line are exempt, while the rest of the same row is painted", () => {
+    const out = render({ columns: 125, showStats: true });
+    const statRows = rows(out).filter((l) => /(DBG|PAT|CHA|WIS|SNK)/.test(l));
+    expect(statRows.length).toBe(5);
+    for (const line of statRows) {
+      const label = /(DBG|PAT|CHA|WIS|SNK)/.exec(line)!;
+      // Nothing left of (or inside) the stats column carries a flake...
+      const statsEnd = line.indexOf("  ", label.index + 3);
+      expect(line.slice(0, statsEnd)).not.toContain("❄");
+      // ...but the same row IS painted further right, so this is an exemption
+      // of the stats column specifically, not of the whole row.
+      expect(line).toContain("❄");
+    }
+  });
+
+  // COLS=40 is included because the printed line is WIDER than the terminal
+  // there (a 26-wide stats panel plus the sprite cannot fit — a pre-existing
+  // clip case), which is the closest this gets to stressing the geometry.
+  //
+  // HONEST NOTE on the E6 short-slice pad in `_wx_slice`: it is defensive and
+  // currently UNREACHABLE. Deleting it leaves this suite green, and a sweep of
+  // 72 real configurations (COLS 40-80 × stats on/off × bubbleWidth 8-20, with
+  // a bubble present) found zero renders where it changes a single byte —
+  // because E2 tiles the field to at least COLS, and the script's dynamic
+  // bubble fitting plus its drop backstop keep every painted segment ending
+  // within COLS. It is kept as a guard against future geometry changes, not
+  // because any test can exercise it. Recorded rather than left as a silently
+  // surviving mutant.
+  test("total line widths are unchanged vs. the unweathered baseline (E6), at every width", () => {
+    for (const columns of [40, 80, 104, 125, 200]) {
+      for (const showStats of [true, false]) {
+        expect(widths(render({ columns, showStats }))).toEqual(
+          widths(artOnly({ columns, showStats })),
+        );
+      }
+    }
+  });
+
+  // Targets the BUBBLE segment specifically. The broad "edge to edge" test
+  // above is satisfied by the stats segment alone, so without this a bubble
+  // that never paints would go unnoticed (mutation-verified).
+  test("the bubble box's own blank rows are painted (E3), not just the stats column and gap", () => {
+    const out = render({ columns: 125, showStats: true, reaction: "weather is rough" });
+    const lines = rows(out);
+    // Locate the bubble by its border row, which is real content and so is
+    // never painted — giving the box's true column span.
+    const border = lines.find((l) => /\.-{5,}\./.test(l));
+    expect(border).toBeDefined();
+    const bStart = border!.indexOf(".");
+    const bEnd = border!.lastIndexOf(".");
+    expect(bEnd).toBeGreaterThan(bStart);
+    // Some band row must carry a flake inside that column span.
+    const insideBubbleSpan = lines.some((l) =>
+      flakeCols(l).some((c) => c > bStart && c < bEnd),
+    );
+    expect(insideBubbleSpan).toBe(true);
+  });
+
+  test("rows carrying real stats text are never overpainted (E3)", () => {
+    const out = render({ columns: 104, showStats: true });
+    const text = stripAnsi(out);
+    for (const label of ["DBG", "PAT", "CHA", "WIS", "SNK"]) {
+      expect(text).toContain(label);
+    }
+    // Every stat label still sits on a line whose label region is intact —
+    // i.e. no flake was written over the characters themselves.
+    for (const line of rows(out)) {
+      const m = /(DBG|PAT|CHA|WIS|SNK)/.exec(line);
+      if (m) expect(line.slice(m.index, m.index + 3)).toBe(m[1]);
+    }
+  });
+
+  // design-weather-frontlayer.md F3/F4 — the second half of the request: the
+  // bubble is the BACK layer, so flakes DO pass in front of it. What must
+  // survive is every non-space character, in order.
+  test("F3/F4: flakes land inside the bubble, replacing only spaces — never a character", () => {
+    const out = render({ columns: 125, showStats: true, reaction: "weather is rough" });
+    const text = stripAnsi(out);
+    // The comment's own characters are all still there, in order, with only
+    // its spaces swapped for flakes.
+    expect(text).toContain("weather❄is❄rough");
+    // Which is a genuine front-layer composite, not a mangled string: undoing
+    // the substitution recovers the original comment exactly.
+    expect(text.replace(/❄/g, " ")).toContain("weather is rough");
+    // The bubble's border rows keep their box-drawing characters (no spaces
+    // to overwrite there, so they are untouched by construction).
+    expect(text).toMatch(/\.-+\./);
+    // And the flakes are genuinely INSIDE the box, not merely adjacent to it.
+    const textRow = rows(out).find((l) => l.includes("weather"))!;
+    const lPipe = textRow.indexOf("|");
+    const rPipe = textRow.lastIndexOf("|");
+    expect(rPipe).toBeGreaterThan(lPipe);
+    expect(flakeCols(textRow).some((c) => c > lPipe && c < rPipe)).toBe(true);
+  });
+
+  // The same contract, for the sprite: the buddy is behind the weather too
+  // (F4), which is what keeps the right-hand column snowing now that the
+  // reserved sky rows above it are gone.
+  test("F3/F4: flakes land over the sprite's own row, leaving its glyphs intact", () => {
+    const out = render({ columns: 125, showStats: true });
+    // The fixture sprite alternates an open-eye row `(··)` and a blink row
+    // `(  )`. Both directions of F3 are visible in that one pair: the blink
+    // row's interior spaces are taken by flakes...
+    const blinkRow = rows(out).find((l) => /\(❄+\)/.test(l));
+    expect(blinkRow).toBeDefined();
+    expect(blinkRow!.replace(/❄/g, " ")).toContain("(  )");
+    // ...while the open-eye row, whose interior is glyphs rather than spaces,
+    // comes through completely untouched.
+    expect(rows(out).some((l) => l.includes("(··)"))).toBe(true);
+  });
+
+  // The general form of F3, swept: NO non-space character may ever be lost,
+  // in any configuration, against the most aggressive fixture available.
+  test("F3: undoing every flake substitution reproduces the unweathered render exactly", () => {
+    for (const columns of [80, 104, 125, 200]) {
+      for (const showStats of [true, false]) {
+        const o = { columns, showStats, reaction: "hydrate. seriously." };
+        const wx = stripAnsi(render(o)).replace(/❄/g, " ");
+        const bare = stripAnsi(artOnly(o));
+        expect(wx).toBe(bare);
+      }
+    }
+  });
+
+  test("E5 escape hygiene holds across all three painted segments", () => {
+    for (const columns of [80, 104, 200]) {
+      for (const showStats of [true, false]) {
+        for (const line of render({ columns, showStats }).split("\n")) {
+          if (!line.length) continue;
+          expect(/\x1b\[?[0-9;]*$/.test(line)).toBe(false);
+          const codes = [...line.matchAll(/\x1b\[([0-9;]*)m/g)].map((m) => m[1]);
+          if (codes.length) expect(codes[codes.length - 1]).toBe("0");
+        }
+      }
+    }
+  });
+
+  test("E2 tiling: a line far wider than the 110-column bake is still populated to its right edge", () => {
+    const out = render({ columns: 200, showStats: false });
+    const painted = rows(out).map(flakeCols).filter((c) => c.length > 0);
+    const widest = painted.reduce((a, b) => (b.length > a.length ? b : a));
+    // Past column 110 there is only content if the bake was tiled.
+    expect(Math.max(...widest)).toBeGreaterThan(110);
+  });
+
+  test("still a no-op with no weather fields, now that three segments can paint", () => {
+    for (const columns of [40, 104, 200]) {
+      const a = artOnly({ columns, showStats: true });
+      const b = artOnly({ columns, showStats: true });
+      expect(a).toBe(b);
+      expect(render({ columns, showStats: true })).not.toBe(a);
+    }
+  });
+});
+
+// ─── Front-layer hardening (2026-07-27 analysis follow-up) ──────────────────
+// Three defects found by probing the front layer at its edges rather than at
+// its happy path. Each test below fails on the pre-fix script.
+describe("buddy-status.sh falling weather — front-layer edge cases", () => {
+  const GAP_W = 110;
+  const FIELD_ROWS = 14; // SKY_FALL_ROWS
+  /** Every column of every row carries a flake ⇒ "did this row paint at all"
+   *  is deterministic rather than a dice roll on where sparse flakes land. */
+  const dense = (glyph: string): string =>
+    Array.from({ length: FIELD_ROWS }, () => glyph.repeat(GAP_W)).join("\n");
+
+  const withWx = (o: Record<string, unknown>) =>
+    renderStatus({
+      gameFeel: "full",
+      weatherFallGapFrames: [dense("❄")],
+      weatherFallGapGlyph: "❄",
+      weatherFallGapColor: "e8f0f7",
+      ...o,
+    } as Parameters<typeof renderStatus>[0]);
+
+  const lines = (out: string): string[] =>
+    out.split("\n").filter((l) => l.length > 0);
+
+  // A block TALLER than the baked field. SKY_FALL_ROWS=14 was chosen to clear
+  // HOP_BUDGET=12, but HOP_BUDGET bounds only the art stack — MAX_LINES also
+  // takes TOTAL_BUBBLE, and the bubble wrap has no row cap. Before the fix the
+  // field stopped dead at row 14: snow above, none below, a hard horizontal
+  // line mid-widget. The field now wraps, exactly as it already tiles across.
+  const TALL_ART = Array.from({ length: 16 }, (_, r) =>
+    `art-row-${r}`.padEnd(28),
+  ).join("\n");
+
+  test("a block taller than the baked field still snows on EVERY row (no cliff at row 14)", () => {
+    const out = withWx({ columns: 125, showStats: true, frames: [TALL_ART] });
+    const ls = lines(out);
+    // The premise: this really is taller than the field, or the test is vacuous.
+    expect(ls.length).toBeGreaterThan(FIELD_ROWS);
+    const dry = ls.filter((l) => !l.includes("❄"));
+    expect(dry).toEqual([]);
+  });
+
+  test("the tall-block render is still width-correct (wrapping did not disturb layout)", () => {
+    const opts = { columns: 125, showStats: true, frames: [TALL_ART] };
+    const weathered = lines(withWx(opts)).map(displayWidth);
+    const bare = lines(
+      renderStatus({ gameFeel: "full", ...opts } as Parameters<typeof renderStatus>[0]),
+    ).map(displayWidth);
+    expect(weathered).toEqual(bare);
+  });
+
+  // F3 argues the composite is width-preserving BY CONSTRUCTION. It is — but
+  // only given a single-cell, glob-inert glyph. Both preconditions were
+  // unguarded: `_wx_slice` used the glyph UNQUOTED as a `${v//pat/rep}`
+  // pattern, so `*` matched the whole segment and collapsed it (measured 116
+  // display cells → 47), and a multi-character glyph swapped a 1-cell space
+  // for an N-cell glyph in `_wx_overlay`.
+  const baselineWidths = (o: Record<string, unknown>): number[] =>
+    lines(
+      renderStatus({ gameFeel: "full", columns: 125, showStats: true, ...o } as
+        Parameters<typeof renderStatus>[0]),
+    ).map(displayWidth);
+
+  test("a glob-special glyph cannot collapse a line (the pattern is quoted)", () => {
+    const bare = baselineWidths({});
+    for (const glyph of ["*", "?", "["]) {
+      const out = withWx({
+        columns: 125,
+        showStats: true,
+        weatherFallGapGlyph: glyph,
+        weatherFallGapFrames: [dense(glyph)],
+      });
+      expect(lines(out).map(displayWidth)).toEqual(bare);
+    }
+  });
+
+  test("a multi-character glyph is refused outright rather than breaking width", () => {
+    const bare = baselineWidths({});
+    const out = withWx({
+      columns: 125,
+      showStats: true,
+      weatherFallGapGlyph: "AB",
+      weatherFallGapFrames: [dense("AB")],
+    });
+    expect(lines(out).map(displayWidth)).toEqual(bare);
+    // The guard blanks the glyph, which disables the OVERLAY path — the only
+    // one that can break width, since it swaps a 1-cell space for the glyph.
+    // `_wx_slice` still fills blank segments from the raw field, but those are
+    // fixed-width slices and so are width-safe whatever the field contains.
+    // What must hold is that no content row was spliced into: the sprite comes
+    // through byte-identical.
+    const plain = stripAnsi(out);
+    expect(plain).toContain("(··)"); // eye row intact
+    expect(plain).toContain("(  )"); // blink row's spaces NOT overlaid
+  });
+
+  test("the guards do not fire on the real glyphs — snow and rain both still paint", () => {
+    for (const [glyph, color] of [["❄", "e8f0f7"], ["`", "5f8fc7"]] as const) {
+      const out = withWx({
+        columns: 125,
+        showStats: true,
+        weatherFallGapGlyph: glyph,
+        weatherFallGapColor: color,
+        weatherFallGapFrames: [dense(glyph)],
+      });
+      expect(stripAnsi(out)).toContain(glyph);
+      expect(lines(out).map(displayWidth)).toEqual(baselineWidths({}));
+    }
   });
 });

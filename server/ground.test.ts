@@ -105,16 +105,38 @@ describe("ground weather schedule (living-world follow-up)", () => {
 
   test("buildWeatherTile: same seed ⇒ same woven tile (deterministic, replayable)", () => {
     const terrain = pickSessionGround(42);
-    const a = buildWeatherTile(terrain, "rain", 42);
-    const b = buildWeatherTile(terrain, "rain", 42);
+    const a = buildWeatherTile(terrain, "rain", 42, "dark");
+    const b = buildWeatherTile(terrain, "rain", 42, "dark");
     expect(a).toEqual(b);
   });
 
   test("buildWeatherTile: woven tile is longer than the plain terrain unit and contains the weather glyph", () => {
     const terrain = pickSessionGround(42);
-    const woven = buildWeatherTile(terrain, "snow", 42);
+    const woven = buildWeatherTile(terrain, "snow", 42, "dark");
     expect(woven.tile.length).toBeGreaterThan(terrain.tile.length);
     expect(woven.tile).toContain(woven.glyph);
+  });
+
+  // 2026-07-24 follow-up: the dark-theme snow color (a pale white-blue) is
+  // nearly invisible on a light terminal background — user-reported. Pin
+  // that the two themes actually produce visibly distinct colors, not the
+  // same hex regardless of the theme argument.
+  test("buildWeatherTile: light theme uses a distinct, darker color than dark theme (readable on a light background)", () => {
+    const terrain = pickSessionGround(42);
+    const dark = buildWeatherTile(terrain, "snow", 42, "dark");
+    const light = buildWeatherTile(terrain, "snow", 42, "light");
+    expect(light.color).not.toBe(dark.color);
+    // "readable on light bg" ⇒ each channel is meaningfully darker than the
+    // pale dark-theme value, not just a different-but-still-near-white hex.
+    const [dr, dg, db] = [0, 2, 4].map((i) =>
+      parseInt(dark.color.slice(i, i + 2), 16),
+    );
+    const [lr, lg, lb] = [0, 2, 4].map((i) =>
+      parseInt(light.color.slice(i, i + 2), 16),
+    );
+    expect(lr).toBeLessThan(dr);
+    expect(lg).toBeLessThan(dg);
+    expect(lb).toBeLessThan(db);
   });
 
   test("weather glyphs never collide with any TERRAINS glyph (the field/',' bug this GATE exists to prevent)", () => {

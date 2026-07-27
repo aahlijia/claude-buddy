@@ -1145,6 +1145,515 @@ found nothing to report.
 
 ---
 
+### Living ground + ground weather (2026-07-24)
+
+A follow-up shipped after the living-world arc closed above — not one of its
+five original phases, and P3 (idle economy) remains the arc's only never-built
+piece. This is this doc's **first coverage of the living-ground row itself**:
+it shipped mid-session on 2026-07-24 with no design doc of its own (the ground-
+weather design doc's [Recap section](living-world/design-ground-weather.md)
+is the closest thing to a spec for it), and both it and this weather layer
+remain **uncommitted** on `feature/interactive-fight-scene` as of this writing.
+
+**What.** A FIXED, full-width terrain strip (`server/ground.ts`) painted
+beneath the whole buddy widget — grass/field/water/sand/stone/tundra,
+session-seeded off `startedAt` so it's constant within a session and re-rolls
+on the next one. Layered on top: occasional, randomized, genuinely
+mid-session snow or rain — sparse, per-glyph-tinted specks woven into that
+same row, starting and stopping while a session is still running rather than
+being a fixed per-terrain decoration. Full design + resolved D1–D5 decisions:
+[design-ground-weather.md](living-world/design-ground-weather.md); full
+task-by-task implementation record:
+[plan-ground-weather.md](living-world/plan-ground-weather.md).
+
+**Why (D1–D5, resolved).** D1: the schedule is *derived*, not persisted — no
+new side-channel file, unlike `combat.ts`'s `writeEncounter`/TTL precedent
+(Branch B2 over the rejected Branch B1), because the whole schedule is
+reconstructible from the session's already-loaded `startedAt`. D2: a new
+`GroundWeather` type (`"snow" | "rain"`), deliberately distinct from `art.ts`'s
+unrelated idle-FX-row `Weather` (`"drizzle" | "sparkle"`) — same English word,
+different rows, different signals, never imported into each other. D3:
+piggybacks the existing `groundEnabled` toggle — no new config key. D4: the
+weather glyph rides a longer *woven* tile period (not the shell's plain
+tile-repeat loop, which is untouched) so specks read as sparse rather than
+turning the whole floor one color. D5: the shell recolors only the glyph,
+resuming the terrain's own tint afterward (not a plain reset), via a plain
+`${var//lit/repl}` substitution — verified against the real `+`/`:` glyphs in
+this repo's actual shell before relying on it (Task 3's DECISION GATE); no
+`sed`/loop fallback was needed.
+
+**Mechanism, task by task:**
+
+1. **Pure core** (`server/ground.ts`): `pickSessionWeather(seed)` — a
+   `ground-weather:` hash-prefixed independent RNG stream from
+   `pickSessionGround`'s `ground:` stream (the `props.ts` "distinct seed
+   prefix per draw" idiom) — decides once per session whether/when/what-kind
+   (~1-in-10 sessions, mirroring `visitor.ts`'s `VISITOR_ODDS` order of
+   magnitude; start 30s–10min in, duration 2–8min so both edges of the
+   window are actually observed mid-session). `isWeatherActive(schedule,
+   elapsedMs)` is a pure boundary comparison, zero reroll. `buildWeatherTile`
+   weaves the terrain's own repeating unit into a longer period (its own
+   `ground-weather-weave:` stream) and scatters `+` (snow) / `:` (rain) into
+   it — both glyphs verified disjoint from `ALL_GROUND_GLYPHS` (including the
+   `field` terrain's own `,`, the exact collision the design doc's `,`
+   placeholder would have hit), `MIRROR_SWAP`'s keys, and `art.ts`'s
+   unrelated `WEATHER_GLYPH` set.
+2. **Wiring** (`server/state.ts`, `writeStatusState`): extends the existing
+   ground write site — same `startedAt` load, same try/catch, same
+   `groundEnabled` gate. One bug caught during implementation: `startedAt` is
+   epoch **seconds** (`session.ts`) while `Date.now()` is epoch **ms** — the
+   elapsed-time check is `Date.now() - startedAt * 1000`, not a bare
+   subtraction. Two new `StatusState` fields, `groundWeatherGlyph`/
+   `groundWeatherColor`, written only while a window is open;
+   `groundColor` is left as the terrain's own colour throughout.
+3. **Shell recolor** (`statusline/buddy-status.sh`): the only shell change.
+   `$gwglyph`/`$gwcolor` extracted with the same full/no-combat gate as
+   `$ground`/`$gcolor`, appended to the existing joined-array/`IFS=$'\x1f'
+   read` pipeline, then a bounded substitution recolors the glyph everywhere
+   it lands in the already-tiled/clipped row and resumes the terrain's dim
+   tint immediately after each occurrence.
+4. **e2e + docs** (this section): a manual e2e through the real script (hand-
+   built `status.json` fixtures under a temp `CLAUDE_CONFIG_DIR`, per the
+   standing `CLAUDE_CONFIG_DIR`-prefix safety requirement) confirmed: no
+   weather fields ⇒ byte-identical plain-terrain output; an active window ⇒
+   the glyph renders in its own tint with the terrain tint resumed between
+   specks; the window closing (fields absent on a later write) leaves no
+   stale glyph/colour; an active combat scene fully suppresses the row; and
+   `groundEnabled: false` (i.e. the server never writes ground fields in the
+   first place) renders nothing. One test-methodology mistake caught and
+   fixed along the way: a first draft of the `groundEnabled:false` e2e check
+   hand-wrote `status.json` with ground/weather fields present *and*
+   `groundEnabled:false` in config — an inconsistent combination the real
+   server would never produce (the shell doesn't re-check `groundEnabled` at
+   all; only `writeStatusState` does), so it wasn't actually testing D3.
+   Corrected to omit the fields entirely, matching real server behavior.
+
+**Zero-cost invariants held:** no new config key (D3), no new persisted state
+or `TRANSIENT_PREFIXES` entry (D1 — the schedule is fully derived, nothing to
+clean up on uninstall), zero per-event cost (`isWeatherActive` is one
+comparison per write, no reroll).
+
+Tests: **1044 pass** (1027 baseline at this doc's last update + 17 across the
+four tasks), `tsc --noEmit` + `bash -n` clean. All four tasks (and the base
+living-ground row before them) remain uncommitted on
+`feature/interactive-fight-scene`, layered on top of the still-uncommitted
+`worldDressing` opt-out toggle in the same files — deliberately left that way
+pending a decision on commit granularity (the weather work is textually
+interleaved with that prior uncommitted work in `state.ts`, so a clean
+weather-only commit isn't possible without committing the base row first).
+
+---
+
+### Falling weather sky band (2026-07-24)
+
+A direct follow-up to the ground-weather layer above, shipped the same day on
+the same still-uncommitted branch. Where ground-weather is *static* — the same
+woven speck pattern re-rendered identically every tick — this adds genuine
+falling motion: flakes/drops that visibly descend across successive renders,
+during the exact same weather window the ground row already schedules. Full
+design + resolved D1–D11 decisions:
+[plan-falling-weather.md](living-world/plan-falling-weather.md) (this plan
+combines analysis and task-by-task tracking in one doc, unlike the ground-
+weather design/plan split).
+
+**What.** A dedicated "sky band" — `SKY_BAND_ROWS=3` rows, `FLAKE_COUNT=4`
+flakes, `FALL_PERIOD=12` distinct baked ticks — prepended directly above the
+sprite's own art, independent of whichever species/emotion/gear is currently
+showing. Snow uses `❄`, rain uses `` ` ``, each with its own embedded color.
+The band never touches the sprite's own glyph cells.
+
+**Why (D1–D11, resolved).** D1: **layer, not replace** — the sky band is
+precipitation in transit, the ground specks are precipitation already landed;
+both share one cause and one schedule, so the two together read as one
+coherent picture rather than a redundant one. D2: reuse the *same*
+`pickSessionWeather`/`isWeatherActive` schedule/elapsedMs the ground-weather
+block already computed — no second roll, so the band and the ground specks can
+never disagree about whether weather is happening (independently confirmed by
+inspection during this feature's audit: `state.ts` calls `pickSessionWeather`
+exactly once). D3/D4/D5: a dedicated fixed-row band, independent of the
+sprite's own frame variant, baked as a short closed set of pre-rendered
+strings (`buildFallingWeatherBand`) — cheaper than a raw per-tick coordinate
+table bash would have to draw, and required by the "server bakes, bash
+cycles" invariant either way. D6: **embedded SGR, no shell recoloring** — the
+band bakes its own literal ANSI directly into the row string, reusing the
+wyvern-flame precedent (frame art is exempt from the jq control-character
+sanitizer). This is a genuine simplification over ground-weather's D5, which
+needed a bounded `${var//lit/repl}` shell substitution to recolor a plain-text
+glyph in place; the sky band needs no equivalent mechanism at all — confirmed
+by inspection: no per-glyph shell substitution exists anywhere in the
+falling-weather shell code, unlike the ground row's `_grow="${_grow//...}"`
+line. D7: 4 staggered flakes, phase-offset so they don't fall in lockstep,
+respawning after a short gap. D8: a new independent shell channel
+(`weatherFallFrames`/`weatherFallSequence`), decoded and prepended above
+`ART_LINES`, not fused combinatorially into every sprite-frame variant. D9:
+**the sky band degrades before hop does** under row-budget pressure — the
+band's own budget check runs strictly *after* hop's collapse decision has
+already finalized `HOP_RESERVE`, reusing `HOP_BUDGET=12` directly (not a
+separate, larger ceiling); when both can't fit, the band drops and hop's
+reservation is left completely untouched. Verified live through the real
+script during this feature's e2e pass: a 3-row band alongside a 2-row hop
+reservation on a 6-row sprite+name stack renders 11 total lines with the
+flake present; a 6-row band in the same slot renders 8 lines (6 + hop's 2,
+unchanged) with the flake fully absent — the band alone degrades, never hop.
+D10: **suppression mirrors the wander-style three-part gate** (`$gf=="full"
+and $celeb_fresh!=1 and $combat_on!=1`), not the ground row's looser
+combat-only gate — a fresh celebration suppresses the band even though it
+does *not* suppress the ground row, because the sky band shares the sprite's
+own visual column (which a flourish already swaps to a taller flipbook) while
+the ground row is a fully separate full-width strip below everything.
+Confirmed live: an active combat scene and a fresh celebration each
+independently suppress the band with zero flake glyphs rendered, even with
+`weatherFallFrames` present in `status.json`. D11: piggybacks the same
+`groundEnabled` toggle — no new config key.
+
+**Mechanism, task by task:**
+
+1. **Pure core** (`server/weatherfall.ts`): `buildFallingWeatherBand(kind,
+   seed, width, rows, period)` bakes `period` distinct band frames off an
+   independent `sky-fall:` hash-prefixed RNG stream (never rerolls whether/
+   when weather happens — only how the band looks). Width is fixed at
+   `SKY_FALL_WIDTH=14`, reusing the shell's existing `ART_W` layout-budget
+   constant rather than any species-derived value — a real-frame-width probe
+   (Task 0) found sprite content is NOT a single width across species (6–12
+   display cells, 3/19 species ragged even within one frame, including a
+   deliberately tapering wyvern silhouette), so no per-species width exists
+   to borrow.
+2. **Wiring** (`server/state.ts`, `writeStatusState`): extends the ground/
+   weather block in place, inside the same `if (isWeatherActive(schedule,
+   elapsedMs))` branch the ground-weather tile already lives in — the two
+   new fields (`weatherFallFrames`, `weatherFallSequence`) are written only
+   while that one shared window is open, same "absent ⇒ off" contract
+   `groundWeatherGlyph` already uses.
+3. **Shell prepend** (`statusline/buddy-status.sh`) — the one real shell
+   change in this plan. The band is decoded the same way `FRAME_BODY` is
+   (base64 → `while IFS= read -r line` → array), then prepended onto
+   `ALL_LINES`/`ALL_COLORS` — deliberately *after* the rarity/shiny coloring
+   loop, not into raw `ART_LINES` before it, with an empty color wrapper
+   (the band already carries its own complete SGR). Prepending before the
+   coloring loop was rejected once actually traced through: it would waste
+   escapes wrapping already-colored band rows, and would offset a SHINY
+   buddy's rainbow-cycle phase on the sprite rows below purely because
+   unrelated band rows consumed cycle steps first. `HOP_BUDGET` was hoisted
+   to a top-level constant so the band's own D9 degrade check could share
+   the exact same ceiling hop's own collapse logic already uses.
+4. **e2e + docs** (this section): hand-built `status.json` fixtures under a
+   temp `CLAUDE_CONFIG_DIR` (per the standing prefix-safety requirement),
+   rendered through the real script. Confirmed live: the flake genuinely
+   changes row across successive `NOW` ticks (not a static repeat); the
+   sprite's own rows are byte-for-byte identical whether or not the band is
+   present; no falling-weather fields render a plain 6-line idle block with
+   zero flake glyphs; combat and a fresh celebration each independently
+   suppress the band; and the D9 degrade renders exactly as predicted
+   (11 lines when the band fits, 8 when it doesn't — hop's reservation
+   intact either way).
+
+**The honest cadence note.** At this codebase's measured ~1s refresh floor
+(`design.md`'s P0 finding — the platform minimum, not a tunable, and marked
+FAIL-permanently), this motion reads as gentle stop-motion drift, not a
+smooth fall. That's a deliberate, already-accepted tradeoff, the same one
+every other baked motion in this codebase already lives with (wander steps
+one cell per `stepEvery` ticks; the kick slides one column per gait
+step-tick) — not a shortcoming unique to this feature.
+
+**Zero-cost invariants held:** no new config key (D11), no new persisted
+state (the band is fully derived from the same `startedAt`-seeded schedule
+ground-weather already reconstructs), one shared schedule so the two effects
+can never disagree about whether weather is happening (D2).
+
+Tests: **1064 pass** (1044 baseline at this plan's start + 20 across Tasks
+1–3: 8 in `weatherfall.test.ts`, 5 in `state_wander.test.ts`, 7 in
+`statusline_render.test.ts`), `tsc --noEmit` + `bash -n` clean — all
+independently re-verified during this feature's audit, not just taken on the
+prior session's word. Remains uncommitted on `feature/interactive-fight-scene`
+alongside the ground-weather layer and the `worldDressing` toggle it builds
+on top of, pending the user's go-ahead to commit.
+
+---
+
+### Falling weather during combat (2026-07-24)
+
+A direct follow-up to the two weather layers above, closing the gap the user
+actually reported: watching a live bug fight while falling snow/rain was
+invisible the entire time. Full design + resolved D1–D8 decisions:
+[design-combat-weather.md](living-world/design-combat-weather.md).
+
+**What.** Both weather layers now render during an active combat scene — a
+resolved fight, the persistent pre-fight standoff, or a wild-visitor cameo,
+all three sharing one `combatFrames`/`artWidth` triple. The sky band bakes at
+the fight's own `artWidth` (22–28 measured across all 441 species pairs, per
+the design doc's probe) instead of the fixed idle `SKY_FALL_WIDTH=14`, so it
+lines up flush with the wider tableau instead of covering only the player.
+The ground row and its woven-in specks render beneath the fight exactly as
+they do at idle.
+
+**Why (D1–D3, the load-bearing ones).** D1/D2: this was a pure gating
+problem, not a structural one — every weather field was already being
+computed and written into `status.json` during combat (D6 confirmed
+`pickSessionWeather`/`isWeatherActive` never depend on `combat_on` at all);
+only the shell's `jq` pass was throwing four of those fields away via a
+`combat_on != 1` clause. Dropping that clause from the ground row + its
+weather glyph (2 fields) and the sky band (2 fields) was the entire fix on
+the shell side. D3: a fixed-14 band would have visually truncated over just
+the player, since every measured combat tableau is 22–28 cells wide — the
+server now bakes the band at `combatFrames !== undefined ? artWidth :
+SKY_FALL_WIDTH`, a one-line ternary, reusing `combatFrames`/`artWidth` that
+`writeStatusState` already computes earlier in the same function (zero
+reordering).
+
+**Mechanism.** One ternary in `server/state.ts`'s existing weather-bake call
+site (D3); four `combat_on != 1` clauses dropped from four `jq` gates in
+`statusline/buddy-status.sh` (D1/D2) — the ground tile, its weather glyph,
+and the sky band's frame + sequence lookups. The sky-band prepend mechanism
+itself (`buddy-status.sh`'s `WF_LINES` array + `HOP_BUDGET` degrade check)
+and `server/weatherfall.ts`'s `buildFallingWeatherBand` needed **zero**
+changes — both were already generic over whatever width/frame-source jq
+handed them; only the gate moved. Tasks 1–2 shipped with their own unit
+coverage (5 tests in `state_wander.test.ts`, 7 in
+`statusline_render.test.ts`, folded into the 1068 baseline below); this
+section covers Task 3 — manual e2e + docs only, no new automated tests.
+
+**e2e, live through the real script** (temp `CLAUDE_CONFIG_DIR`, a genuine
+`bakePendingScene`-baked two-sprite standoff — not a synthetic one-line
+fixture — plus `BUDDY_FORCE_WEATHER=snow` to force the window open on
+demand): (a) confirmed at the byte level, not just visually — a cactus-vs-
+dragon standoff baked `artWidth: 28`, and every decoded `weatherFallFrames`
+line measured exactly 28 characters, matching `combatFrames`' own line
+width; four successive ticks (`BUDDY_FAKE_NOW` 1000→1003) showed the flake
+genuinely change row each tick, not a static repeat. (b) the ground row's
+`~`/`+` weather specks rendered on their own full-width line beneath the
+fight in the same run. (c) patching a fresh `celebration` field onto that
+same real `status.json` suppressed the sky band (zero flake glyphs) while
+leaving the combat tableau fully intact (combat still wins frame-source
+priority over a flourish) **and leaving the ground row's specks rendering
+unaffected** — confirming the design doc's own D10 finding (from
+`plan-falling-weather.md`) that a fresh celebration suppresses only the sky
+band, never the ground row, since the ground row's gate never carried a
+`celeb_fresh` clause to begin with. (d) a second real combat+forced-weather
+fixture with `groundEnabled: false` in config produced a `status.json` with
+`ground`/`groundColor`/`groundWeatherGlyph`/`groundWeatherColor`/
+`weatherFallFrames`/`weatherFallSequence` **all absent** (the server-side
+gate, not the shell, is what suppresses them) — rendered output showed
+neither the band nor the ground row, with the fight tableau untouched. (e) a
+real duck-vs-wyvern standoff (the tallest species pair found by sweeping all
+400 pairs: 6 raw tableau rows) plus a caption row, name, an equipped title,
+and a prestige/streak badge pushed `ART_COUNT` to 10 — one over the
+`ART_COUNT + HOP_RESERVE + 3 <= HOP_BUDGET(12)` ceiling (combat always zeros
+`HOP_RESERVE`, so the check collapses to `ART_COUNT <= 9`, exactly as D5
+predicted) — and the band silently dropped to zero rows while the six-row
+tableau, caption, name, title, and badge all rendered intact. An A/B control
+(same 6-row tableau, title/badge removed, `ART_COUNT=8`) confirmed the band
+renders normally at that lower count, isolating the degrade to the row
+budget rather than to the species pair.
+
+**Honest tradeoff / judgment call.** The design doc's own Task 3 checklist
+phrases confirmation (c) as "a fresh flourish/celebration still suppresses
+*both*" — read literally against the actual shipped Task 1/2 gates (and
+against `plan-falling-weather.md`'s own D10, which explicitly documents that
+a fresh celebration does **not** suppress the ground row), that wording is
+imprecise. The live render above confirms the real, intentional behavior:
+only the sky band shares the sprite's own visual column that a flourish
+swaps out, so only the sky band is celebration-gated; the ground row is a
+fully separate full-width strip with no such gate, by design (D2's own
+"zero layout risk" reasoning). Reported here rather than silently
+"fixed" to match the checklist wording, since Tasks 1–2 (and their tests)
+are out of scope for this task and already correct.
+
+**Zero-cost invariants held:** no new config key, no new persisted state, no
+shell mechanism changes (D1/D2 are pure gate relaxations; D3 is a one-line
+server-side ternary) — matching D4's explicit no-density-scaling and D7's
+accepted caption/band adjacency, both left as documented tradeoffs, not
+"fixed" here.
+
+Tests: **1068 pass, 0 fail** (up from the falling-weather section's own last
+recorded 1064 — the delta is Tasks 1–2 of `design-combat-weather.md`'s own
+unit coverage in `state_wander.test.ts` and `statusline_render.test.ts`,
+already shipped before this Task 3 pass began; Task 3 itself adds zero new
+automated tests, only this manual e2e sweep), `tsc --noEmit` + `bash -n`
+clean — all three re-run and independently verified during this pass, not
+taken on a prior session's word. Remains uncommitted on
+`feature/interactive-fight-scene`, layered on the still-uncommitted
+ground-weather/falling-weather/`worldDressing` work above, pending the
+user's go-ahead to commit.
+
+---
+
+### Full-width falling weather (2026-07-26)
+
+A direct follow-up to the theme-color fix above: once the user could
+actually SEE the falling snow, they noticed it only ever appears in a
+narrow ~14-28 column strip directly above the buddy sprite/combat cluster —
+never over the large blank gap between the stats panel and that cluster.
+Full design + resolved D1-D11 decisions:
+[plan-fullwidth-weather.md](living-world/plan-fullwidth-weather.md).
+
+**What.** A second, independent flipbook — the "gap band" — now fills the
+guaranteed-blank horizontal space between the stats column and the roaming
+buddy/combat cluster (`statusline/buddy-status.sh`'s `MID_SPACER`/`SPACER`
+tail), on the exact same rows the existing narrow sky band already
+occupies. The two bands run side by side on the same lines: the gap band on
+the left (stats-adjacent), the original narrow band on the right (still
+directly above the sprite, unchanged). Live-rendered check across
+`COLS ∈ {80, 125, 160}` confirmed flakes now appear from a few columns past
+the stats panel all the way out toward the sprite — not just the last
+14-28 columns — with the stats text, bubble, and sprite/combat art
+completely untouched.
+
+**Why (D1-D3, the load-bearing ones).** D1: the gap segment between the
+stats column and the roaming cluster is PROVABLY blank on every row,
+always — confirmed by reading the actual per-line string-concatenation
+order (`buddy-status.sh:1162-1226`), not assumed. That's what makes this
+safe to fill without any 2D collision logic: there is nothing there to
+collide with. D2: unlike the living-ground row (a static repeating tile
+that can be generated at any width for free), the sky band is an
+*absolute-position animated flipbook* — flake positions can't be
+"repeated" to fill an unknown width. The resolved fix generalizes the
+ground row's own live-clip trick (bake wide, `${str:0:N}` clip in bash at
+render time) to a full multi-row flipbook instead of one repeating string:
+bake a second band at a generous fixed `MAX_GAP_WIDTH=110` (covers the
+realistic 80-160 column range and the script's own 125-col fallback
+default, empirically swept), left-anchor-clip it to the live `ROAM` value
+every render. D3: the ORIGINAL sky band embeds ANSI color codes directly
+into its baked strings — safe because it's never sliced, only printed
+whole. That assumption would break for a band that DOES need slicing:
+bash's `${str:0:N}` counts raw characters, not display cells, so an
+embedded ~20-character escape sequence would eat most of a column budget
+and risks a mid-escape cut that bleeds color into whatever prints next.
+The gap band sidesteps this by baking PLAIN, ANSI-free content and
+recoloring AFTER clipping — reusing the exact clip-then-recolor order the
+living-ground row already proved safe in this codebase.
+
+**Mechanism.** `server/weatherfall.ts` gained `buildFallingWeatherGapBand`
+(plain-output twin of `buildFallingWeatherBand`, distinct `sky-fall-gap:`
+seed stream so the two layers don't visually lock-step) plus three named
+constants: `FLAKE_DENSITY` (the original band's own flake-per-column ratio,
+reused rather than re-tuned), `MAX_GAP_WIDTH=110`, `GAP_FLAKE_COUNT=31`.
+`server/state.ts` bakes it alongside the existing band in the same
+weather-active block (same schedule, same theme, no second schedule read)
+and always at the fixed `MAX_GAP_WIDTH` regardless of idle/combat — the
+combat tableau's own wider `artWidth` only affects the narrow band, not
+this one, since the two are now genuinely independent flipbooks.
+`statusline/buddy-status.sh` decodes the new frames, clips them to `ROAM`
+(the same width the free-roaming cluster's own home-position math already
+computes), recolors the flake glyph post-clip, and splices the result into
+whichever segment (`MID_SPACER` with a stats panel, `SPACER`'s tail
+without) the per-line loop already uses for that guaranteed-blank space —
+zero new rows, zero change to `HOP_BUDGET`'s existing degrade math (the gap
+band shares the same activity/degrade signal as the original band, so if
+one disappears under row-budget pressure, so does the other).
+
+**Verification.** Implemented via a single dispatched Fable 5 agent working
+through all 4 tasks of the plan doc in sequence (TDD throughout, per the
+doc's own house style) — the agent hit its own session's usage limit partway
+through Task 4 (docs) after Tasks 0-3 (the width-confirmation probe, the
+`weatherfall.ts` core, the `state.ts` wiring, and the `buddy-status.sh` shell
+change) were already complete and tested. I independently re-verified
+everything landed correctly before finishing Task 4 myself: re-ran the full
+suite (1087 pass, 0 fail — 1070 baseline + 17 new), `tsc --noEmit` and
+`bash -n` clean, confirmed no commits were made. Then built a real sandboxed
+render (`CLAUDE_CONFIG_DIR` pointed at a fresh `mktemp -d`, never touching
+the real profile) across `COLS ∈ {80, 125, 160}` and measured actual flake
+column positions in the decoded output — confirmed genuine spread (e.g. at
+`COLS=160`, flakes landed at columns 6 through 140 of a 152-wide printed
+line, versus the old band's confinement to the final ~14-28 columns) with
+the stats/name/ground rows byte-for-byte unaffected.
+
+**Honest tradeoffs (accepted, not fixed).** D4: flake density is NOT
+re-tuned for the much wider canvas — the same sparse ratio the narrow band
+already reads as "ambient, not simulation" (per `design-combat-weather.md`
+D4) just spreads over more columns, so it can look even sparser on very
+wide terminals; not addressed here, consistent with this whole arc's
+repeated posture on density. D11: on an unusually wide terminal (`ROAM`
+exceeding the baked 110-column budget) the far side of the gap — closest to
+the sprite, itself already covered by the original band — goes unpopulated
+rather than mathematically extending `MAX_GAP_WIDTH`; judged rare enough
+to accept. Compositing weather into the stats column's or bubble's own
+blank filler rows (rather than only the guaranteed-blank gap between them)
+was evaluated and explicitly deferred — real and tractable, but meaningfully
+more shell logic for content whose blank/filled state varies per row and
+per config, and the user's actual complaint (a narrow column, not missing
+coverage beside specific rows) is already resolved without it.
+
+**Follow-up hardening pass (2026-07-27).** Re-walked the plan doc's own
+task checklists end-to-end rather than trusting the "implemented" header.
+The shipped shell/server code proved correct throughout — but two of the
+plan's checkboxes had not actually been satisfied, and the tests written for
+it had real holes:
+
+- **Task 0's empirical sweep had never been run against the live script.**
+  Done now (72 renders through an instrumented copy): §4.1's hand-worked
+  table reproduces *exactly*, but its prose estimate of where `ROAM` outgrows
+  the baked 110 columns ("~185") is wrong — the real crossover is
+  **`COLS=162`** with stats on and **`COLS=133`** with stats off (the table
+  never considered the stats-off case at all). The constant still stands;
+  the safety margin is just thinner than the doc implied.
+- **Task 3's render tests did not exist** — only the fixture override fields
+  had been added, with nothing consuming them. Added an 11-test block, then
+  **mutation-tested it**: deleting D11's right-pad and deleting the post-clip
+  recolor *both initially survived*. The first because no test exceeded
+  `ROAM=110`; the second because the ART-band fixture embedded the same snow
+  SGR the gap band gets, making the assertion vacuous. Both fixed and
+  re-confirmed to fail under mutation.
+- **`state.ts`'s theme threading was unpinned** — `SKY_FALL_COLOR[theme][kind]`
+  could have been hardcoded to the dark palette with every test still green.
+  That is precisely the line behind this arc's "snow is invisible on my white
+  background" bug, so it now has its own light/auto pins.
+
+Tests: **1100 pass, 0 fail** (1087 → +2 theme pins, +11 gap-band render
+tests), `tsc --noEmit` + `bash -n` clean — re-verified independently, not
+taken on the dispatched agent's word alone. Remains uncommitted on
+`feature/interactive-fight-scene`, layered on the entire prior uncommitted
+stack.
+
+### Weather becomes a front layer, and gives back its three rows (2026-07-27)
+
+Two requests that turned out to be one change — see
+[design-weather-frontlayer.md](living-world/design-weather-frontlayer.md):
+_"remove ~3 lines from the statusline"_ and _"the chat bubble is the back
+layer, the snowflake is the front layer as it falls."_
+
+The three extra lines **were** the falling-weather feature. It reserved
+`SKY_BAND_ROWS = 3` blank-but-for-flakes rows above the sprite, for exactly one
+reason: to give flakes somewhere to fall that wasn't already occupied. The
+second request removes that reason, so both were satisfied by deleting the
+reserved sky and compositing the weather over the block that was already there.
+
+**What changed.** The SGR-carrying ART band is **gone** — `weatherfall.ts`'s
+`buildFallingWeatherBand`, `SKY_FALL_WIDTH`, `SKY_BAND_ROWS`, `FLAKE_COUNT`,
+`state.ts`'s `weatherFallFrames` payload field, the shell's `WF_LINES`, its
+prepend, and the `HOP_BUDGET` degrade branch that existed only because the band
+competed for rows. One layer survives: the plain, line-wide field, now baked at
+`SKY_FALL_ROWS = 14` and composited by a new `_wx_overlay` shell function in
+which **a flake may replace a space and nothing else** — which makes the
+composite width-preserving by construction rather than by assertion.
+
+Two prior design decisions dissolved rather than being carried forward:
+`design-combat-weather.md`'s scene-width-aware bake (a full-width field cannot
+be outgrown by any scene) and `plan-falling-weather.md` D9's row budget (a
+front layer consumes no rows).
+
+**Measured at the reporting user's real geometry:** block 11 rows → **8**;
+weather on 3 rows → **all 8**; flakes now pass in front of the bubble and over
+the sprite; line widths identical to the unweathered render at `COLS`
+40/60/80/104/125/160/200; tick time 49 ms → 50 ms. `status.json` grows 10 → 23
+KB, which measured as free (10-render averages of 54/53/52 ms at 3/12/14 rows —
+tick cost here is process startup, not JSON size), so a sparse re-encoding was
+considered and rejected on that evidence.
+
+**Deliberately kept plain:** the stats column's own content rows. The bars are
+read as data rather than looked at as scenery, so they are exempt — pinned by a
+test, not left to hold by accident.
+
+The mutation audit caught one real bug the suite could not see: the field's row
+index had to become the block row, and the old `i - ART_TOP` mapping survived
+every existing test because it only misbehaves once the hop headroom makes
+`ART_TOP` non-zero. Added a test that combines hop with a known-row field; now
+caught.
+
+Tests: **1107 pass, 0 fail**, `tsc --noEmit` + `bash -n` clean. Still
+uncommitted on `feature/interactive-fight-scene`.
+
+---
+
 ## Going live
 
 The installed status-line script lags the repo until reinstalled. To see the
@@ -1242,5 +1751,11 @@ bun run install-buddy   # copies the repo script into place
 | [living-world/plan-p0-p1.md](living-world/plan-p0-p1.md) | phased P0/P1 implementation plan + task-by-task tracker |
 | [living-world/plan-p2.md](living-world/plan-p2.md) | phased P2 (boss bugs + wild visitors) implementation plan + task-by-task tracker |
 | [living-world/plan-p4.md](living-world/plan-p4.md) | phased P4 (props, prop-kick, inspect beat, weather FX) implementation plan + task-by-task tracker |
+| [living-world/design-ground-weather.md](living-world/design-ground-weather.md) | living-ground follow-up: mid-session snow/rain design + resolved D1–D5 (**implemented** 2026-07-24) |
+| [living-world/plan-ground-weather.md](living-world/plan-ground-weather.md) | ground-weather implementation plan + task-by-task tracker |
+| [living-world/plan-falling-weather.md](living-world/plan-falling-weather.md) | falling-weather sky band: design + resolved D1–D11 + task-by-task tracker in one doc (**implemented** 2026-07-24) |
+| [living-world/design-combat-weather.md](living-world/design-combat-weather.md) | falling weather + ground weather during active combat scenes: resolved D1–D8 + task-by-task plan (**implemented** 2026-07-24) |
+| [living-world/plan-fullwidth-weather.md](living-world/plan-fullwidth-weather.md) | falling weather spans the full stats-to-sprite gap, not just a narrow strip: resolved D1–D11 + task-by-task plan in one doc (**implemented** 2026-07-26) |
+| [living-world/design-weather-frontlayer.md](living-world/design-weather-frontlayer.md) | weather stops reserving sky rows and becomes a front layer over the whole block: resolved F1–F10 + tasks + mutation audit (**implemented** 2026-07-27) |
 | [menu/](menu/) | interactive menu + nav channel |
 | [anaylsis.md](anaylsis.md) | earlier analysis notes |

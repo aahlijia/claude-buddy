@@ -164,6 +164,46 @@ _STATUS=$(jq -r --argjson now "$NOW" --arg gf "$GAME_FEEL" '
              and ($now - ($ra / 1000 | floor)) >= 0
              and ($now - ($ra / 1000 | floor)) <= 10
          then ((.statsRaised.names // []) | join(",")) else "" end) as $raised_names
+    # Living ground (living-world follow-up): the session-seeded terrain tile +
+    # colour the server baked, gated to full only. Combat no longer suppresses
+    # this (design-combat-weather.md D2): the row paints full-width, after the
+    # whole art/bubble/stats loop, so it cannot collide with a (wider, taller)
+    # combat tableau the way the sky band can. Empty otherwise ⇒ the shell
+    # skips the row.
+    | (if $gf == "full" then (.ground // "") else "" end) as $ground
+    | (if $gf == "full" then (.groundColor // "") else "" end) as $gcolor
+    # Ground weather (living-world follow-up): the woven-in glyph + its own hex
+    # colour, same gate as $ground/$gcolor above (the server only ever writes
+    # these alongside a non-empty ground tile, but the shell re-gates anyway).
+    | (if $gf == "full" then (.groundWeatherGlyph // "") else "" end) as $gwglyph
+    | (if $gf == "full" then (.groundWeatherColor // "") else "" end) as $gwcolor
+    # Falling weather field (plan-falling-weather.md D10, made a front layer
+    # by design-weather-frontlayer.md F1): gated on $gf=="full" alone, the
+    # SAME gate $ground/$gwglyph above already use. Combat never suppressed it
+    # (design-combat-weather.md D1) -- the field is full-width, so it covers
+    # the wider combat tableau with no per-scene sizing. There is now ONE
+    # layer: the separately-baked, sprite-column-width ART band that used to
+    # reserve three sky rows above the buddy is gone (F9), so this gate is
+    # the only one. Plain (ANSI-free, D3) but still base64-encoded because it
+    # is multi-line. NB: no apostrophes in this block -- the whole jq program
+    # is single-quoted in bash, so a stray quote would truncate it.
+    #
+    # A fresh celebration NO LONGER suppresses it (2026-07-27 bugfix). That
+    # gate existed because the old ART band prepended rows, which fought the
+    # taller flourish flipbook for the same height budget -- the identical
+    # reason F10 deleted the HOP_BUDGET degrade. A front layer costs no rows,
+    # so the justification is gone, and keeping the gate left the ground
+    # visibly snowing while nothing fell for the whole flourish window.
+    # Flourish art that carries its own ANSI (wyvern flame) is still skipped
+    # row-by-row by _wx_overlay F8 guard, so this cannot corrupt a sequence.
+    | (if $gf == "full"
+       then (.weatherFallSequence // []) else [] end) as $wfseq
+    | (if $gf == "full"
+       then (.weatherFallGapFrames // []) else [] end) as $wfgap
+    | (if ($wfseq | length) > 0
+       then ($wfgap[$wfseq[$now % ($wfseq | length)]] // "") else "" end) as $wfgapframe
+    | (if $gf == "full" then (.weatherFallGapGlyph // "") else "" end) as $wfgapglyph
+    | (if $gf == "full" then (.weatherFallGapColor // "") else "" end) as $wfgapcolor
     | [
         ((.muted // false) | tostring),
         ((.name // "") | gsub("[\\x01-\\x1f\\x7f]"; " ")),
@@ -190,7 +230,14 @@ _STATUS=$(jq -r --argjson now "$NOW" --arg gf "$GAME_FEEL" '
         ($awidth | tostring),
         ((.enemyGlyph // "") | gsub("[\\x01-\\x1f\\x7f]"; " ")),
         ($raised_names | gsub("[\\x01-\\x1f\\x7f]"; " ")),
-        ($frame | @base64)
+        ($ground | gsub("[\\x01-\\x1f\\x7f]"; " ")),
+        ($gcolor | gsub("[\\x01-\\x1f\\x7f]"; " ")),
+        ($gwglyph | gsub("[\\x01-\\x1f\\x7f]"; " ")),
+        ($gwcolor | gsub("[\\x01-\\x1f\\x7f]"; " ")),
+        ($wfgapglyph | gsub("[\\x01-\\x1f\\x7f]"; " ")),
+        ($wfgapcolor | gsub("[\\x01-\\x1f\\x7f]"; " ")),
+        ($frame | @base64),
+        ($wfgapframe | @base64)
       ] | join("")
 ' "$STATE" 2>/dev/null)
 
@@ -200,7 +247,10 @@ IFS=$'\x1f' read -r \
     STATS_TSV XP_PCT XP_GAIN_TSV CELEB_TSV \
     _HAS_FLOURISH _CELEB_FRESH WANDER_OFF WANDER_ROW WANDER_ROW_MAX \
     _ENC_FRESH _COMBAT_ON ART_WIDTH ENEMY_GLYPH \
-    STATS_RAISED _FRAME_B64 <<< "$_STATUS"
+    STATS_RAISED GROUND_TILE GROUND_COLOR \
+    GROUND_WEATHER_GLYPH GROUND_WEATHER_COLOR \
+    WFGAP_GLYPH WFGAP_COLOR \
+    _FRAME_B64 _WFGAP_B64 <<< "$_STATUS"
 
 [ "$MUTED" = "true" ] && exit 0
 [ -z "$NAME" ] && exit 0
@@ -236,6 +286,22 @@ ART_LINES=()
 while IFS= read -r line; do
     ART_LINES+=("$line")
 done <<< "$FRAME_BODY"
+
+# Falling weather field (plan-falling-weather.md Task 3): decoded the same way
+# as FRAME_BODY — multi-line, base64'd to survive the single-line jq read — but
+# PLAIN (ANSI-free, D3), because it gets sliced by display column further down
+# and embedded SGR would corrupt that (see plan-fullwidth-weather.md §2.4 for
+# the hazard writeup). Empty when no weather window is active (jq's D10 gate
+# already zeroed $wfgapframe), in which case the render is byte-identical to a
+# plain idle frame. Since design-weather-frontlayer.md this is the ONLY weather
+# layer and it reserves no rows of its own.
+WFGAP_FRAME_BODY=$(printf '%s' "$_WFGAP_B64" | base64 -d 2>/dev/null)
+WFGAP_LINES=()
+if [ -n "$WFGAP_FRAME_BODY" ]; then
+    while IFS= read -r line; do
+        WFGAP_LINES+=("$line")
+    done <<< "$WFGAP_FRAME_BODY"
+fi
 
 # Idle-RPG encounter (Phase 4 fallback): hover the enemy glyph in the buddy's
 # right margin during a fresh fight. This is now the DEGRADED-SKEW path only —
@@ -997,24 +1063,146 @@ esac
 printf -v MID_SPACER '%*s' "$MID_PAD" ''
 printf -v STATS_GAP_STR '%*s' "$STATS_GAP" ''
 
+# ─── Full-width falling weather GAP band setup (plan-fullwidth-weather.md
+# Task 3, D5) ──────────────────────────────────────────────────────────────
+# SPACER_LEAD is just the non-trimmable lead (Braille Blank, or nothing on
+# msys/cygwin) WITHOUT the trailing ROAM-wide pad SPACER bakes in when
+# STATS_COUNT==0 (LEAD_PAD=$ROAM in that branch, §2.1) — the per-row loop
+# below needs to substitute a live, row-varying gap-band line in place of
+# that pad, so the pad can no longer be baked into one fixed SPACER string.
+# _ROAM_BLANK is the plain default for the gap segment (identical to what
+# MID_SPACER/SPACER's own pad already build today), reused whenever a row
+# has no gap-band content — the no-op case, byte-identical to before this
+# feature existed.
+case "$OSTYPE" in
+    msys*|cygwin*) SPACER_LEAD='' ;;
+    *)             SPACER_LEAD="$B" ;;
+esac
+printf -v _ROAM_BLANK '%*s' "$ROAM" ''
+# design-fullwidth-weather-d1.md §4: cut one segment out of the line-wide
+# weather field, pad it to EXACTLY the requested width (E6 — a painted
+# segment must be the same width as the blank it replaces, so total line
+# width is provably unchanged), then recolour. Clip-then-recolour is the D3
+# order and is now load-bearing in three places rather than one. A shell
+# FUNCTION, not a `$( )` command substitution: this runs per band row per
+# tick, and a subshell here would add forks to the hot path. Result lands in
+# the global _WX_SEG (printf -v cannot write through a nameref cheaply).
+_wx_slice() {
+    local _off=$1 _w=$2
+    _WX_SEG="${_wx_full:$_off:$_w}"
+    if [ ${#_WX_SEG} -lt "$_w" ]; then
+        printf -v _WX_SEG '%s%*s' "$_WX_SEG" $(( _w - ${#_WX_SEG} )) ''
+    fi
+    if [ -n "$WFGAP_GLYPH" ]; then
+        # The search half MUST stay quoted: unquoted, it is a GLOB pattern,
+        # and a `*` glyph would match the entire segment and collapse it to a
+        # single character -- measured 116 display cells down to 47. _wx_overlay
+        # already quotes its own two uses for the same reason.
+        _WX_SEG="${_WX_SEG//"$WFGAP_GLYPH"/${_WFGAP_SGR}$WFGAP_GLYPH${NC}}"
+    fi
+}
+# The active weather kind's recolor SGR (D3: clip first while plain, recolor
+# after — same order the ground row already proves safe, :1244-1245/:1279).
+# Built once here (not per row): WFGAP_COLOR is constant for the whole
+# render. Falls back to a plain dim if the value is missing/non-hex, mirroring
+# GROUND_WEATHER_COLOR's own validation pattern.
+#
+# Glyph precondition (design-weather-frontlayer.md F3). F3 argues the composite
+# is width-preserving BY CONSTRUCTION -- one width-1 space out, one width-1
+# glyph in. That argument silently assumes the glyph really is ONE cell, and
+# bash cannot measure display width without a fork. A MULTI-CHARACTER glyph
+# breaks it outright: _wx_overlay swaps a 1-cell space for an N-cell glyph and
+# every line past it grows. Refuse anything that is not a single character, in
+# which case both _wx_slice and _wx_overlay no-op on the empty guard and the
+# render degrades to "no flakes" instead of to a broken layout. A single but
+# DOUBLE-width character (CJK) is still unmeasurable here and stays a server
+# contract: state.ts only ever emits SKY_FALL_GLYPH, both verified 1 cell.
+[ ${#WFGAP_GLYPH} -eq 1 ] || WFGAP_GLYPH=""
+_WFGAP_SGR=$'\033[2m'
+case "$WFGAP_COLOR" in
+    [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F])
+        printf -v _WFGAP_SGR '\033[38;2;%d;%d;%dm' \
+            "$(( 16#${WFGAP_COLOR:0:2} ))" \
+            "$(( 16#${WFGAP_COLOR:2:2} ))" \
+            "$(( 16#${WFGAP_COLOR:4:2} ))"
+        ;;
+esac
+
+# ─── Front-layer compositing (design-weather-frontlayer.md F3/F8) ────────────
+# Draw this row's flakes ON TOP of a segment that already has content, instead
+# of only into segments that happen to be blank. $1 = the PLAIN underlying
+# string, $2 = the absolute column its first character sits at, $3 = the SGR to
+# restore after each flake (the caller's own active colour, so punching a flake
+# through does not bleed into what follows). Result lands in the global
+# _WX_OUT; the caller uses it unconditionally.
+#
+# F3: a flake may replace a SPACE and nothing else — never a border, a letter,
+# a bar segment or a sprite glyph. That is what makes the composite
+# width-preserving BY CONSTRUCTION rather than by assertion: one width-1 space
+# out, one width-1 glyph in (both `❄` and the rain glyph were verified
+# single-cell), so no layout invariant can move no matter what lands here.
+#
+# F8: refuses outright to touch a string containing ESC. Every intended target
+# was probed and is plain, but a future change that colours one of them
+# degrades to "no flakes there" instead of splicing into an escape sequence —
+# the same hazard D3 guards on the slicing path.
+#
+# Walks the FLAKE COLUMNS in the window (~5 per 110 cols), not every character,
+# and rebuilds from plain runs — so this is a couple of iterations per segment
+# per row, not a per-character scan of the whole line.
+_wx_overlay() {
+    local _u=$1 _off=$2 _restore=$3
+    _WX_OUT=$_u
+    [ -z "$_wx_full" ] && return
+    [ -z "$WFGAP_GLYPH" ] && return
+    case "$_u" in *$'\033'*) return ;; esac
+    local _win="${_wx_full:$_off:${#_u}}"
+    case "$_win" in *"$WFGAP_GLYPH"*) ;; *) return ;; esac
+    local _out="" _last=0 _base=0 _rest="$_win" _pre _c
+    while [ -n "$_rest" ]; do
+        _pre="${_rest%%"$WFGAP_GLYPH"*}"
+        [ "$_pre" = "$_rest" ] && break
+        _c=$(( _base + ${#_pre} ))
+        if [ "${_u:$_c:1}" = " " ]; then
+            _out+="${_u:$_last:$(( _c - _last ))}"
+            _out+="${_WFGAP_SGR}${WFGAP_GLYPH}${NC}${_restore}"
+            _last=$(( _c + 1 ))
+        fi
+        _base=$(( _c + 1 ))
+        _rest="${_rest:$(( ${#_pre} + 1 ))}"
+    done
+    _WX_OUT="${_out}${_u:$_last}"
+}
+
 # ─── Idle wander hop headroom (movement §7.A, flag wanderHop) ───────────────
 # Reserve HOP_RESERVE blank rows above the art ONLY when the server baked a
 # non-empty wanderRowSequence (hop on). Headroom = the sequence's max so it is
 # constant across ticks — the block height never changes, so the bubble/stats
 # (centered on the total height below) can't bob. Collapse to 0 if the block
 # would blow the height budget (degrade, NFR7); WANDER_ROW resets so the
-# connector logic and art position stay consistent with "no hop".
+# connector logic and art position stay consistent with "no hop". HOP_BUDGET
+# is a top-level constant (not scoped to the if-block) so the falling-weather
+# check below can share the exact same ceiling rather than inventing a second
+# number (plan-falling-weather.md D9).
+HOP_BUDGET=12
 HOP_RESERVE=0
 if [ "$WANDER_ROW_MAX" -gt 0 ]; then
     HOP_RESERVE=$WANDER_ROW_MAX
     HOP_CAP=2
     [ "$HOP_RESERVE" -gt "$HOP_CAP" ] && HOP_RESERVE=$HOP_CAP
-    HOP_BUDGET=12
     if [ $(( ART_COUNT + HOP_RESERVE )) -gt "$HOP_BUDGET" ]; then
         HOP_RESERVE=0
         WANDER_ROW=0
     fi
 fi
+
+# ─── Falling weather costs no rows (design-weather-frontlayer.md F1/F10) ─────
+# There is deliberately nothing here. Falling weather used to prepend a band of
+# reserved sky rows above the sprite, which is where the widget's three extra
+# lines came from, and which needed its own HOP_BUDGET degrade branch because
+# those rows competed with the hop headroom for the same ceiling. The weather
+# is now a FRONT LAYER composited over content that is already on screen: it
+# adds no row, so there is no budget left to blow and nothing to degrade.
 ART_COUNT_TOTAL=$(( ART_COUNT + HOP_RESERVE ))
 # Art's top row within the block: WANDER_ROW=0 rests on the floor (below the
 # headroom); WANDER_ROW=HOP_RESERVE touches the ceiling.
@@ -1073,28 +1261,143 @@ MAX_LINES=$ART_COUNT_TOTAL
 printf -v _ART_FILL '%*s' "$ART_W" ''
 printf -v _STATS_FILL '%*s' "$STATS_W" ''
 printf -v _BOX_FILL '%*s' "$BOX_W" ''
+_wx_full=""
+_wx_stats_off=0
+_wx_gap_off=0
+_wx_bub_off=0
+_wx_art_off=0
 for (( i=0; i<MAX_LINES; i++ )); do
-    # Art part: actual art line (shifted down by the hop headroom, up by the
-    # live hop row) or blank filler.
-    ai=$(( i - ART_TOP ))
-    if [ $ai -ge 0 ] && [ $ai -lt $ART_COUNT ]; then
-        art_part="${ALL_COLORS[$ai]}${ALL_LINES[$ai]}${NC}"
-    else
-        art_part=$_ART_FILL
+    # Falling weather field for THIS row (plan-fullwidth-weather.md Task 3,
+    # D5): the ROAM-wide content for THIS row — defaults to the same plain
+    # blank the layout already produced (weather inactive, this row outside
+    # the band's own row span, or ROAM=0 at a narrow width), overridden with
+    # the server-baked gap-band line for this row when in range. Clip FIRST
+    # while still plain (D3), THEN recolor just the flake glyph — the exact
+    # order the ground row already proves safe in this codebase
+    # (:1244-1245/:1279 above) — so bash's char-counting substring operator
+    # never has to reason about an embedded escape sequence. Left-anchored;
+    # any shortfall past the baked MAX_GAP_WIDTH is right-padded with plain
+    # spaces (D11 — only relevant on exceptionally wide terminals).
+    # design-fullwidth-weather-d1.md (E1): the baked row is treated as ONE
+    # continuous weather field spanning the whole printed line, and each
+    # blank segment takes its own ABSOLUTE-COLUMN window into it. Painting
+    # every segment from column 0 instead would repeat the same few flakes
+    # side by side at different offsets — visibly wrong, and the reason this
+    # is a field-slicing problem rather than "call the gap code three times."
+    _gap_row="$_ROAM_BLANK"
+    _wx_stats_seg=""   # empty ⇒ this row keeps its ordinary blank filler
+    _wx_bub_seg=""
+    _wx_full=""
+    if [ ${#WFGAP_LINES[@]} -gt 0 ]; then
+        # design-weather-frontlayer.md F2: field row IS block row. The old
+        # `i - ART_TOP` offset existed only because the weather lived inside
+        # the art stack as reserved rows; it is a full-block layer now.
+        #
+        # ...and it WRAPS (2026-07-27 bugfix), exactly as E2 below already
+        # tiles the same field horizontally. SKY_FALL_ROWS=14 was picked to
+        # clear HOP_BUDGET=12, but HOP_BUDGET bounds only the ART stack --
+        # MAX_LINES also takes TOTAL_BUBBLE, and the bubble word-wrap has no
+        # row cap, so `/buddy width 10` (a supported 10-60 setting) plus a
+        # long reaction measured a 17-row block whose bottom 3 rows carried no
+        # weather at all. Not a fade -- a hard horizontal line with snow above
+        # it and none below. Wrapping removes the cliff at EVERY height rather
+        # than moving it to whatever the next constant happens to be, costs no
+        # payload, and needs no re-tuning of the density arithmetic.
+        gi=$(( i % ${#WFGAP_LINES[@]} ))
+        if [ $gi -lt ${#WFGAP_LINES[@]} ]; then
+            # E2: tile the baked row out to the full line width, exactly as
+            # the ground row already tiles its own unit — so a line wider
+            # than MAX_GAP_WIDTH stays populated without widening the bake
+            # (which would roughly double a status.json that jq re-parses
+            # every second). The emptiness guard keeps this from spinning.
+            _wx_full="${WFGAP_LINES[$gi]}"
+            if [ -n "$_wx_full" ]; then
+                while [ ${#_wx_full} -lt "$COLS" ]; do
+                    _wx_full+="${WFGAP_LINES[$gi]}"
+                done
+                # Absolute column of each segment, accumulated in the same
+                # order the loop below concatenates them. Derived from LIVE
+                # values, never baked constants (E7: an XP toast widens
+                # STATS_W, which must shift the field with it).
+                if [ $STATS_COUNT -gt 0 ]; then
+                    _wx_stats_off=$(( ${#SPACER_LEAD} + LEAD_PAD ))
+                    _wx_gap_off=$(( _wx_stats_off + STATS_W + STATS_GAP ))
+                else
+                    _wx_gap_off=${#SPACER_LEAD}
+                fi
+                _wx_bub_off=$(( _wx_gap_off + ROAM ))
+                # The art column trails the bubble box plus its fixed
+                # 3-column connector; with no bubble it starts where the
+                # bubble would have. (WANDER_PAD_BUBBLE/ART are empty under
+                # free-roam — the roam offset is already inside ROAM.)
+                if [ $BUBBLE_COUNT -gt 0 ]; then
+                    _wx_art_off=$(( _wx_bub_off + BOX_W + 3 ))
+                else
+                    _wx_art_off=$_wx_bub_off
+                fi
+
+                _wx_slice "$_wx_gap_off" "$ROAM"
+                _gap_row="$_WX_SEG"
+                # E3: the stats column, only on rows carrying no stat line.
+                if [ $STATS_COUNT -gt 0 ]; then
+                    _wx_si=$(( i - STATS_START ))
+                    if [ $_wx_si -lt 0 ] || [ $_wx_si -ge $STATS_COUNT ]; then
+                        _wx_slice "$_wx_stats_off" "$STATS_W"
+                        _wx_stats_seg="$_WX_SEG"
+                    fi
+                fi
+                # E3: the bubble box, only on rows carrying no bubble line.
+                if [ $BUBBLE_COUNT -gt 0 ]; then
+                    _wx_bi=$(( i - BUBBLE_START ))
+                    if [ $_wx_bi -lt 0 ] || [ $_wx_bi -ge $BUBBLE_COUNT ]; then
+                        _wx_slice "$_wx_bub_off" "$BOX_W"
+                        _wx_bub_seg="$_WX_SEG"
+                    fi
+                fi
+            fi
+        fi
     fi
 
-    line_out="$SPACER"
+    # Art part: actual art line (shifted down by the hop headroom, up by the
+    # live hop row) or blank filler — either way the weather field is
+    # composited over it (F4), which is what keeps the sprite column snowing
+    # now that the reserved sky rows above it are gone.
+    ai=$(( i - ART_TOP ))
+    if [ $ai -ge 0 ] && [ $ai -lt $ART_COUNT ]; then
+        _wx_overlay "${ALL_LINES[$ai]}" "$_wx_art_off" "${ALL_COLORS[$ai]}"
+        art_part="${ALL_COLORS[$ai]}${_WX_OUT}${NC}"
+    else
+        _wx_overlay "$_ART_FILL" "$_wx_art_off" ""
+        art_part=$_WX_OUT
+    fi
+
+    # Line-leading segment: when a stats panel is shown, SPACER is just its
+    # fixed small margin (unaffected by ROAM — the gap band is spliced in
+    # separately, below, after the stats column). When no stats panel is
+    # shown, the ROAM-wide gap IS the whole tail of this leading segment
+    # (§2.1) — SPACER_LEAD (the fixed non-trimmable lead alone) + the live
+    # per-row gap content replaces what used to be one fixed SPACER string.
+    if [ $STATS_COUNT -gt 0 ]; then
+        line_out="$SPACER"
+    else
+        line_out="${SPACER_LEAD}${_gap_row}"
+    fi
 
     # Stats column (leftmost) — pre-colored, fixed STATS_W display width
     if [ $STATS_COUNT -gt 0 ]; then
         si=$(( i - STATS_START ))
         if [ $si -ge 0 ] && [ $si -lt $STATS_COUNT ]; then
             line_out+="${STATS_LINES[$si]}"
+        elif [ -n "$_wx_stats_seg" ]; then
+            # Filler row + active weather: paint the field's window here
+            # instead of plain blanks (D1's deferred item). Rows carrying a
+            # real stat line take the branch above and are never touched.
+            line_out+="$_wx_stats_seg"
         else
             line_out+=$_STATS_FILL
         fi
         line_out+="$STATS_GAP_STR"
-        line_out+="$MID_SPACER"
+        line_out+="$_gap_row"
     fi
 
     # §5e: when the bubble travels with the buddy, the offset is inserted here —
@@ -1117,14 +1420,28 @@ for (( i=0; i<MAX_LINES; i++ )); do
                 gap="   "
             fi
 
+            # design-weather-frontlayer.md F4 — the request this exists for:
+            # the bubble is the BACK layer and flakes pass in front of it.
+            # Only its interior spaces are eligible (F3), so the border, the
+            # pipes and the comment text itself are never disturbed; each
+            # segment restores its own colour after a flake.
             if [ "$btype" = "border" ]; then
-                line_out+="${C}${bline}${NC}${gap}"
+                _wx_overlay "$bline" "$_wx_bub_off" "$C"
+                line_out+="${C}${_WX_OUT}${NC}${gap}"
             else
                 pipe_l="${bline:0:1}"
                 pipe_r="${bline: -1}"
                 inner="${bline:1:$(( ${#bline} - 2 ))}"
-                line_out+="${C}${pipe_l}${NC}${DIM}${inner}${NC}${C}${pipe_r}${NC}${gap}"
+                _wx_overlay "$inner" "$(( _wx_bub_off + 1 ))" "$DIM"
+                line_out+="${C}${pipe_l}${NC}${DIM}${_WX_OUT}${NC}${C}${pipe_r}${NC}${gap}"
             fi
+        elif [ -n "$_wx_bub_seg" ]; then
+            # Blank bubble row + active weather: same treatment as the stats
+            # filler above. The 3-column connector stays plain — it sits
+            # between the box and the sprite and carries the "--" tail on
+            # text rows, so it is not reliably blank.
+            line_out+="$_wx_bub_seg"
+            line_out+="   "
         else
             line_out+=$_BOX_FILL
             line_out+="   "
@@ -1138,5 +1455,62 @@ for (( i=0; i<MAX_LINES; i++ )); do
     line_out+="$art_part"
     echo "$line_out"
 done
+
+# ─── Fixed ground / environment row (living-world: living ground) ────────────
+# A full-width terrain strip painted UNDER the whole widget. Unlike the roaming
+# sprite it does NOT ride the wander offset or the hop headroom — it is the
+# fixed floor the buddy moves over, so it is printed once here, after the block,
+# rather than baked into a frame. The server bakes a session-seeded tile
+# (GROUND_TILE) + hex colour (GROUND_COLOR): constant within a session, re-rolled
+# on a new session. Empty ⇒ the server/jq gated it off (subtle/off, ground
+# toggle off, an active combat scene, or version skew). Glyphs are single-width
+# and ANSI-free by contract, so a code-point count equals the column count for
+# the fill/clip below (no dwidth fork needed).
+if [ -n "$GROUND_TILE" ]; then
+    # Fill width leaves the fixed left margin AND the right safety gutter clear,
+    # so the row can never overflow COLS. 0/negative (unknown COLS) ⇒ skip.
+    _GRND_W=$(( COLS - RIGHT_SAFETY - STATS_LEFT_MARGIN ))
+    if [ "$_GRND_W" -gt 0 ] 2>/dev/null; then
+        _grow=""
+        while [ ${#_grow} -lt "$_GRND_W" ]; do _grow+="$GROUND_TILE"; done
+        _grow="${_grow:0:_GRND_W}"
+        # Fixed left lead (Braille Blank + margin), NOT SPACER: in free-roam mode
+        # SPACER carries the buddy's live roam offset, which would shove this
+        # fixed floor sideways off-screen. Mirrors the METRICS_HEADER lead so the
+        # ground aligns with the widget's left edge (and the stats column).
+        case "$OSTYPE" in
+            msys*|cygwin*) printf -v _GLEAD '%*s' "$STATS_LEFT_MARGIN" '' ;;
+            *)             printf -v _GLEAD "${B}%${STATS_LEFT_MARGIN}s" "" ;;
+        esac
+        _GC=$'\033[2m'   # dim fallback if no/non-hex colour
+        case "$GROUND_COLOR" in
+            [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F])
+                printf -v _GC '\033[2;38;2;%d;%d;%dm' \
+                    "$(( 16#${GROUND_COLOR:0:2} ))" \
+                    "$(( 16#${GROUND_COLOR:2:2} ))" \
+                    "$(( 16#${GROUND_COLOR:4:2} ))"
+                ;;
+        esac
+        # Ground weather (living-world follow-up): recolor just the woven-in
+        # weather glyph(s) wherever they land in the already-tiled/clipped row —
+        # a bounded string substitution, no new randomness (the server decided
+        # both the tile content and this glyph; bash only ever splices strings).
+        # Resumes _GC (the terrain colour), NOT NC, after each glyph so the row
+        # stays terrain-tinted between specks instead of losing colour entirely.
+        if [ -n "$GROUND_WEATHER_GLYPH" ]; then
+            _WC=$'\033[2m'   # dim fallback if no/non-hex colour
+            case "$GROUND_WEATHER_COLOR" in
+                [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F])
+                    printf -v _WC '\033[38;2;%d;%d;%dm' \
+                        "$(( 16#${GROUND_WEATHER_COLOR:0:2} ))" \
+                        "$(( 16#${GROUND_WEATHER_COLOR:2:2} ))" \
+                        "$(( 16#${GROUND_WEATHER_COLOR:4:2} ))"
+                    ;;
+            esac
+            _grow="${_grow//$GROUND_WEATHER_GLYPH/${_WC}${GROUND_WEATHER_GLYPH}${_GC}}"
+        fi
+        echo "${_GLEAD}${_GC}${_grow}${NC}"
+    fi
+fi
 
 exit 0

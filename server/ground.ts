@@ -22,6 +22,7 @@
  */
 
 import { hashString, mulberry32 } from "./engine.ts";
+import type { Theme } from "./theme.ts";
 
 /** One environment the ground row can render as. */
 export interface Terrain {
@@ -137,9 +138,19 @@ const WEATHER_GLYPH: Record<GroundWeather, string> = {
   rain: ":",
 };
 
-const WEATHER_COLOR: Record<GroundWeather, string> = {
-  snow: "e8f0f7", // pale white-blue
-  rain: "5f8fc7", // steel blue
+// Theme-aware (2026-07-24 follow-up): the dark-theme snow value is a pale
+// white-blue, nearly invisible on a light/white terminal background — the
+// same problem `theme.ts`'s rarity colors already solve for. Light variants
+// are darkened/more-saturated, mirroring that table's dark→light approach.
+const WEATHER_COLOR: Record<Theme, Record<GroundWeather, string>> = {
+  dark: {
+    snow: "e8f0f7", // pale white-blue
+    rain: "5f8fc7", // steel blue
+  },
+  light: {
+    snow: "4a6f94", // slate blue — readable on a light background
+    rain: "2f5c8f", // deep blue
+  },
 };
 
 /** Every glyph ground weather can ever place — for the disjointness/ANSI/
@@ -208,15 +219,18 @@ const WEAVE_SPECK_DIVISOR = 7; // roughly 1 speck per 7 cells
  * @param terrain - The session's chosen terrain (`pickSessionGround`).
  * @param weather - Which kind of weather to weave in.
  * @param seed - The session's `startedAt` epoch.
+ * @param theme - The active theme (`cfg.theme`, "light" or resolved
+ *   "dark"/"auto") — selects a readable color for that background.
  */
 export function buildWeatherTile(
   terrain: Terrain,
   weather: GroundWeather,
   seed: number,
+  theme: Theme,
 ): WeatherTile {
   const rng = mulberry32(hashString(`ground-weather-weave:${seed}`));
   const glyph = WEATHER_GLYPH[weather];
-  const color = WEATHER_COLOR[weather];
+  const color = WEATHER_COLOR[theme][weather];
   const period = WEAVE_PERIOD_MIN + Math.floor(rng() * WEAVE_PERIOD_RANGE);
   const unit = Array.from(terrain.tile);
   const cells: string[] = [];

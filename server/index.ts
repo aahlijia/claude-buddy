@@ -543,9 +543,13 @@ registerTool(
       "  /buddy theme     Set color theme: dark (bright) or light (dark colors)",
       "  /buddy gamefeel  Animation intensity: off, subtle, or full (default subtle)",
       "  /buddy wander    Toggle the idle status-line amble (on/off/hop)",
+      "  /buddy dressing  Toggle ambient ground props + weather FX (on/off)",
+      "  /buddy ground    Toggle the fixed terrain floor under the buddy (on/off)",
       "",
-      "  Motion feels distracting? Turn off the amble with /buddy wander off, or",
-      "  quiet the animations with /buddy gamefeel subtle (or off for silence).",
+      "  Motion feels distracting? Turn off the amble with /buddy wander off,",
+      "  hide the little sprout/pebble + weather specks with /buddy dressing off,",
+      "  drop the terrain floor with /buddy ground off, or quiet everything with",
+      "  /buddy gamefeel subtle (or off for silence).",
       "",
       "CLI:",
       "  bun run help            Show full CLI help",
@@ -945,6 +949,84 @@ registerTool(
     saveConfig(patch);
     return {
       content: [{ type: "text", text: wanderStateLine(loadConfig()) }],
+    };
+  },
+);
+
+// ─── Tool: buddy_dressing (living-world P4) ──────────────────────────────────
+
+/**
+ * Compose the human-readable world-dressing state line, including the `full`-gate
+ * caveat when dressing is enabled but the live intensity isn't `full` (so nothing
+ * will actually render). Shared by the report path and the post-set confirmation.
+ */
+function dressingStateLine(cfg: BuddyConfig): string {
+  const flags = `world dressing ${cfg.worldDressing ? "on" : "off"}`;
+  let note = "";
+  if (cfg.worldDressing && effectiveGameFeel() !== "full") {
+    note = " — note: only shows when game-feel is 'full'.";
+  }
+  return `Ambient dressing: ${flags}.${note}`;
+}
+
+registerTool(
+  "buddy_dressing",
+  "Control the buddy's ambient world dressing — the day-seeded ground props (a little sprout/pebble beside the buddy) and the sparse weather FX (a sparkle on a clean streak, a drizzle mark during a rough one). `enabled` toggles the whole layer (default on) so you can silence the ambient specks WITHOUT dropping game-feel below 'full' (which would also stop the emote, idle wander, and combat scene). Omit `enabled` to report the current setting. Backs /buddy dressing. Read live — no restart needed. Only ever shows when game-feel intensity is 'full'.",
+  {
+    enabled: z
+      .boolean()
+      .optional()
+      .describe("Turn world dressing on/off. Omit to report the current setting."),
+  },
+  async ({ enabled }) => {
+    ensureCompanion();
+    if (enabled === undefined) {
+      return {
+        content: [{ type: "text", text: dressingStateLine(loadConfig()) }],
+      };
+    }
+    saveConfig({ worldDressing: enabled });
+    return {
+      content: [{ type: "text", text: dressingStateLine(loadConfig()) }],
+    };
+  },
+);
+
+// ─── Tool: buddy_ground (living-world: living ground) ────────────────────────
+
+/**
+ * Compose the human-readable ground state line, including the `full`-gate caveat
+ * when ground is enabled but the live intensity isn't `full` (so nothing will
+ * actually render). Shared by the report path and the post-set confirmation.
+ */
+function groundStateLine(cfg: BuddyConfig): string {
+  const flags = `living ground ${cfg.groundEnabled ? "on" : "off"}`;
+  let note = "";
+  if (cfg.groundEnabled && effectiveGameFeel() !== "full") {
+    note = " — note: only shows when game-feel is 'full'.";
+  }
+  return `Living ground: ${flags}.${note}`;
+}
+
+registerTool(
+  "buddy_ground",
+  "Control the buddy's living ground — the fixed, full-width terrain strip painted beneath it (grass, water, stone, sand, and so on). It's session-seeded, so the environment re-rolls each new coding session but stays put within one. `enabled` toggles the whole row (default on). Unlike the buddy, the ground never moves — it's the floor the buddy roams over. Omit `enabled` to report the current setting. Backs /buddy ground. Read live — no restart needed. Only ever shows when game-feel intensity is 'full'.",
+  {
+    enabled: z
+      .boolean()
+      .optional()
+      .describe("Turn the living ground on/off. Omit to report the current setting."),
+  },
+  async ({ enabled }) => {
+    ensureCompanion();
+    if (enabled === undefined) {
+      return {
+        content: [{ type: "text", text: groundStateLine(loadConfig()) }],
+      };
+    }
+    saveConfig({ groundEnabled: enabled });
+    return {
+      content: [{ type: "text", text: groundStateLine(loadConfig()) }],
     };
   },
 );

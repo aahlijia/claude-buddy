@@ -332,6 +332,38 @@ export const MENU: Record<string, MenuPage> = {
           ],
         },
       },
+      {
+        id: "dressing",
+        label: "🌱 World dressing on/off",
+        description: "Toggle ambient props + weather",
+        action: {
+          kind: "choice",
+          tool: "buddy_dressing",
+          arg: "enabled",
+          question: "World dressing",
+          header: "Dressing",
+          options: [
+            { label: "On", value: true, description: "Ground props + weather FX" },
+            { label: "Off", value: false, description: "No ambient specks" },
+          ],
+        },
+      },
+      {
+        id: "ground",
+        label: "🌍 Living ground on/off",
+        description: "Toggle the terrain floor",
+        action: {
+          kind: "choice",
+          tool: "buddy_ground",
+          arg: "enabled",
+          question: "Living ground",
+          header: "Ground",
+          options: [
+            { label: "On", value: true, description: "Session-seeded terrain floor" },
+            { label: "Off", value: false, description: "No ground row" },
+          ],
+        },
+      },
     ],
   },
 

@@ -32,6 +32,8 @@ import {
 import { join } from "path";
 import type { Companion, BuddyStats, StatName, Rarity, Hat } from "./engine.ts";
 import type { Emotion, CelebrationKind } from "./art.ts";
+import type { GroundWeather, WeatherSchedule } from "./ground.ts";
+import type { Theme } from "./theme.ts";
 
 export type { CelebrationKind } from "./art.ts";
 import { RARITIES } from "./engine.ts";
@@ -425,6 +427,20 @@ export interface BuddyConfig {
   /** §7.A vertical hop / path arc. Costs one reserved headroom row, so default
    *  false (NFR6 real-estate). */
   wanderHop: boolean;
+  /** Ambient world dressing (living-world P4): the day-seeded ground props (a
+   *  sprout/pebble beside the buddy) and the sparse weather FX (sparkle on a
+   *  clean streak, drizzle during a rough one). Opt out of the ambient specks
+   *  without dropping gameFeel below "full" — which would also silence the
+   *  emote row, idle wander, and combat scene. Default true; like the props and
+   *  weather it gates, it only ever renders when effectiveGameFeel() === "full". */
+  worldDressing: boolean;
+  /** Living ground (living-world follow-up): the FIXED, full-width terrain
+   *  strip painted beneath the buddy (grass/water/stone/…), session-seeded so
+   *  it re-rolls on a new session. Its own opt-out — separate from
+   *  `worldDressing` (that gates the sprite-riding props + weather; this gates
+   *  a standalone bottom row the shell paints). Default true; only renders at
+   *  effectiveGameFeel() === "full". */
+  groundEnabled: boolean;
 }
 
 /** Game-feel intensity level (game-feel FR-E1). */
@@ -453,6 +469,8 @@ export const DEFAULT_CONFIG: BuddyConfig = {
   autoQuietFocus: false,
   wanderEnabled: true,
   wanderHop: false,
+  worldDressing: true,
+  groundEnabled: true,
 };
 
 const GAME_FEEL_LEVELS: readonly GameFeel[] = ["off", "subtle", "full"];
@@ -749,6 +767,48 @@ export interface StatusState {
    *  frame-source decision (the standoff has no `encounterAt`). Resolved scenes
    *  never carry it, so the two phases never mix fields. */
   combatSticky?: 1;
+  /** Living ground (living-world follow-up): the session-seeded terrain tile
+   *  the shell lays edge-to-edge across a FIXED, full-width bottom row (the
+   *  floor the buddy roams over — it does NOT ride the wander offset/hop).
+   *  Single-width ANSI-free glyphs. Absent ⇒ off/subtle, ground disabled, an
+   *  active combat scene, or no session snapshot yet. Paired with
+   *  `groundColor`. */
+  ground?: string;
+  /** Living ground: 6-hex RGB the shell dims onto the ground row. Present iff
+   *  `ground` is. */
+  groundColor?: string;
+  /** Ground weather (living-world follow-up): the single-cell glyph a sparse
+   *  mid-session snow/rain window weaves into `ground` while its window is
+   *  open. Present iff a weather window is active (derived per write from
+   *  `pickSessionWeather`/`isWeatherActive` — no persisted state). */
+  groundWeatherGlyph?: string;
+  /** Ground weather: 6-hex RGB the shell tints `groundWeatherGlyph` with,
+   *  distinct from `groundColor` so the specks read apart from the terrain.
+   *  Present iff `groundWeatherGlyph` is. */
+  groundWeatherColor?: string;
+  /** Falling weather: `NOW % len`-cycled indices into
+   *  `weatherFallGapFrames`, same pattern as `frameSequence`/
+   *  `combatSequence`. Present iff `weatherFallGapFrames` is. */
+  weatherFallSequence?: number[];
+  /** Falling weather field (plan-falling-weather.md, widened by
+   *  plan-fullwidth-weather.md, made a front layer by
+   *  design-weather-frontlayer.md): a PLAIN (ANSI-free) flipbook baked at a
+   *  fixed, generously wide `MAX_GAP_WIDTH` x `SKY_FALL_ROWS`, meant for the
+   *  shell to tile and slice live per row and per column segment, then
+   *  composite OVER the widget's existing content — flakes replace spaces
+   *  only, so no row is reserved for it and no line changes width.
+   *  Present iff the SAME weather window `groundWeatherGlyph` uses is active
+   *  (one shared schedule, D2 — never a second, possibly-disagreeing roll).
+   *  Paired with `weatherFallGapGlyph`/`weatherFallGapColor`. */
+  weatherFallGapFrames?: string[];
+  /** Falling weather: the active kind's plain single-cell glyph
+   *  (`SKY_FALL_GLYPH[kind]`) — the shell recolors it into the already-sliced
+   *  plain field text (D3's clip-then-recolor order). Present iff
+   *  `weatherFallGapFrames` is. */
+  weatherFallGapGlyph?: string;
+  /** Falling weather: 6-hex RGB (`SKY_FALL_COLOR[theme][kind]`) the shell
+   *  tints `weatherFallGapGlyph` with. Present iff `weatherFallGapFrames` is. */
+  weatherFallGapColor?: string;
 }
 
 // ─── Celebration channel (game-feel §2 — one transient slot, many producers) ──
@@ -1213,7 +1273,7 @@ export function writeStatusState(
   // here is the one sanctioned impure wrapper call — `pickDayProp` itself
   // stays pure on the injected date.
   let dayProp: import("./art.ts").PropArt | undefined;
-  if (idleGate === "full") {
+  if (idleGate === "full" && cfg.worldDressing) {
     try {
       const { pickDayProp } = require("./props.ts") as typeof import("./props.ts");
       dayProp = pickDayProp(new Date(), displayBones.species).prop;
@@ -1335,7 +1395,7 @@ export function writeStatusState(
   const WEATHER_ROUGH_TIER = 2; // tierForErrors ≥ 2 ⇒ 3+ errors this session
   const WEATHER_CLEAN_STREAK = 1; // any active streak ⇒ "on a streak" (matches the 🔥 badge's own threshold)
   let weather: import("./art.ts").Weather | null = null;
-  if (idleGate === "full") {
+  if (idleGate === "full" && cfg.worldDressing) {
     try {
       const { loadSnapshot, counterDelta, combatErrorCount, extractCounters } =
         require("./session.ts") as typeof import("./session.ts");
@@ -1351,7 +1411,12 @@ export function writeStatusState(
       // Weather is a best-effort delighter — a failure just leaves it null.
     }
   }
-  if (!weather && gate === "full" && streak >= WEATHER_CLEAN_STREAK) {
+  if (
+    !weather &&
+    gate === "full" &&
+    cfg.worldDressing &&
+    streak >= WEATHER_CLEAN_STREAK
+  ) {
     weather = "sparkle";
   }
 
@@ -1462,6 +1527,97 @@ export function writeStatusState(
     }
   }
 
+  // Living ground (living-world follow-up): a FIXED, full-width terrain row the
+  // shell paints beneath the buddy. Session-seeded off the snapshot's
+  // `startedAt` (NOT the clock — a per-tick clock seed would re-roll the ground
+  // every ~1s render; `startedAt` is constant within a session and changes on
+  // a new one, which is exactly the requested cadence). Full-only + its own
+  // `groundEnabled` opt-out, gated on the same clamped `idleGate` the prop
+  // branch uses (inherits the D14 angry exemption for free — the floor stays
+  // coherent with an already-full angry idle rather than blinking out). The
+  // shell re-gates on gameFeel + combat, so a stale tile can't leak post-flip.
+  let ground: string | undefined;
+  let groundColor: string | undefined;
+  let groundWeatherGlyph: string | undefined;
+  let groundWeatherColor: string | undefined;
+  let weatherFallSequence: number[] | undefined;
+  let weatherFallGapFrames: string[] | undefined;
+  let weatherFallGapGlyph: string | undefined;
+  let weatherFallGapColor: string | undefined;
+  if (idleGate === "full" && cfg.groundEnabled) {
+    try {
+      const { loadSnapshot } = require("./session.ts") as typeof import("./session.ts");
+      const startedAt = loadSnapshot()?.startedAt;
+      if (typeof startedAt === "number") {
+        const { pickSessionGround, pickSessionWeather, isWeatherActive, buildWeatherTile } =
+          require("./ground.ts") as typeof import("./ground.ts");
+        const terrain = pickSessionGround(startedAt);
+        ground = terrain.tile;
+        groundColor = terrain.color;
+        // Ground weather (living-world follow-up): a second, independent
+        // derived-on-read check off the SAME startedAt — no reroll, no
+        // persisted schedule file (unlike combat.ts's writeEncounter side
+        // channel; the schedule is fully reconstructible from startedAt, so
+        // there's nothing to persist or clean up in TRANSIENT_PREFIXES).
+        // Debug-only override (BUDDY_FORCE_WEATHER=snow|rain): bypasses the
+        // real 1-in-10 roll with a schedule that's always active, so the
+        // rare event can be eyeballed on demand without waiting on the dice.
+        // ground.ts's pure pickSessionWeather is untouched by this.
+        const forcedKind: string | undefined = process.env.BUDDY_FORCE_WEATHER;
+        const schedule: WeatherSchedule | null =
+          forcedKind === "snow" || forcedKind === "rain"
+            ? { kind: forcedKind as GroundWeather, startMs: 0, durationMs: Number.MAX_SAFE_INTEGER }
+            : pickSessionWeather(startedAt);
+        // startedAt is epoch SECONDS (session.ts), Date.now() is epoch ms —
+        // isWeatherActive/WeatherSchedule both operate in ms, so convert here.
+        const elapsedMs = Date.now() - startedAt * 1000;
+        if (isWeatherActive(schedule, elapsedMs)) {
+          // schedule is non-null here (isWeatherActive(null, _) is always false).
+          // Theme-aware color (2026-07-24 follow-up): the dark-theme snow hue
+          // is nearly invisible on a light terminal background — mirrors the
+          // same cfg.theme-derivation buddy-status.sh's own rarity-color
+          // block uses ("auto"/undefined ⇒ dark), reusing the already-loaded
+          // cfg rather than a second loadConfig() call.
+          const theme: Theme = cfg.theme === "light" ? "light" : "dark";
+          const woven = buildWeatherTile(terrain, schedule!.kind, startedAt, theme);
+          ground = woven.tile; // replaces the plain terrain tile for this render
+          groundWeatherGlyph = woven.glyph;
+          groundWeatherColor = woven.color;
+          // groundColor is left as the terrain's own colour, unchanged.
+
+          // Falling weather (living-world follow-up to ground-weather,
+          // plan-falling-weather.md Task 2): reuses this SAME schedule/
+          // elapsedMs/isWeatherActive result — no second roll, so the falling
+          // flakes and the ground specks can never disagree about whether
+          // weather is happening (plan D2).
+          const {
+            FALL_PERIOD, SKY_FALL_ROWS, gapFlakeCount,
+            buildFallingWeatherGapBand, MAX_GAP_WIDTH,
+            SKY_FALL_GLYPH, SKY_FALL_COLOR,
+          } = require("./weatherfall.ts") as typeof import("./weatherfall.ts");
+          weatherFallSequence = Array.from({ length: FALL_PERIOD }, (_, i) => i);
+
+          // ONE weather field, baked at the FIXED MAX_GAP_WIDTH regardless of
+          // combat/idle and at a height that covers the whole widget block
+          // (design-weather-frontlayer.md F2/F6). The shell slices it per row
+          // and per column segment and composites it as a FRONT layer over
+          // whatever is already there — so this is deliberately not pre-fit to
+          // any scene width, and the separately-baked, sprite-column-width ART
+          // band that used to ride above the sprite is gone (F1/F9). Reuses
+          // the SAME schedule/startedAt/theme — no second schedule read.
+          weatherFallGapFrames = buildFallingWeatherGapBand(
+            schedule!.kind, startedAt, MAX_GAP_WIDTH, SKY_FALL_ROWS, FALL_PERIOD,
+            gapFlakeCount(SKY_FALL_ROWS),
+          );
+          weatherFallGapGlyph = SKY_FALL_GLYPH[schedule!.kind];
+          weatherFallGapColor = SKY_FALL_COLOR[theme][schedule!.kind];
+        }
+      }
+    } catch {
+      // Ground is a best-effort delighter — a failure leaves the floor bare.
+    }
+  }
+
   const state: StatusState = {
     name: companion.name,
     species: companion.bones.species,
@@ -1469,7 +1625,7 @@ export function writeStatusState(
     stars: RARITY_STARS[companion.bones.rarity],
     face: renderFace(companion.bones.species, companion.bones.eye),
     eye: companion.bones.eye,
-    shiny: companion.bones.shiny,
+    shiny: displayBones.shiny,
     hat: displayBones.hat,
     reaction: reaction ?? "",
     muted: mutedState,
@@ -1503,6 +1659,17 @@ export function writeStatusState(
       ? { combatFrames, combatSequence, artWidth }
       : {}),
     ...(combatSticky ? { combatSticky } : {}),
+    ...(ground ? { ground, groundColor } : {}),
+    ...(groundWeatherGlyph ? { groundWeatherGlyph, groundWeatherColor } : {}),
+    ...(weatherFallGapFrames && weatherFallGapGlyph && weatherFallGapColor &&
+      weatherFallSequence
+      ? {
+        weatherFallSequence,
+        weatherFallGapFrames,
+        weatherFallGapGlyph,
+        weatherFallGapColor,
+      }
+      : {}),
   };
   // Atomic write (game-feel §2.6): the MCP server, the award-xp.ts process, and
   // react.sh's jq patch all touch status.json — tmp+rename avoids torn reads.
