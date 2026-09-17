@@ -1705,22 +1705,45 @@ describe("buddy-status.sh living ground (living-world follow-up)", () => {
     }
   });
 
-  test("no weather fields ⇒ ground row renders byte-identical to the current plain-terrain path", () => {
-    const before = renderStatus({
+  test("no ground-weather fields ⇒ ground row is plain terrain: exact tile content, terrain-only colour, no weather recolor", () => {
+    // A real absence check, not a self-referential before/after diff — the
+    // prior version of this test built `before`/`after` from byte-identical
+    // override objects and compared them, which passes no matter what the
+    // recolor code does (or doesn't do, or whether it exists at all).
+    // Flagged by a prior independent audit (analysis-ground-weather.md,
+    // 2026-07-24) and left unfixed until now. Mirrors the falling-weather
+    // absence test's approach just below (:1858) — a real absence check plus
+    // an exact structural pin, not a construction that's true by definition.
+    const out = renderStatus({
       gameFeel: "full",
       ground: "„.",
       groundColor: "4a7c3f",
       columns: 80,
       showStats: false,
     });
-    const after = renderStatus({
-      gameFeel: "full",
-      ground: "„.",
-      groundColor: "4a7c3f",
-      columns: 80,
-      showStats: false,
-    });
-    expect(after).toBe(before);
+    // The RAW (un-stripped) last line — unlike the shared groundLine() helper
+    // above, this test needs the actual escape sequences to check the colour
+    // path, not just the plain text.
+    const rawLines = out.split("\n").filter((l) => stripAnsi(l).trim() !== "");
+    const g = rawLines[rawLines.length - 1] ?? "";
+    // Exact tiled/clipped content: 80 columns - 8 default bubbleMargin (right
+    // safety) - 1 STATS_LEFT_MARGIN = 71 cells of "„." tiled and clipped —
+    // nothing woven in that isn't part of the plain terrain tile.
+    const expectedWidth = 80 - 8 - 1;
+    const expectedTile = "„.".repeat(Math.ceil(expectedWidth / 2)).slice(0, expectedWidth);
+    // The line also carries the fixed lead (Braille Blank + STATS_LEFT_MARGIN
+    // space) ahead of the tile itself.
+    expect(stripAnsi(g)).toBe("⠀ " + expectedTile);
+    // Only the terrain tint opens on this row (4a7c3f -> 74;124;63) — no
+    // weather-color escape (e.g. e8f0f7 -> 232;240;247, the value the active-
+    // weather test above pins) appears anywhere on the row.
+    expect(g).toContain("\x1b[2;38;2;74;124;63m");
+    expect(g).not.toContain("\x1b[38;2;232;240;247m");
+    // Exactly one colour escape opens (the terrain tint) plus the trailing
+    // reset — if the recolor branch fired even once, a second open escape
+    // would appear before the trailing NC.
+    const escapeCount = (g.match(/\x1b\[[0-9;]*m/g) ?? []).length;
+    expect(escapeCount).toBe(2); // terrain tint open + trailing reset
   });
 
   test("subtle/off suppress the whole row even with weather fields present; combat no longer does (D2)", () => {

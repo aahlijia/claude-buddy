@@ -335,7 +335,7 @@ export const MENU: Record<string, MenuPage> = {
       {
         id: "dressing",
         label: "🌱 World dressing on/off",
-        description: "Toggle ambient props + weather",
+        description: "Toggle ambient props + mood sparkle/drizzle",
         action: {
           kind: "choice",
           tool: "buddy_dressing",
@@ -343,7 +343,11 @@ export const MENU: Record<string, MenuPage> = {
           question: "World dressing",
           header: "Dressing",
           options: [
-            { label: "On", value: true, description: "Ground props + weather FX" },
+            {
+              label: "On",
+              value: true,
+              description: "Ground props + idle-mood FX (not snow/rain — see Ground)",
+            },
             { label: "Off", value: false, description: "No ambient specks" },
           ],
         },
@@ -351,7 +355,7 @@ export const MENU: Record<string, MenuPage> = {
       {
         id: "ground",
         label: "🌍 Living ground on/off",
-        description: "Toggle the terrain floor",
+        description: "Toggle the terrain floor + all snow/rain weather",
         action: {
           kind: "choice",
           tool: "buddy_ground",
@@ -359,8 +363,12 @@ export const MENU: Record<string, MenuPage> = {
           question: "Living ground",
           header: "Ground",
           options: [
-            { label: "On", value: true, description: "Session-seeded terrain floor" },
-            { label: "Off", value: false, description: "No ground row" },
+            {
+              label: "On",
+              value: true,
+              description: "Session-seeded terrain floor + snow/rain",
+            },
+            { label: "Off", value: false, description: "No ground row, no weather" },
           ],
         },
       },

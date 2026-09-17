@@ -543,13 +543,13 @@ registerTool(
       "  /buddy theme     Set color theme: dark (bright) or light (dark colors)",
       "  /buddy gamefeel  Animation intensity: off, subtle, or full (default subtle)",
       "  /buddy wander    Toggle the idle status-line amble (on/off/hop)",
-      "  /buddy dressing  Toggle ambient ground props + weather FX (on/off)",
-      "  /buddy ground    Toggle the fixed terrain floor under the buddy (on/off)",
+      "  /buddy dressing  Toggle ambient ground props + idle-mood sparkle/drizzle (on/off)",
+      "  /buddy ground    Toggle the terrain floor AND all snow/rain weather (on/off)",
       "",
       "  Motion feels distracting? Turn off the amble with /buddy wander off,",
-      "  hide the little sprout/pebble + weather specks with /buddy dressing off,",
-      "  drop the terrain floor with /buddy ground off, or quiet everything with",
-      "  /buddy gamefeel subtle (or off for silence).",
+      "  hide the little sprout/pebble + mood sparkle/drizzle with /buddy dressing off,",
+      "  drop the terrain floor (and silence snow/rain) with /buddy ground off, or",
+      "  quiet everything with /buddy gamefeel subtle (or off for silence).",
       "",
       "CLI:",
       "  bun run help            Show full CLI help",
@@ -971,7 +971,7 @@ function dressingStateLine(cfg: BuddyConfig): string {
 
 registerTool(
   "buddy_dressing",
-  "Control the buddy's ambient world dressing — the day-seeded ground props (a little sprout/pebble beside the buddy) and the sparse weather FX (a sparkle on a clean streak, a drizzle mark during a rough one). `enabled` toggles the whole layer (default on) so you can silence the ambient specks WITHOUT dropping game-feel below 'full' (which would also stop the emote, idle wander, and combat scene). Omit `enabled` to report the current setting. Backs /buddy dressing. Read live — no restart needed. Only ever shows when game-feel intensity is 'full'.",
+  "Control the buddy's ambient world dressing — the day-seeded ground props (a little sprout/pebble beside the buddy) and the sparse idle-mood FX (a sparkle on a clean coding streak, a drizzle mark during a rough one). That 'weather FX' is a coding-signal mood effect, NOT snow/rain — actual falling/ground weather lives entirely under /buddy ground (buddy_ground) and is unaffected by this toggle. `enabled` toggles the whole dressing layer (default on) so you can silence the ambient specks WITHOUT dropping game-feel below 'full' (which would also stop the emote, idle wander, and combat scene). Omit `enabled` to report the current setting. Backs /buddy dressing. Read live — no restart needed. Only ever shows when game-feel intensity is 'full'.",
   {
     enabled: z
       .boolean()
@@ -1010,7 +1010,7 @@ function groundStateLine(cfg: BuddyConfig): string {
 
 registerTool(
   "buddy_ground",
-  "Control the buddy's living ground — the fixed, full-width terrain strip painted beneath it (grass, water, stone, sand, and so on). It's session-seeded, so the environment re-rolls each new coding session but stays put within one. `enabled` toggles the whole row (default on). Unlike the buddy, the ground never moves — it's the floor the buddy roams over. Omit `enabled` to report the current setting. Backs /buddy ground. Read live — no restart needed. Only ever shows when game-feel intensity is 'full'.",
+  "Control the buddy's living ground — the fixed, full-width terrain strip painted beneath it (grass, water, stone, sand, and so on) — AND all snow/rain weather: turning this off silences weather entirely (both the specks woven into the ground and the flakes falling over the whole widget), not just the terrain floor. (This is unrelated to /buddy dressing's 'weather FX', which is a separate coding-mood sparkle/drizzle effect.) It's session-seeded, so the terrain — and whether/what weather occurs — re-rolls each new coding session but stays put within one. `enabled` toggles the whole row, plus its weather, together (default on). Unlike the buddy, the ground never moves — it's the floor the buddy roams over. Omit `enabled` to report the current setting. Backs /buddy ground. Read live — no restart needed. Only ever shows when game-feel intensity is 'full'.",
   {
     enabled: z
       .boolean()

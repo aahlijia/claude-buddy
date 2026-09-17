@@ -1507,7 +1507,12 @@ if [ -n "$GROUND_TILE" ]; then
                         "$(( 16#${GROUND_WEATHER_COLOR:4:2} ))"
                     ;;
             esac
-            _grow="${_grow//$GROUND_WEATHER_GLYPH/${_WC}${GROUND_WEATHER_GLYPH}${_GC}}"
+            # The search half MUST stay quoted: unquoted, it is a GLOB pattern,
+            # and a `*` glyph would match the entire row and collapse it to a
+            # single character -- measured a ~74-cell tiled row down to 3.
+            # _wx_slice/_wx_overlay already quote their own uses for the same
+            # reason (:1097-1100).
+            _grow="${_grow//"$GROUND_WEATHER_GLYPH"/${_WC}${GROUND_WEATHER_GLYPH}${_GC}}"
         fi
         echo "${_GLEAD}${_GC}${_grow}${NC}"
     fi

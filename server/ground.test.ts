@@ -8,6 +8,7 @@ import {
   ALL_GROUND_WEATHER_GLYPHS,
   type WeatherSchedule,
 } from "./ground.ts";
+import { ALL_SKY_FALL_GLYPHS } from "./weatherfall.ts";
 import { mirrorFrame, displayWidth } from "./art.ts";
 
 describe("living ground selection (living-world follow-up)", () => {
@@ -151,6 +152,26 @@ describe("ground weather schedule (living-world follow-up)", () => {
       expect(displayWidth(g)).toBe(1);
       const mirrored = mirrorFrame([`  ${g}  `]).join("\n");
       expect(mirrored).toContain(g);
+    }
+  });
+
+  // buddy-status.sh:1515 recolors this glyph inside the already-tiled ground
+  // row with `${_grow//"$GROUND_WEATHER_GLYPH"/...}` — a bash pattern
+  // substitution. Quoted, that's a literal-string match; UNQUOTED (the bug a
+  // prior audit found live and unfixed at the time, reproduced by hand: a `*`
+  // glyph collapsed a ~74-cell tiled row down to 3 display cells), bash
+  // treats the pattern as a GLOB, and any of `* ? [ ] \` would silently
+  // reinterpret the substitution. The shell fix quotes the pattern, but this
+  // is the belt-and-suspenders half: no future glyph choice should be able to
+  // reintroduce the hazard in the first place. Mirrors the disjointness test
+  // just above.
+  test("no ground-weather or falling-weather glyph is a glob metacharacter (buddy-status.sh:1515 pattern-substitution safety)", () => {
+    const GLOB_METACHARS = /[*?[\]\\]/;
+    for (const g of ALL_GROUND_WEATHER_GLYPHS) {
+      expect(g).not.toMatch(GLOB_METACHARS);
+    }
+    for (const g of ALL_SKY_FALL_GLYPHS) {
+      expect(g).not.toMatch(GLOB_METACHARS);
     }
   });
 });
