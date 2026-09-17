@@ -14,23 +14,38 @@ SID="${SID:-default}"
 
 [ -f "$STATUS_FILE" ] || exit 0
 
-INPUT=$(cat)
-
-# Claude Code sends the prompt in different fields depending on version
-PROMPT=$(echo "$INPUT" | jq -r '
+# Claude Code sends the prompt in different fields depending on version.
+# stdin feeds jq directly — no intermediate $(cat) capture (perf R2).
+PROMPT=$(jq -r '
   .prompt // .message // .user_message //
   (.messages[-1].content // "") | if type=="array" then .[0].text else . end
   ' 2>/dev/null)
 [ -z "$PROMPT" ] && exit 0
 
-NAME=$(jq -r '.name // ""' "$STATUS_FILE" 2>/dev/null)
+# One jq pass reads every status key this hook consumes (perf R2: was one
+# jq per key, split across the name gate).
+IFS=$'\x1f' read -r NAME SPECIES MUTED <<< "$(
+    jq -rs '.[0] as $s |
+        [($s.name // ""), ($s.species // "blob"), ($s.muted // false)]
+        | map(tostring) | join("\u001f")' "$STATUS_FILE" 2>/dev/null
+)"
+SPECIES=${SPECIES:-blob}
+MUTED=${MUTED:-false}
 [ -z "$NAME" ] && exit 0
 
-# Case-insensitive whole-word match
-echo "$PROMPT" | grep -qiE "(^|[^a-zA-Z])${NAME}([^a-zA-Z]|$)" 2>/dev/null || exit 0
+# Case-insensitive whole-word match — bash =~ replaces the old grep (perf
+# R2). Equivalent across multi-line prompts: the old per-line ^/$ anchors are
+# covered because [^a-zA-Z] also matches the newline on either side of an
+# interior line. nocasematch is scoped tightly so the species case below
+# keeps exact matching.
+_NAME_RE="(^|[^a-zA-Z])${NAME}([^a-zA-Z]|\$)"
+shopt -s nocasematch
+if [[ ! $PROMPT =~ $_NAME_RE ]]; then
+    shopt -u nocasematch
+    exit 0
+fi
+shopt -u nocasematch
 
-SPECIES=$(jq -r '.species // "blob"' "$STATUS_FILE" 2>/dev/null)
-MUTED=$(jq -r '.muted // false' "$STATUS_FILE" 2>/dev/null)
 [ "$MUTED" = "true" ] && exit 0
 
 # Easter egg (game-feel FR-D3): count name-calls; unlock a hidden cosmetic once
@@ -39,7 +54,8 @@ MUTED=$(jq -r '.muted // false' "$STATUS_FILE" 2>/dev/null)
 EGG_COUNT_FILE="$STATE_DIR/.name_calls"
 EGG_DONE_FILE="$STATE_DIR/.namecaller_unlocked"
 if [ ! -f "$EGG_DONE_FILE" ]; then
-    _egg=$(cat "$EGG_COUNT_FILE" 2>/dev/null || echo 0)
+    _egg=""
+    read -r _egg < "$EGG_COUNT_FILE" 2>/dev/null
     case "$_egg" in ''|*[!0-9]*) _egg=0 ;; esac
     _egg=$((_egg + 1))
     echo "$_egg" > "$EGG_COUNT_FILE"

@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 
-STATE_DIR="$HOME/.claude-buddy"
+# R4: resolve the state dir through paths.sh like every other hook, instead
+# of hardcoding $HOME/.claude-buddy — honors CLAUDE_CONFIG_DIR multi-profile
+# setups; the no-CLAUDE_CONFIG_DIR default is unchanged ($HOME/.claude-buddy).
+# shellcheck source=../scripts/paths.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/paths.sh"
+
+STATE_DIR="$BUDDY_STATE_DIR"
 SID="${TMUX_PANE#%}"
 SID="${SID:-default}"
 REACTION_FILE="$STATE_DIR/reaction.$SID.json"
@@ -10,25 +16,37 @@ CONFIG_FILE="$STATE_DIR/config.json"
 
 [ -f "$STATUS_FILE" ] || exit 0
 
-INPUT=$(cat)
+NOW_TS=$(date +%s)
 
+# One jq pass reads every status/config key this hook consumes (perf R2:
+# was one jq per key, with species read again after the rarity gate).
+# /dev/null stands in for a missing config so the two-file slurp still
+# parses; a malformed file empties the read and the fallbacks apply.
+_CFG_SRC="$CONFIG_FILE"
+[ -f "$_CFG_SRC" ] || _CFG_SRC=/dev/null
+IFS=$'\x1f' read -r MUTED SPECIES _CD <<< "$(
+    jq -rs '
+        (.[0] // {}) as $s | (.[1] // {}) as $c |
+        [($s.muted // false), ($s.species // "blob"),
+         ($c.commentCooldown // 30)]
+        | map(tostring) | join("\u001f")' "$STATUS_FILE" "$_CFG_SRC" 2>/dev/null
+)"
+MUTED=${MUTED:-false}
+SPECIES=${SPECIES:-blob}
 COOLDOWN=30
-if [ -f "$CONFIG_FILE" ]; then
-    _cd=$(jq -r '.commentCooldown // 30' "$CONFIG_FILE" 2>/dev/null || echo 30)
-    [[ "$_cd" =~ ^[0-9]+$ ]] && COOLDOWN=$_cd
-fi
+[[ "$_CD" =~ ^[0-9]+$ ]] && COOLDOWN=$_CD
 
 if [ -f "$COOLDOWN_FILE" ]; then
-    LAST=$(cat "$COOLDOWN_FILE" 2>/dev/null)
-    NOW=$(date +%s)
-    DIFF=$(( NOW - ${LAST:-0} ))
+    LAST=""
+    read -r LAST < "$COOLDOWN_FILE" 2>/dev/null
+    DIFF=$(( NOW_TS - ${LAST:-0} ))
     [ "$DIFF" -lt "$COOLDOWN" ] && exit 0
 fi
 
-MUTED=$(jq -r '.muted // false' "$STATUS_FILE" 2>/dev/null)
 [ "$MUTED" = "true" ] && exit 0
 
-FILE_PATH=$(echo "$INPUT" | jq -r '.file_path // ""' 2>/dev/null)
+# stdin feeds jq directly — no intermediate $(cat) capture.
+FILE_PATH=$(jq -r '.file_path // ""' 2>/dev/null)
 [ -z "$FILE_PATH" ] && exit 0
 
 FILE_TYPE=""
@@ -72,8 +90,7 @@ esac
 
 [ $((RANDOM % 100)) -lt 15 ] || exit 0
 
-SPECIES=$(jq -r '.species // "blob"' "$STATUS_FILE" 2>/dev/null)
-
+# SPECIES comes from the consolidated read at the top.
 if [ "$FILE_TYPE" = "lang-javascript" ]; then
     FILE_TYPE="lang-typescript"
 fi
@@ -388,9 +405,9 @@ pick_file_reaction "$FILE_TYPE"
 
 if [ -n "$REACTION" ]; then
     mkdir -p "$STATE_DIR"
-    date +%s > "$COOLDOWN_FILE"
+    printf '%s\n' "$NOW_TS" > "$COOLDOWN_FILE"
 
-    jq -n --arg r "$REACTION" --arg ts "$(date +%s)000" --arg reason "$FILE_TYPE" \
+    jq -n --arg r "$REACTION" --arg ts "${NOW_TS}000" --arg reason "$FILE_TYPE" \
       '{reaction: $r, timestamp: ($ts | tonumber), reason: $reason}' \
       > "$REACTION_FILE"
 

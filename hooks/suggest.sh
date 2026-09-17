@@ -14,31 +14,27 @@ SUGGESTIONS_FILE="$STATE_DIR/suggestions.json"
 
 [ -f "$CONFIG_FILE" ] || exit 0
 
-# Check if suggestions are enabled (default: true)
-SUGGESTIONS_ENABLED="true"
-if [ -f "$CONFIG_FILE" ]; then
-    _enabled=$(jq -r '.suggestionsEnabled // true' "$CONFIG_FILE" 2>/dev/null)
-    [ "$_enabled" = "false" ] && exit 0
-fi
-
-# Check cooldown (default: 180s = 3 min)
+# One jq pass reads both config keys (perf R2: was one jq per key).
+# suggestionsEnabled default: true; suggestionCooldown default: 180s (0 OK).
+IFS=$'\x1f' read -r _enabled _cd <<< "$(
+    jq -rs '.[0] as $c |
+        [($c.suggestionsEnabled // true), ($c.suggestionCooldown // 180)]
+        | map(tostring) | join("\u001f")' "$CONFIG_FILE" 2>/dev/null
+)"
+[ "$_enabled" = "false" ] && exit 0
 SUGGESTION_COOLDOWN=180
-if [ -f "$CONFIG_FILE" ]; then
-    _cd=$(jq -r '.suggestionCooldown // 180' "$CONFIG_FILE" 2>/dev/null || echo 180)
-    [[ "$_cd" =~ ^[0-9]+$ ]] && SUGGESTION_COOLDOWN=$_cd
-fi
+[[ "$_cd" =~ ^[0-9]+$ ]] && SUGGESTION_COOLDOWN=$_cd
 
 if [ -f "$LAST_SUGGESTION_FILE" ]; then
-    LAST=$(cat "$LAST_SUGGESTION_FILE" 2>/dev/null)
+    LAST=""
+    read -r LAST < "$LAST_SUGGESTION_FILE" 2>/dev/null
     NOW=$(date +%s)
     DIFF=$(( NOW - ${LAST:-0} ))
     [ "$DIFF" -lt "$SUGGESTION_COOLDOWN" ] && exit 0
 fi
 
-INPUT=$(cat)
-
-# Extract messages
-ASSISTANT_MSG=$(echo "$INPUT" | jq -r '.last_assistant_message // ""' 2>/dev/null)
+# stdin feeds jq directly — no intermediate $(cat) capture (perf R2).
+ASSISTANT_MSG=$(jq -r '.last_assistant_message // ""' 2>/dev/null)
 [ -z "$ASSISTANT_MSG" ] && exit 0
 
 # Record turn and check patterns

@@ -27,25 +27,36 @@ if [ -f "$CONFIG_FILE" ]; then
   [[ "$_cd" =~ ^[0-9]+$ ]] && COOLDOWN=$_cd
 fi
 
-INPUT=$(cat)
+# Builtin stdin capture (perf R2: was $(cat)) — INPUT is needed twice (MSG
+# here, USER_MSG in the consolidate sidecar below). read -d '' returns
+# nonzero at EOF but the variable holds the full stream.
+INPUT=""
+IFS= read -rd '' INPUT
 
 # Extract last_assistant_message from hook input
-MSG=$(echo "$INPUT" | jq -r '.last_assistant_message // ""' 2>/dev/null)
+MSG=$(jq -r '.last_assistant_message // ""' <<< "$INPUT" 2>/dev/null)
 [ -z "$MSG" ] && exit 0
+
+# Cheap builtin pre-check before forking sed: the sed pattern requires a
+# literal "buddy:", so a message without that substring can never match —
+# and that is the overwhelmingly common Stop (perf R2). sed stays the
+# authoritative extractor when the marker is present.
+[[ $MSG != *buddy:* ]] && exit 0
 
 # Extract <!-- buddy: ... --> comment (portable, no grep -P)
 COMMENT=$(echo "$MSG" | sed -n 's/.*<!-- *buddy: *\(.*[^ ]\) *-->.*/\1/p' | tail -1)
 [ -z "$COMMENT" ] && exit 0
 
 # Cooldown: configurable (default 30s)
+NOW_TS=$(date +%s)
 if [ -f "$COOLDOWN_FILE" ]; then
-    LAST=$(cat "$COOLDOWN_FILE" 2>/dev/null)
-    NOW=$(date +%s)
-    [ $(( NOW - ${LAST:-0} )) -lt "$COOLDOWN" ] && exit 0
+    LAST=""
+    read -r LAST < "$COOLDOWN_FILE" 2>/dev/null
+    [ $(( NOW_TS - ${LAST:-0} )) -lt "$COOLDOWN" ] && exit 0
 fi
 
 mkdir -p "$STATE_DIR"
-date +%s > "$COOLDOWN_FILE"
+printf '%s\n' "$NOW_TS" > "$COOLDOWN_FILE"
 
 # Update status.json with the reaction
 # Same-dir mktemp: /tmp may be another filesystem, where mv degrades to
@@ -55,7 +66,7 @@ jq --arg r "$COMMENT" '.reaction = $r' "$STATUS_FILE" > "$TMP" 2>/dev/null \
     && mv "$TMP" "$STATUS_FILE" || rm -f "$TMP"
 
 # Also write reaction file (use jq for safe JSON encoding)
-jq -n --arg r "$COMMENT" --arg ts "$(date +%s)000" \
+jq -n --arg r "$COMMENT" --arg ts "${NOW_TS}000" \
   '{reaction: $r, timestamp: ($ts | tonumber), reason: "turn"}' \
   > "$STATE_DIR/reaction.$SID.json"
 
@@ -80,7 +91,7 @@ fi
 if [ -x "$(command -v bun)" ]; then
     PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     # Pass the assistant message for analysis (pass empty string for user prompt if unavailable)
-    USER_MSG=$(echo "$INPUT" | jq -r '.last_user_message // ""' 2>/dev/null)
+    USER_MSG=$(jq -r '.last_user_message // ""' <<< "$INPUT" 2>/dev/null)
     bun run "$PLUGIN_ROOT/server/consolidate.ts" \
         "$(echo "$MSG" | jq -Rs .)" \
         "$(echo "$USER_MSG" | jq -Rs .)" \

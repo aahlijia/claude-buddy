@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 
-STATE_DIR="$HOME/.claude-buddy"
+# R4: resolve the state dir through paths.sh like every other hook, instead
+# of hardcoding $HOME/.claude-buddy — honors CLAUDE_CONFIG_DIR multi-profile
+# setups; the no-CLAUDE_CONFIG_DIR default is unchanged ($HOME/.claude-buddy).
+# shellcheck source=../scripts/paths.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/paths.sh"
+
+STATE_DIR="$BUDDY_STATE_DIR"
 SID="${TMUX_PANE#%}"
 SID="${SID:-default}"
 REACTION_FILE="$STATE_DIR/reaction.$SID.json"
@@ -11,29 +17,38 @@ EVENTS_FILE="$STATE_DIR/events.json"
 
 [ -f "$STATUS_FILE" ] || exit 0
 
-INPUT=$(cat)
+NOW_TS=$(date +%s)
 
+# One jq pass reads every status/config key this hook consumes (perf R2:
+# was one jq per key). /dev/null stands in for a missing config so the
+# two-file slurp still parses; a malformed file empties the read and the
+# fallbacks apply. The unused NAME read is gone — no reader existed.
+_CFG_SRC="$CONFIG_FILE"
+[ -f "$_CFG_SRC" ] || _CFG_SRC=/dev/null
+IFS=$'\x1f' read -r MUTED SPECIES _CD <<< "$(
+    jq -rs '
+        (.[0] // {}) as $s | (.[1] // {}) as $c |
+        [($s.muted // false), ($s.species // "blob"),
+         ($c.moodCooldown // 60)]
+        | map(tostring) | join("\u001f")' "$STATUS_FILE" "$_CFG_SRC" 2>/dev/null
+)"
+MUTED=${MUTED:-false}
+SPECIES=${SPECIES:-blob}
 COOLDOWN=60
-if [ -f "$CONFIG_FILE" ]; then
-  _cd=$(jq -r '.moodCooldown // 60' "$CONFIG_FILE" 2>/dev/null || echo 60)
-  [[ "$_cd" =~ ^[0-9]+$ ]] && COOLDOWN=$_cd
-fi
+[[ "$_CD" =~ ^[0-9]+$ ]] && COOLDOWN=$_CD
 
 if [ -f "$COOLDOWN_FILE" ]; then
-    LAST=$(cat "$COOLDOWN_FILE" 2>/dev/null)
-    NOW=$(date +%s)
-    DIFF=$(( NOW - ${LAST:-0} ))
+    LAST=""
+    read -r LAST < "$COOLDOWN_FILE" 2>/dev/null
+    DIFF=$(( NOW_TS - ${LAST:-0} ))
     [ "$DIFF" -lt "$COOLDOWN" ] && exit 0
 fi
 
-PROMPT=$(echo "$INPUT" | jq -r '.prompt // ""' 2>/dev/null)
+# stdin feeds jq directly — no intermediate $(cat) capture.
+PROMPT=$(jq -r '.prompt // ""' 2>/dev/null)
 [ -z "$PROMPT" ] && exit 0
 
-MUTED=$(jq -r '.muted // false' "$STATUS_FILE" 2>/dev/null)
 [ "$MUTED" = "true" ] && exit 0
-
-SPECIES=$(jq -r '.species // "blob"' "$STATUS_FILE" 2>/dev/null)
-NAME=$(jq -r '.name // "buddy"' "$STATUS_FILE" 2>/dev/null)
 
 MOOD=""
 REACTION=""
@@ -164,24 +179,30 @@ pick_mood_reaction() {
     [ ${#POOLS[@]} -gt 0 ] && REACTION="${POOLS[$((RANDOM % ${#POOLS[@]}))]}"
 }
 
-if echo "$PROMPT" | grep -qiE '\bwtf\b|\bugh\b|\bstupid\b|\bbroken\b|why won.?t|\bcome on\b|\bseriously\b|\bdamn\b|\bhell\b|this sucks|hate this|\bgrr\b|\bargh\b|\bannoying\b|\bfrustrat\b|\bterrible\b|\bhorrible\b|\bworst\b'; then
-    MOOD="frustrated"
-    pick_mood_reaction "frustrated"
-
-elif echo "$PROMPT" | grep -qiE '\bnice!?\b|\bworks!?\b|\bawesome\b|\bperfect\b|\bgreat\b|love it|\byay\b|\bsweet\b|\bbeautiful\b|\bamazing\b|hell yes|nailed it|fixed it|\bhell yeah\b|\bfantastic\b'; then
-    MOOD="happy"
-    pick_mood_reaction "happy"
-
-elif echo "$PROMPT" | grep -qiE '\bstuck\b|\bhelp\b|\bconfused\b|don.?t understand|how do i\b|what does\b|why is\b|i can.?t\b|no idea|\blost\b|\bclueless\b|\bbaffled\b|\bpuzzled\b'; then
-    MOOD="stuck"
-    pick_mood_reaction "stuck"
-fi
+# Single-pass classifier (perf R2, same pattern as react.sh): one perl
+# process replaces the former 3-branch grep -qiE chain. perl because its /i
+# and \b semantics match grep -iE exactly — the patterns are \b-heavy and
+# bash [[ =~ ]] / BSD awk lack a reliable \b. Patterns byte-for-byte the old
+# greps; priority order (frustrated > happy > stuck) unchanged.
+MOOD=$(printf '%s' "$PROMPT" | perl -e '
+    my $p = do { local $/; <STDIN> };
+    my $mood = "";
+    if ($p =~ /\bwtf\b|\bugh\b|\bstupid\b|\bbroken\b|why won.?t|\bcome on\b|\bseriously\b|\bdamn\b|\bhell\b|this sucks|hate this|\bgrr\b|\bargh\b|\bannoying\b|\bfrustrat\b|\bterrible\b|\bhorrible\b|\bworst\b/im) {
+        $mood = "frustrated";
+    } elsif ($p =~ /\bnice!?\b|\bworks!?\b|\bawesome\b|\bperfect\b|\bgreat\b|love it|\byay\b|\bsweet\b|\bbeautiful\b|\bamazing\b|hell yes|nailed it|fixed it|\bhell yeah\b|\bfantastic\b/im) {
+        $mood = "happy";
+    } elsif ($p =~ /\bstuck\b|\bhelp\b|\bconfused\b|don.?t understand|how do i\b|what does\b|why is\b|i can.?t\b|no idea|\blost\b|\bclueless\b|\bbaffled\b|\bpuzzled\b/im) {
+        $mood = "stuck";
+    }
+    print $mood;
+' 2>/dev/null)
+[ -n "$MOOD" ] && pick_mood_reaction "$MOOD"
 
 if [ -n "$MOOD" ] && [ -n "$REACTION" ]; then
     mkdir -p "$STATE_DIR"
-    date +%s > "$COOLDOWN_FILE"
+    printf '%s\n' "$NOW_TS" > "$COOLDOWN_FILE"
 
-    jq -n --arg r "$REACTION" --arg ts "$(date +%s)000" --arg reason "$MOOD" \
+    jq -n --arg r "$REACTION" --arg ts "${NOW_TS}000" --arg reason "$MOOD" \
       '{reaction: $r, timestamp: ($ts | tonumber), reason: $reason}' \
       > "$REACTION_FILE"
 

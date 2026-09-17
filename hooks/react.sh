@@ -13,26 +13,31 @@ COOLDOWN_FILE="$STATE_DIR/.last_reaction.$SID"
 CONFIG_FILE="$STATE_DIR/config.json"
 EVENTS_FILE="$STATE_DIR/events.json"
 
+# One date fork supplies every timestamp/calendar field the script needs.
+# Sub-second drift vs the former per-site date calls is invisible at the
+# granularities involved (30s cooldown, 600s recovery window, second-based
+# reaction timestamps).
+read -r NOW_TS HOUR DOW MONTH DAY <<< "$(date +'%s %H %u %m %d')"
+HOUR=${HOUR#0}
+
 SESSION_START_FILE="$STATE_DIR/.session_start.$SID"
 if [ ! -f "$SESSION_START_FILE" ]; then
-    date +%s > "$SESSION_START_FILE"
+    printf '%s\n' "$NOW_TS" > "$SESSION_START_FILE"
     # New session — capture the XP baseline for the session-completion bonus.
     if [ -x "$(command -v bun)" ]; then
         PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
         bun run "$PLUGIN_ROOT/server/award-xp.ts" session_start >/dev/null 2>&1 &
     fi
 fi
-SESSION_START=$(cat "$SESSION_START_FILE" 2>/dev/null || echo "$(date +%s)")
-NOW_TS=$(date +%s)
+SESSION_START=""
+read -r SESSION_START < "$SESSION_START_FILE" 2>/dev/null
+SESSION_START=${SESSION_START:-$NOW_TS}
 SESSION_ELAPSED=$(( NOW_TS - SESSION_START ))
-HOUR=$(date +%H | sed 's/^0//')
-DOW=$(date +%u)
 
 [ -f "$STATUS_FILE" ] || exit 0
 
-INPUT=$(cat)
-
-RESULT=$(echo "$INPUT" | jq -r '.tool_response // ""' 2>/dev/null)
+# stdin feeds jq directly — no intermediate $(cat) capture.
+RESULT=$(jq -r '.tool_response // ""' 2>/dev/null)
 [ -z "$RESULT" ] && exit 0
 
 # Lifecycle exemption (design-pending-encounter G5): a commit closes the
@@ -42,31 +47,110 @@ RESULT=$(echo "$INPUT" | jq -r '.tool_response // ""' 2>/dev/null)
 # error→fix→commit flow) silently skips all three and the "commit nudge"
 # survives the very commit that should clear it. Same pattern the classifier's
 # commit branch matches below.
-IS_COMMIT=0
-if echo "$RESULT" | grep -qiE '[0-9]+ files? changed|\[[a-zA-Z_-]+ [a-f0-9]{7,}\]'; then
-    IS_COMMIT=1
-fi
+# Single-pass classifier (perf R1): one perl process replaces the former
+# 16-branch grep -qiE chain plus its grep/wc/head/tr/cut extraction pipelines.
+# perl is used because its /i, /m (per-line ^) and \b semantics match
+# grep -iE exactly — bash [[ =~ ]] and BSD awk both lack a reliable \b, which
+# the test/error/success patterns depend on. Patterns are byte-for-byte the
+# old greps; extraction (files/branch/lines) stays case-sensitive exactly
+# where the old -o pipelines were (\x27 = the apostrophe the single-quoted
+# shell string cannot carry). The standalone is_commit check stays independent
+# of the merge-conflict-first priority chain, as before. Classification is
+# pure, so running it ahead of the cooldown/mute gates moves work, not
+# behavior; the chain itself is applied further down where the old one lived.
+# If perl is absent the classifier yields nothing and only the seasonal/
+# time-of-day reactions below survive — same shape as any other missing-tool
+# degradation here.
+_CLS=$(printf '%s' "$RESULT" | perl -e '
+    my $r = do { local $/; <STDIN> };
+    my $ic = ($r =~ /[0-9]+ files? changed|\[[a-zA-Z_-]+ [a-f0-9]{7,}\]/im) ? 1 : 0;
+    my ($reason, $extra) = ("", "");
+    if ($r =~ /CONFLICT \(|Merge conflict in|both modified/im) {
+        $reason = "merge-conflict";
+        $extra = () = $r =~ /Merge conflict in .*/gm;
+    } elsif ($ic) {
+        $reason = "commit";
+        $extra = $1 if $r =~ /([0-9]+) files? changed/;
+    } elsif ($r =~ /To .+:|[0-9a-f]+\.\.[0-9a-f]+\s+\w+ -> \w+|Everything up-to-date|remote: Resolving deltas/im) {
+        $reason = "push";
+    } elsif ($r =~ /Switched to a new branch|Created branch|onto a new branch/im) {
+        $reason = "branch";
+        $extra = $1 if $r =~ /\x27([^\x27]+)\x27/;
+    } elsif ($r =~ /Successfully rebased|Rebasing|[0-9]+ done/im) {
+        $reason = "rebase";
+    } elsif ($r =~ /Saved working directory|Dropped .+ stash|stash@/im) {
+        $reason = "stash";
+    } elsif ($r =~ /tagged|v[0-9]+\.[0-9]+|tag:.*->/im) {
+        $reason = "tag";
+    } elsif ($r =~ /vulnerabilit|CVE-[0-9]{4}-[0-9]+|npm audit|found [0-9]+ vulnerabilities|in [0-9]+ scanned package/im) {
+        $reason = "security-warning";
+    } elsif ($r =~ /Build failed|Failed to compile|ERROR in |compilation error|Command failed with exit code/im) {
+        $reason = "build-fail";
+    } elsif ($r =~ /TS[0-9]{4}:|Type .+ is not assignable|Argument of type|Cannot find name|Property .+ does not exist/im) {
+        $reason = "type-error";
+    } elsif ($r =~ /✖|[0-9]+ problems? \([0-9]+ error|warning:.+ ESLint|Ruff|flake8.*error|pylint.*error/im) {
+        $reason = "lint-fail";
+    } elsif ($r =~ /deprecat|will be removed in|is deprecated|DEPRECATED/im) {
+        $reason = "deprecation";
+    } elsif ($r =~ /all [0-9]+ tests passed|\b0 fail(s|ed|ures)?\b|100% passed|all [0-9]+ passed/im) {
+        $reason = "all-green";
+    } elsif ($r =~ /deployed to|Deployment complete|Published to|vercel.*ready|netlify.*deployed/im) {
+        $reason = "deploy";
+    } elsif ($r =~ /npm publish|gh release create|Published.*to.*registry/im) {
+        $reason = "release";
+    } elsif ($r =~ /Coverage:.*[0-9]+%|All files.*\|.*[0-9]+%/im) {
+        $reason = "coverage";
+    } elsif ($r =~ /\b[1-9][0-9]* (fail|failed|failing)\b|tests? failed|^FAIL(ED)?|✗|✘/im) {
+        $reason = "test-fail";
+    } elsif ($r =~ /\berror:|\bexception\b|\btraceback\b|\bpanicked at\b|\bfatal:|exit code [1-9]/im) {
+        $reason = "error";
+    } elsif ($r =~ /^\+.*[0-9]+ insertions|[0-9]+ files? changed/im) {
+        my $lines = 0;
+        $lines = $1 if $r =~ /([0-9]+) insertions/;
+        $reason = "large-diff" if $lines > 80;
+    } elsif ($r =~ /\b(all )?[0-9]+ tests? (passed|ok)\b|✓|✔|PASS(ED)?|\bDone\b|\bSuccess\b|exit code 0|Build succeeded/im) {
+        $reason = "success";
+    }
+    print "$ic\x1f$reason\x1f$extra";
+' 2>/dev/null)
+IFS=$'\x1f' read -r IS_COMMIT _CLS_REASON _CLS_EXTRA <<< "$_CLS"
+IS_COMMIT=${IS_COMMIT:-0}
 
+# One jq pass reads every status/config key the script consumes (perf R1:
+# was one jq per key — muted/species from status; commentCooldown/gameFeel/
+# autoQuietFocus from config). /dev/null stands in for a missing config so
+# the two-file slurp still parses; a malformed file empties the whole read
+# and the fallbacks below apply. (The former per-key reads left SPECIES
+# empty on a corrupt status.json; the fallback now lands on "blob", which is
+# what the // default always intended.) The unused NAME read is gone — no
+# reader existed.
+_CFG_SRC="$CONFIG_FILE"
+[ -f "$_CFG_SRC" ] || _CFG_SRC=/dev/null
+IFS=$'\x1f' read -r MUTED SPECIES _CD GAME_FEEL AUTO_QUIET_FOCUS <<< "$(
+    jq -rs '
+        (.[0] // {}) as $s | (.[1] // {}) as $c |
+        [($s.muted // false), ($s.species // "blob"),
+         ($c.commentCooldown // 30), ($c.gameFeel // "subtle"),
+         ($c.autoQuietFocus // false)]
+        | map(tostring) | join("\u001f")' "$STATUS_FILE" "$_CFG_SRC" 2>/dev/null
+)"
+MUTED=${MUTED:-false}
+SPECIES=${SPECIES:-blob}
+GAME_FEEL=${GAME_FEEL:-subtle}
+AUTO_QUIET_FOCUS=${AUTO_QUIET_FOCUS:-false}
 COOLDOWN=30
-if [ -f "$CONFIG_FILE" ]; then
-  _cd=$(jq -r '.commentCooldown // 30' "$CONFIG_FILE" 2>/dev/null || echo 30)
-  [[ "$_cd" =~ ^[0-9]+$ ]] && COOLDOWN=$_cd
-fi
+[[ "$_CD" =~ ^[0-9]+$ ]] && COOLDOWN=$_CD
 
 if [ -f "$COOLDOWN_FILE" ] && [ "$IS_COMMIT" -eq 0 ]; then
-    LAST=$(cat "$COOLDOWN_FILE" 2>/dev/null)
-    NOW=$(date +%s)
-    DIFF=$(( NOW - ${LAST:-0} ))
+    LAST=""
+    read -r LAST < "$COOLDOWN_FILE" 2>/dev/null
+    DIFF=$(( NOW_TS - ${LAST:-0} ))
     [ "$DIFF" -lt "$COOLDOWN" ] && exit 0
 fi
 
 # Mute silences the visible reaction (the bubble writes are gated on $MUTED at
 # the dispatch tail) but must not drop a commit's lifecycle work.
-MUTED=$(jq -r '.muted // false' "$STATUS_FILE" 2>/dev/null)
 [ "$MUTED" = "true" ] && [ "$IS_COMMIT" -eq 0 ] && exit 0
-
-SPECIES=$(jq -r '.species // "blob"' "$STATUS_FILE" 2>/dev/null)
-NAME=$(jq -r '.name // "buddy"' "$STATUS_FILE" 2>/dev/null)
 
 REASON=""
 REACTION=""
@@ -1044,103 +1128,17 @@ pick_reaction() {
     [ ${#POOLS[@]} -gt 0 ] && REACTION="${POOLS[$((RANDOM % ${#POOLS[@]}))]}"
 }
 
-if echo "$RESULT" | grep -qiE 'CONFLICT \(|Merge conflict in|both modified'; then
-    FILES=$(echo "$RESULT" | grep -oE 'Merge conflict in .*' | wc -l | tr -d ' ')
-    REASON="merge-conflict"
-    pick_reaction "merge-conflict"
-
-elif echo "$RESULT" | grep -qiE '[0-9]+ files? changed|\[[a-zA-Z_-]+ [a-f0-9]{7,}\]'; then
-    FILES=$(echo "$RESULT" | grep -oE '[0-9]+ files? changed' | grep -oE '[0-9]+' | head -1)
-    REASON="commit"
-    pick_reaction "commit"
-
-elif echo "$RESULT" | grep -qiE 'To .+:|[0-9a-f]+\.\.[0-9a-f]+\s+\w+ -> \w+|Everything up-to-date|remote: Resolving deltas'; then
-    REASON="push"
-    pick_reaction "push"
-
-elif echo "$RESULT" | grep -qiE 'Switched to a new branch|Created branch|onto a new branch'; then
-    BRANCH=$(echo "$RESULT" | grep -oE "'[^']+'" | head -1 | tr -d "'")
-    REASON="branch"
-    pick_reaction "branch"
-
-elif echo "$RESULT" | grep -qiE 'Successfully rebased|Rebasing|[0-9]+ done'; then
-    REASON="rebase"
-    pick_reaction "rebase"
-
-elif echo "$RESULT" | grep -qiE 'Saved working directory|Dropped .+ stash|stash@'; then
-    REASON="stash"
-    pick_reaction "stash"
-
-elif echo "$RESULT" | grep -qiE 'tagged|v[0-9]+\.[0-9]+|tag:.*->'; then
-    REASON="tag"
-    pick_reaction "tag"
-
-elif echo "$RESULT" | grep -qiE 'vulnerabilit|CVE-[0-9]{4}-[0-9]+|npm audit|found [0-9]+ vulnerabilities|in [0-9]+ scanned package'; then
-    REASON="security-warning"
-    pick_reaction "security-warning"
-
-elif echo "$RESULT" | grep -qiE 'Build failed|Failed to compile|ERROR in |compilation error|Command failed with exit code'; then
-    REASON="build-fail"
-    pick_reaction "build-fail"
-
-elif echo "$RESULT" | grep -qiE 'TS[0-9]{4}:|Type .+ is not assignable|Argument of type|Cannot find name|Property .+ does not exist'; then
-    REASON="type-error"
-    pick_reaction "type-error"
-
-# NOTE: no bare `error:` here — it would swallow every generic error (and bun
-# test failures, which print `error: expect(...)`) before the test-fail/error
-# branches below ever ran, starving errors_seen/tests_failed and the combat
-# spawn that feeds on them. Lint detection keys on lint-shaped output only.
-elif echo "$RESULT" | grep -qiE '✖|[0-9]+ problems? \([0-9]+ error|warning:.+ ESLint|Ruff|flake8.*error|pylint.*error'; then
-    REASON="lint-fail"
-    pick_reaction "lint-fail"
-
-elif echo "$RESULT" | grep -qiE 'deprecat|will be removed in|is deprecated|DEPRECATED'; then
-    REASON="deprecation"
-    pick_reaction "deprecation"
-
-# `\b0 fail(s|ed|ures)?\b` covers bun's summary ("724 pass / 0 fail"); the
-# leading \b keeps "20 fail" from matching on its trailing zero.
-elif echo "$RESULT" | grep -qiE 'all [0-9]+ tests passed|\b0 fail(s|ed|ures)?\b|100% passed|all [0-9]+ passed'; then
-    REASON="all-green"
-    pick_reaction "all-green"
-
-elif echo "$RESULT" | grep -qiE 'deployed to|Deployment complete|Published to|vercel.*ready|netlify.*deployed'; then
-    REASON="deploy"
-    pick_reaction "deploy"
-
-elif echo "$RESULT" | grep -qiE 'npm publish|gh release create|Published.*to.*registry'; then
-    REASON="release"
-    pick_reaction "release"
-
-elif echo "$RESULT" | grep -qiE 'Coverage:.*[0-9]+%|All files.*\|.*[0-9]+%'; then
-    REASON="coverage"
-    pick_reaction "coverage"
-
-# `[1-9][0-9]* fail` covers bun's failing summary ("14 fail"); the leading
-# non-zero digit keeps a green run's "0 fail" out (that's all-green, above).
-elif echo "$RESULT" | grep -qiE '\b[1-9][0-9]* (fail|failed|failing)\b|tests? failed|^FAIL(ED)?|✗|✘'; then
-    REASON="test-fail"
-    pick_reaction "test-fail"
-
-elif echo "$RESULT" | grep -qiE '\berror:|\bexception\b|\btraceback\b|\bpanicked at\b|\bfatal:|exit code [1-9]'; then
-    REASON="error"
-    pick_reaction "error"
-
-elif echo "$RESULT" | grep -qiE '^\+.*[0-9]+ insertions|[0-9]+ files? changed'; then
-    LINES=$(echo "$RESULT" | grep -oE '[0-9]+ insertions' | grep -oE '[0-9]+' | head -1)
-    if [ "${LINES:-0}" -gt 80 ]; then
-        REASON="large-diff"
-        pick_reaction "large-diff"
-    fi
-
-elif echo "$RESULT" | grep -qiE '\b(all )?[0-9]+ tests? (passed|ok)\b|✓|✔|PASS(ED)?|\bDone\b|\bSuccess\b|exit code 0|Build succeeded'; then
-    REASON="success"
-    pick_reaction "success"
-fi
-
-MONTH=$(date +%m)
-DAY=$(date +%d)
+# The priority chain (and its pattern commentary — the no-bare-`error:` lint
+# rule, the `\b0 fail\b` bun summary, the `[1-9][0-9]* fail` red run) lives in
+# the single-pass perl classifier near the top of the script. Here its verdict
+# is applied where the old grep chain stood: same REASON strings, same
+# pick_reaction dispatch, extras mapped to the vars the pools substitute.
+REASON=$_CLS_REASON
+case "$REASON" in
+    merge-conflict|commit) FILES=$_CLS_EXTRA ;;
+    branch) BRANCH=$_CLS_EXTRA ;;
+esac
+[ -n "$REASON" ] && pick_reaction "$REASON"
 if [ -z "$REASON" ]; then
     case "$MONTH$DAY" in
         0101) [ $((RANDOM % 5)) -eq 0 ] && REASON="new-year" && REACTION="happy new year! new year, new bugs." ;;
@@ -1156,7 +1154,10 @@ if [ -z "$REASON" ]; then
     esac
 fi
 
-if [ -n "$REASON" ] && echo "$REASON" | grep -qiE 'halloween|christmas|april-fools|new-year|valentines|pi-day'; then
+# Substring match on purpose (was grep without anchors): *new-year* is meant
+# to catch new-years-eve too.
+case "$REASON" in
+*halloween*|*christmas*|*april-fools*|*new-year*|*valentines*|*pi-day*)
     case "${SPECIES}:${REASON}" in
         ghost:halloween) REACTION="*is the Halloween spirit*" ;;
         ghost:christmas) REACTION="*the ghost of Christmas coding*" ;;
@@ -1174,17 +1175,18 @@ if [ -n "$REASON" ] && echo "$REASON" | grep -qiE 'halloween|christmas|april-foo
         ghost:april-fools) REACTION="*pretends to be alive for April Fools*" ;;
         cat:april-fools) REACTION="*knocks an april fool off the desk*" ;;
     esac
-fi
+    ;;
+esac
 
 # Rare idle surprise (game-feel FR-D2): full intensity only, ~2% — the buddy
 # does something unexpected. Cosmetic text only.
 if [ -z "$REASON" ]; then
-    GAME_FEEL=$(jq -r '.gameFeel // "subtle"' "$CONFIG_FILE" 2>/dev/null || echo subtle)
+    # GAME_FEEL / AUTO_QUIET_FOCUS come from the consolidated config read at
+    # the top (same tick, same values the two former jq calls produced here).
     # Deep-focus auto-quiet (game-feel FR-E1, opt-in): during a long session the
     # rare-idle surprise is suppressed so flow isn't interrupted. This branch
     # already implies no fresh error (REASON is empty), so the only signal left
     # is session length. FOCUS threshold mirrors FOCUS_MIN_SECONDS in state.ts.
-    AUTO_QUIET_FOCUS=$(jq -r '.autoQuietFocus // false' "$CONFIG_FILE" 2>/dev/null || echo false)
     _DEEP_FOCUS=0
     if [ "$AUTO_QUIET_FOCUS" = "true" ] && [ "$SESSION_ELAPSED" -gt 1500 ]; then
         _DEEP_FOCUS=1
@@ -1263,9 +1265,13 @@ if [ -n "$REASON" ]; then
 fi
 
 STREAK_FILE="$STATE_DIR/.error_streak.$SID"
-if echo "$REASON" | grep -qiE 'error|test-fail|build-fail|type-error|lint-fail'; then
-    STREAK=$(cat "$STREAK_FILE" 2>/dev/null || echo 0)
-    STREAK=$((STREAK + 1))
+# Substring globs mirror the old unanchored grep: *error* deliberately
+# catches type-error too.
+case "$REASON" in
+*error*|*test-fail*|*build-fail*|*lint-fail*)
+    STREAK=""
+    read -r STREAK < "$STREAK_FILE" 2>/dev/null
+    STREAK=$(( ${STREAK:-0} + 1 ))
     echo "$STREAK" > "$STREAK_FILE"
     if [ "$STREAK" -eq 3 ]; then
         REACTION="that's three errors in a row. *concerned look*"
@@ -1310,20 +1316,26 @@ if echo "$REASON" | grep -qiE 'error|test-fail|build-fail|type-error|lint-fail';
             goose) REACTION="HONKING HAS CEASED. GOOSE HAS GIVEN UP." ;;
         esac
     fi
-elif [ -n "$REASON" ]; then
-    rm -f "$STREAK_FILE"
-fi
+    ;;
+*)
+    [ -n "$REASON" ] && rm -f "$STREAK_FILE"
+    ;;
+esac
 
 LAST_BAD_FILE="$STATE_DIR/.last_bad.$SID"
-if echo "$REASON" | grep -qiE 'error|test-fail|build-fail|merge-conflict'; then
-    echo "$REASON:$(date +%s)" > "$LAST_BAD_FILE"
-elif echo "$REASON" | grep -qiE 'all-green|success|deploy|release'; then
+# Same substring semantics as the old greps: *error* catches type-error here
+# too (a type error is a bad state to recover from).
+case "$REASON" in
+*error*|*test-fail*|*build-fail*|*merge-conflict*)
+    printf '%s:%s\n' "$REASON" "$NOW_TS" > "$LAST_BAD_FILE"
+    ;;
+*all-green*|*success*|*deploy*|*release*)
     if [ -f "$LAST_BAD_FILE" ]; then
-        LAST_BAD=$(cat "$LAST_BAD_FILE")
-        LAST_BAD_REASON=$(echo "$LAST_BAD" | cut -d: -f1)
-        LAST_BAD_TIME=$(echo "$LAST_BAD" | cut -d: -f2)
-        NOW_RECOVERY=$(date +%s)
-        ELAPSED_RECOVERY=$((NOW_RECOVERY - LAST_BAD_TIME))
+        LAST_BAD=""
+        read -r LAST_BAD < "$LAST_BAD_FILE" 2>/dev/null
+        LAST_BAD_REASON=${LAST_BAD%%:*}
+        LAST_BAD_TIME=${LAST_BAD##*:}
+        ELAPSED_RECOVERY=$((NOW_TS - LAST_BAD_TIME))
         if [ "$ELAPSED_RECOVERY" -lt 600 ]; then
             RECOVERY="recovery-from-$LAST_BAD_REASON"
             case "${SPECIES}:${RECOVERY}" in
@@ -1350,14 +1362,15 @@ elif echo "$REASON" | grep -qiE 'all-green|success|deploy|release'; then
         fi
         rm -f "$LAST_BAD_FILE"
     fi
-fi
+    ;;
+esac
 
 if [ -n "$FILES" ]; then REACTION="${REACTION/\{files\}/$FILES}"; fi
 if [ -n "$BRANCH" ]; then REACTION="${REACTION/\{branch\}/$BRANCH}"; fi
 
 if [ -n "$REASON" ] && [ -n "$REACTION" ]; then
     mkdir -p "$STATE_DIR"
-    date +%s > "$COOLDOWN_FILE"
+    printf '%s\n' "$NOW_TS" > "$COOLDOWN_FILE"
 
     # The visible reaction (bubble) is suppressed while muted — only a commit
     # reaches this point muted (lifecycle exemption above), and it should do
@@ -1366,7 +1379,7 @@ if [ -n "$REASON" ] && [ -n "$REACTION" ]; then
         # Atomic (tmp + same-dir mv): the statusline reads this file every tick
         # when the live reaction field is empty (sticky-bubble fallback), so a
         # bare > redirect risked a torn read. Same idiom as the TS saveReaction.
-        jq -n --arg r "$REACTION" --arg ts "$(date +%s)000" --arg reason "$REASON" \
+        jq -n --arg r "$REACTION" --arg ts "${NOW_TS}000" --arg reason "$REASON" \
           '{reaction: $r, timestamp: ($ts | tonumber), reason: $reason}' \
           > "$REACTION_FILE.tmp.$$" && mv "$REACTION_FILE.tmp.$$" "$REACTION_FILE"
 

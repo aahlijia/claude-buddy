@@ -27,7 +27,9 @@ SID="${SID:-default}"
 
 # Wall clock (overridable for snapshot tests). Needed by the consolidated
 # status read below to resolve the animation frame + wander offsets in one pass.
-NOW=${BUDDY_FAKE_NOW:-$(date +%s)}
+# $EPOCHSECONDS (bash >= 5) saves the date fork on every tick; older bash
+# falls back to date (perf R3).
+NOW=${BUDDY_FAKE_NOW:-${EPOCHSECONDS:-$(date +%s)}}
 
 # ─── Single config.json read (perf: ~11 jq forks → 1) ───────────────────────
 # The status line runs every ~1s; one jq fork per field was ~11 process spawns
@@ -255,7 +257,10 @@ IFS=$'\x1f' read -r \
 [ "$MUTED" = "true" ] && exit 0
 [ -z "$NAME" ] && exit 0
 
-CC_INPUT=$(cat)  # capture stdin JSON (model/context/rate-limit data)
+# Capture stdin JSON (model/context/rate-limit data). Builtin read instead of
+# $(cat) — same drain-to-EOF semantics, one fewer fork per tick (perf R3).
+CC_INPUT=""
+IFS= read -rd '' CC_INPUT
 
 # Decode the base64'd frame art (it's multi-line, so it couldn't ride the TSV
 # raw). Empty on a degraded/missing file → the fallback art below kicks in.
@@ -821,7 +826,12 @@ if [ "$USE_COMBINED" = "true" ]; then
         _SDIM=$'\033[2m'
         _METRICS_PARTS=()
         if [ -n "$_M_MODEL" ]; then
-            _MODEL_TAG=$(printf '%s' "$_M_MODEL" | tr '[:upper:]' '[:lower:]')
+            # ${var,,} needs bash >= 4; older bash keeps the tr fork (perf R3).
+            if [ "${BASH_VERSINFO[0]:-3}" -ge 4 ]; then
+                _MODEL_TAG=${_M_MODEL,,}
+            else
+                _MODEL_TAG=$(printf '%s' "$_M_MODEL" | tr '[:upper:]' '[:lower:]')
+            fi
             case "$_M_CTX_SIZE" in
                 ''|*[!0-9]*) ;;
                 *) [ "$_M_CTX_SIZE" -ge 1000000 ] && _MODEL_TAG="${_MODEL_TAG}[1m]" ;;
@@ -876,7 +886,14 @@ fi
 # path (the common idle tick) this avoids a grep+tr+dirname fork every second.
 if [ -n "$BUBBLE_TEXT" ]; then
     EMOJI_WIDTHS_DATA="$(dirname "${BASH_SOURCE[0]}")/emoji-widths.data"
-    EMOJI_PRES_2600="$(grep -v '^#' "$EMOJI_WIDTHS_DATA" 2>/dev/null | tr -d '\n')"
+    # Builtin read loop instead of grep|tr (perf R3) — the data file is a
+    # handful of lines, and comment lines start with #. Concatenation without
+    # separators matches the old tr -d '\n' exactly (data lines carry their
+    # own trailing spaces).
+    EMOJI_PRES_2600=""
+    while IFS= read -r _ew_line || [ -n "$_ew_line" ]; do
+        case "$_ew_line" in '#'*) ;; *) EMOJI_PRES_2600+="$_ew_line" ;; esac
+    done < "$EMOJI_WIDTHS_DATA" 2>/dev/null
 fi
 
 # ─── Cluster geometry (shared by dynamic bubble sizing + the layout below) ───
