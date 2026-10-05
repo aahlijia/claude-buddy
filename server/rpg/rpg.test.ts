@@ -259,7 +259,9 @@ describe("commands", () => {
     const gold = s.gold;
     const out = winCurrentFight(s);
     expect(out).toContain("Victory");
-    expect(s.floors["1"]).toBe(1);
+    expect(out).toContain("Floor 1 · 1/3");
+    expect(s.floorWins["1"]).toBe(1);
+    expect(s.floors["1"]).toBeUndefined();
     expect(s.gold).toBeGreaterThan(gold);
     expect(s.battle).toBeNull();
   });
@@ -815,5 +817,24 @@ describe("presentation", () => {
     const out = execute(freshState(T0), CTX, ";", T0, P).out;
     expect(out).toContain("BUDDY QUEST");
     expect(out).toContain("/\\_/\\"); // the cat's ears
+  });
+});
+
+describe("floor guardians", () => {
+  test("the third win on a floor is its guardian, and clears the floor", () => {
+    const s = freshState(T0);
+    for (let i = 0; i < 2; i++) {
+      s.lastEvent = true;
+      execute(s, CTX, ";x", T0, P);
+      expect(s.battle!.guardian).toBeUndefined();
+      winCurrentFight(s);
+    }
+    s.lastEvent = true;
+    const start = execute(s, CTX, ";x", T0, P).out;
+    expect(s.battle!.guardian).toBe(true);
+    expect(start).toContain("guardian blocks the stairs");
+    expect(winCurrentFight(s)).toContain("Floor 1 cleared");
+    expect(s.floors["1"]).toBe(1);
+    expect(s.floorWins["1"]).toBe(0);
   });
 });

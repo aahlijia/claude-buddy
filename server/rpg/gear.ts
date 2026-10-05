@@ -37,8 +37,8 @@ export function rollRarity(rng: () => number, luck: number = 0, floor: Rarity = 
     common: 55 * (1 - luck * 0.6),
     uncommon: 28,
     rare: 12 + luck * 10,
-    epic: 4 + luck * 6,
-    legendary: 1 + luck * 3,
+    epic: 3.5 + luck * 4,
+    legendary: 0.6 + luck * 1.2,
   };
   const minIdx = RARITIES.indexOf(floor);
   const pool = RARITIES.slice(minIdx);

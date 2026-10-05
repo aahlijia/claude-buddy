@@ -88,6 +88,8 @@ export interface Battle {
   foe: FoeSide;
   /** Lines produced by the latest turn (or the intro). */
   log: string[];
+  /** This fight is a floor guardian (the floor's last win). */
+  guardian?: boolean;
   /** Hits landed (or missed) during the latest turn, in order — drives the
    *  damage pops and the TUI's attack animation. */
   hits?: Hit[];
@@ -110,10 +112,17 @@ export type Action =
 
 // ─── Foe construction ───────────────────────────────────────────────────────
 
+/** Global difficulty knobs, tuned with a full-playthrough bot sim (see
+ *  docs/game-feel/buddy-quest/design.md § Balance). */
+export const HP_SCALE = 1.3;
+export const ATK_SCALE = 1.35;
+export const BOSS_HP_SCALE = 1.3;
+export const BOSS_ATK_SCALE = 1.45;
+
 function curve(level: number) {
   return {
-    hp: 22 + 9 * level + 0.35 * level * level,
-    atk: 5 + 1.6 * level + 0.045 * level * level,
+    hp: (22 + 9 * level + 0.35 * level * level) * HP_SCALE,
+    atk: (5 + 1.6 * level + 0.045 * level * level) * ATK_SCALE,
     def: 1 + 0.9 * level,
     spd: 8 + 0.35 * level,
   };
@@ -140,7 +149,7 @@ export function makeMonster(def: MonsterDef, level: number): FoeSide {
 export function makeBoss(id: BossId, level: number): FoeSide {
   const b = BOSSES[id];
   const c = curve(level);
-  const hp = Math.round(c.hp * b.hp);
+  const hp = Math.round(c.hp * b.hp * BOSS_HP_SCALE);
   return {
     id,
     name: b.name,
@@ -148,7 +157,7 @@ export function makeBoss(id: BossId, level: number): FoeSide {
     level,
     hp,
     maxHp: hp,
-    atk: Math.round(c.atk * b.atk),
+    atk: Math.round(c.atk * b.atk * BOSS_ATK_SCALE),
     def: Math.round(c.def * b.def),
     spd: Math.round(c.spd * b.spd),
     boss: id,
@@ -221,12 +230,16 @@ export function startBattle(
 
 // ─── Combat math ────────────────────────────────────────────────────────────
 
-export function mitigate(raw: number, def: number): number {
-  return raw * (50 / (50 + Math.max(0, def)));
+/** Defense mitigation. The armor constant grows with the attacker's level,
+ *  so piling on DEF helps against your peers but a high-level foe still
+ *  hits through it (otherwise trained DEF snowballs into invulnerability). */
+export function mitigate(raw: number, def: number, attackerLevel: number = 1): number {
+  const k = 30 + 8 * Math.max(1, attackerLevel);
+  return raw * (k / (k + Math.max(0, def)));
 }
 
-function roll(rng: () => number, atk: number, def: number, mult: number): number {
-  return Math.max(1, Math.round(mitigate(atk * mult, def) * (0.9 + rng() * 0.2)));
+function roll(rng: () => number, atk: number, def: number, mult: number, attackerLevel = 1): number {
+  return Math.max(1, Math.round(mitigate(atk * mult, def, attackerLevel) * (0.9 + rng() * 0.2)));
 }
 
 function dodgeChance(defSpd: number, atkSpd: number): number {
@@ -292,7 +305,7 @@ function foeHit(b: Battle, rng: () => number, mult: number, log: string[], verb 
   const crit = rng() < 0.05;
   let m = mult * (crit ? 1.5 : 1);
   if (hero.guard) m *= 0.4;
-  const dmg = roll(rng, foeAtk(b), hero.def, m);
+  const dmg = roll(rng, foeAtk(b), hero.def, m, foe.level);
   hero.hp = Math.max(0, hero.hp - dmg);
   log.push(`${crit ? "CRIT! " : ""}${foe.name} ${verb} you for ${dmg}.`);
   b.hits?.push({ by: "foe", dmg, crit });

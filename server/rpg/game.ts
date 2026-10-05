@@ -28,6 +28,7 @@ import {
   COST_TOWER,
   ENERGY_MAX,
   FLOORS_PER_ZONE,
+  FLOOR_WINS,
   GEAR_SLOTS,
   INVENTORY_CAP,
   KO_GOLD_LOSS,
@@ -360,7 +361,8 @@ function statusText(s: RpgState, ctx: BuddyCtx, hero: HeroStats, now: number, p:
   if (s.zone >= TOWER_UNLOCK) {
     info.push(`📍 Endless Tower  floor ${s.tower.floor} · best ${s.tower.best}  ;tower`);
   } else if (z) {
-    const next = floors >= FLOORS_PER_ZONE ? paint(p, C.yellow, "♛ boss ready ;boss") : `floor ${floors + 1} ;x`;
+    const wins = s.floorWins[String(s.zone)] ?? 0;
+    const next = floors >= FLOORS_PER_ZONE ? paint(p, C.yellow, "♛ boss ready ;boss") : `floor ${floors + 1} · ${wins}/${FLOOR_WINS} ;x`;
     info.push(`📍 ${z.name} ${paint(p, C.green, bar(floors, FLOORS_PER_ZONE, FLOORS_PER_ZONE))} ${next}`);
   }
   syncDaily(s, now);
@@ -573,7 +575,19 @@ function startFight(
       }
       s.lastEvent = false;
       const def = z.monsters[Math.floor(rng() * z.monsters.length)];
-      battle = startBattle("explore", z.id, floor, hero, hp, makeMonster(def, z.base + floor - 1), seed);
+      const foe = makeMonster(def, z.base + floor - 1);
+      // The last win on an uncleared floor is its guardian: tougher, named.
+      const guardian = cleared < FLOORS_PER_ZONE && (s.floorWins[String(z.id)] ?? 0) >= FLOOR_WINS - 1;
+      if (guardian) {
+        foe.name = `Guardian ${foe.name}`;
+        foe.hp = foe.maxHp = Math.round(foe.maxHp * 1.6);
+        foe.atk = Math.round(foe.atk * 1.15);
+      }
+      battle = startBattle("explore", z.id, floor, hero, hp, foe, seed);
+      if (guardian) {
+        battle.guardian = true;
+        battle.log.push(`🛡  The floor ${floor} guardian blocks the stairs down!`);
+      }
       if (arrival) battle.log.unshift(arrival);
     }
   }
@@ -877,15 +891,24 @@ function conclude(
   if (b.kind === "explore") {
     const key = String(b.zone);
     const cleared = s.floors[key] ?? 0;
-    if (b.floor > cleared) {
+    if (b.floor > cleared && b.guardian) {
       s.floors[key] = b.floor;
+      s.floorWins[key] = 0;
+      dropChance = 0.5;
       lines.push(
         b.floor >= FLOORS_PER_ZONE
           ? paint(p, C.magenta, `Floor ${b.floor} cleared — the boss awaits! ;boss`)
-          : `Floor ${b.floor} cleared. ;x for floor ${b.floor + 1}`,
+          : paint(p, C.green, `Floor ${b.floor} cleared! The stairs lead down. ;x for floor ${b.floor + 1}`),
       );
-    }
-    if (b.floor >= FLOORS_PER_ZONE) dropChance = 0.4;
+    } else if (b.floor > cleared) {
+      const wins = (s.floorWins[key] ?? 0) + 1;
+      s.floorWins[key] = wins;
+      lines.push(
+        wins >= FLOOR_WINS - 1
+          ? paint(p, C.yellow, `Floor ${b.floor} · ${wins}/${FLOOR_WINS} — the guardian stirs. ;x`)
+          : `Floor ${b.floor} · ${wins}/${FLOOR_WINS}. ;x`,
+      );
+    } else if (b.floor >= FLOORS_PER_ZONE) dropChance = 0.35;
   } else if (b.kind === "boss") {
     s.stats.bosses++;
     dropChance = 1;

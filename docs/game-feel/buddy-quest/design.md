@@ -61,11 +61,31 @@ ANSI-rendered, so the hook path renders plain text (the TUI renders color).
 
 ## Balance
 
-Tuned with a Monte-Carlo sim (a scripted policy: heal <40%, defend or
-Breakpoint wind-ups, rotate skills) — floors are winnable at the zone's
-expected gear, while each boss needs some training/gear beyond it (≈0–40%
-win rate "on curve", ≈85–100% one tier up). Tunables live in `data.ts`
-(boss multipliers, pacing) and `battle.ts` `curve()`.
+Two simulators drove the numbers:
+
+1. **Per-fight Monte-Carlo** (scripted policy: heal <40%, defend or
+   Breakpoint wind-ups, rotate skills) for individual floor/boss odds.
+2. **Full-playthrough bot** driving `execute` exactly like a player:
+   equips upgrades, sells junk, buys coffee, trains, forges to +5, takes
+   events, rests below half HP, retries bosses — with simulated time
+   (energy regen, an hourly commit, overnight breaks) and buddy XP from
+   both fights and "coding".
+
+What the bot sim found and what changed:
+
+| Finding | Fix |
+| --- | --- |
+| A zone was 5 fights + a boss (≈36 fights per playthrough) | Floor guardians: 3 wins per floor, the 3rd an elite guardian (`FLOOR_WINS`) |
+| Zero KOs anywhere; trained DEF snowballed to ~70% mitigation | Mitigation constant scales with the attacker's level; DEF/HP training gains halved-ish; training cost growth 1.22 → 1.27 |
+| Bosses died first try with ~50% HP left; extra boss HP just meant more Hotfixes | Separate boss HP/ATK knobs — damage-per-turn is the real threat lever |
+| Too many legendaries | Lower legendary/epic weights and luck slope |
+| Then the Segfault Dragon became a wall (68 tries for a slow turtle) | Dragon HP 4 → 3.5, ATK 1.2 → 1.02 |
+
+Final numbers across cat/turtle/goose/duck/snail: ~2,700–2,900 commands,
+~220–300 kills, bosses 1–5 mostly first or second try, the dragon a real
+final exam (≈10–14 KOs). Knobs: `HP_SCALE`, `ATK_SCALE`,
+`BOSS_HP_SCALE`, `BOSS_ATK_SCALE` in `battle.ts`; boss multipliers and
+pacing in `data.ts`.
 
 ## Depth pass
 

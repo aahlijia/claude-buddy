@@ -39,6 +39,8 @@ export interface RpgState {
   unlocked: number;
   /** Floors cleared per zone (0..FLOORS_PER_ZONE). */
   floors: Record<string, number>;
+  /** Wins so far on each zone's current (uncleared) floor. */
+  floorWins: Record<string, number>;
   bossKills: BossId[];
   skills: SkillId[];
   items: Partial<Record<ConsumableId, number>>;
@@ -100,6 +102,7 @@ export function freshState(now: number): RpgState {
     zone: 1,
     unlocked: 1,
     floors: {},
+    floorWins: {},
     bossKills: [],
     skills: [...STARTER_SKILLS],
     items: { potion: 3 },
@@ -148,6 +151,7 @@ export function coerceState(raw: unknown, now: number): RpgState {
     zone: Math.max(1, Math.floor(num(r.zone, 1))),
     unlocked: Math.max(1, Math.floor(num(r.unlocked, 1))),
     floors: r.floors && typeof r.floors === "object" ? r.floors : {},
+    floorWins: r.floorWins && typeof r.floorWins === "object" ? r.floorWins : {},
     bossKills: Array.isArray(r.bossKills) ? r.bossKills : [],
     skills: Array.isArray(r.skills) && r.skills.length ? r.skills : base.skills,
     items,

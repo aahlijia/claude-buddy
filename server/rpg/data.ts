@@ -15,6 +15,8 @@ export type ZoneId = 1 | 2 | 3 | 4 | 5 | 6;
 
 /** Floors per zone before its boss unlocks. */
 export const FLOORS_PER_ZONE = 5;
+/** Wins needed to clear a floor; the last one is the floor's guardian. */
+export const FLOOR_WINS = 3;
 
 export interface MonsterDef {
   id: string;
@@ -165,7 +167,7 @@ export const BOSSES: Record<BossId, BossDef> = {
   },
   segfault: {
     id: "segfault", name: "Segfault Dragon", species: "dragon", title: "Core Dumper",
-    hp: 4, atk: 1.2, def: 1.15, spd: 1.1,
+    hp: 3.5, atk: 1.02, def: 1.1, spd: 1.1,
     intro: "It inhales before Core Dump. Defend or Breakpoint it. Enrages at 30%.",
   },
 };
@@ -307,8 +309,8 @@ export type TrainStat = (typeof TRAINABLE)[number];
 
 export const TRAIN_GAIN: Record<TrainStat, number> = {
   atk: 2,
-  def: 2,
-  hp: 12,
+  def: 1,
+  hp: 8,
   spd: 1,
   crit: 1,
 };

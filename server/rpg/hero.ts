@@ -83,7 +83,7 @@ export function deriveHero(
 
 /** Gold cost of the next training rank given ranks already bought. */
 export function trainCost(rank: number): number {
-  return Math.round(20 * Math.pow(1.22, rank));
+  return Math.round(20 * Math.pow(1.27, rank));
 }
 
 export function trainError(training: Training, stat: string, gold: number): string | null {
