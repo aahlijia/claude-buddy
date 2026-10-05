@@ -309,7 +309,8 @@ describe("commands", () => {
     s.battle!.foe.hp = s.battle!.foe.maxHp = 1e6;
     const out = play(s, ";a").out;
     expect(out).toContain("Knocked out");
-    expect(s.gold).toBe(90);
+    expect(out).toContain("Learning Experience"); // first KO is a feat (+15g)
+    expect(s.gold).toBe(90 + 15);
     expect(s.hp).toBe(Math.round(hero().maxHp * 0.25));
     expect(s.stats.deaths).toBe(1);
   });
@@ -705,5 +706,70 @@ describe("events", () => {
       return;
     }
     throw new Error("no mimic in 200 seeds");
+  });
+});
+
+// ─── Forge, feats, titles ───────────────────────────────────────────────────
+
+import { FORGE_MAX, forgeCost, strike } from "./forge";
+import { FEATS, checkFeats } from "./feats";
+import { gearStats } from "./gear";
+
+describe("forge", () => {
+  test("each + adds 10% to every stat, and costs climb", () => {
+    const g = rollGear(mulberry32(3), 10, 1, { slot: "weapon", rarity: "rare" });
+    const base = g.stats.atk!;
+    const c0 = forgeCost(g);
+    g.plus = 5;
+    expect(gearStats(g).atk).toBe(Math.round(base * 1.5));
+    expect(forgeCost(g)).toBeGreaterThan(c0);
+  });
+
+  test("+0..+5 never fail; higher strikes can", () => {
+    const g = rollGear(mulberry32(3), 10, 1, { rarity: "common" });
+    for (let i = 0; i < 5; i++) expect(strike(g, () => 0.99)).toBe(true);
+    expect(g.plus).toBe(5);
+    expect(strike(g, () => 0.99)).toBe(false);
+    expect(g.plus).toBe(5);
+  });
+
+  test(";forge spends gold and upgrades the equipped item", () => {
+    const s = freshState(T0);
+    s.gold = 10_000;
+    s.equipped.weapon = rollGear(mulberry32(1), 5, 1, { slot: "weapon", rarity: "uncommon" });
+    const atk = heroOf(s, CTX).atk;
+    const out = execute(s, CTX, ";forge weapon", T0, P).out;
+    expect(out).toContain("CLANG!");
+    expect(s.equipped.weapon.plus).toBe(1);
+    expect(heroOf(s, CTX).atk).toBeGreaterThanOrEqual(atk);
+    expect(s.gold).toBeLessThan(10_000);
+    s.equipped.weapon.plus = FORGE_MAX;
+    expect(execute(s, CTX, ";forge weapon", T0, P).out).toContain("Perfection");
+  });
+});
+
+describe("feats & titles", () => {
+  test("feats award once, with gold, and unlock titles", () => {
+    const s = freshState(T0);
+    s.bossKills = ["semicolon"];
+    s.stats.kills = 1;
+    const gold = s.gold;
+    const lines = checkFeats(s);
+    expect(lines.some((l) => l.includes("First Blood"))).toBe(true);
+    expect(lines.some((l) => l.includes("Parser's Bane"))).toBe(true);
+    expect(s.gold).toBe(gold + 10 + 40);
+    expect(checkFeats(s)).toEqual([]);
+    expect(execute(s, CTX, ";title", T0, P).out).toContain("Parser's Bane");
+    execute(s, CTX, ";title 1", T0, P);
+    expect(s.title).toBe("Parser's Bane");
+    expect(execute(s, CTX, ";me", T0, P).out).toContain("«Parser's Bane»");
+  });
+
+  test("feats fire through normal play", () => {
+    const s = freshState(T0);
+    execute(s, CTX, ";x", T0, P);
+    const out = winCurrentFight(s);
+    expect(out).toContain("First Blood");
+    expect(execute(s, CTX, ";feats", T0, P).out).toContain(`1/${FEATS.length}`);
   });
 });

@@ -26,6 +26,8 @@ export interface GearItem {
   stats: Partial<Record<AffixStat, number>>;
   /** Legendary-only special power. */
   unique?: UniqueId;
+  /** Forge enhancement level (+1..+10), each +10% to every stat. */
+  plus?: number;
   locked?: boolean;
 }
 
@@ -103,9 +105,20 @@ export function rollGear(
   return { uid, slot, name, rarity, ilvl, stats };
 }
 
+/** Effective stats with forge enhancement folded in. */
+export function gearStats(g: GearItem): Partial<Record<AffixStat, number>> {
+  const plus = g.plus ?? 0;
+  if (!plus) return g.stats;
+  const out: Partial<Record<AffixStat, number>> = {};
+  for (const [k, v] of Object.entries(g.stats) as [AffixStat, number][]) {
+    out[k] = Math.round(v * (1 + 0.1 * plus));
+  }
+  return out;
+}
+
 /** Rough single-number value for comparisons and sorting. */
 export function gearScore(g: GearItem): number {
-  const s = g.stats;
+  const s = gearStats(g);
   return (g.unique ? 25 : 0) + Math.round(
     (s.atk ?? 0) * 3 +
       (s.def ?? 0) * 2.5 +
@@ -118,7 +131,7 @@ export function gearScore(g: GearItem): number {
 }
 
 export function sellValue(g: GearItem): number {
-  return Math.max(1, Math.round((4 + g.ilvl * 3) * RARITY_POWER[g.rarity] ** 2));
+  return Math.max(1, Math.round((4 + g.ilvl * 3) * RARITY_POWER[g.rarity] ** 2 * (1 + 0.25 * (g.plus ?? 0))));
 }
 
 const STAT_LABEL: Record<AffixStat, string> = {

@@ -50,7 +50,20 @@ export interface RpgState {
   battle: Battle | null;
   /** Monotonic counter folded into every new seed. */
   seq: number;
-  stats: { battles: number; kills: number; deaths: number; bosses: number; goldEarned: number };
+  stats: {
+    battles: number;
+    kills: number;
+    deaths: number;
+    bosses: number;
+    goldEarned: number;
+    hunts?: number;
+    boards?: number;
+    events?: number;
+  };
+  /** Achievement ids earned (feats.ts). */
+  feats: string[];
+  /** Equipped title, or null. */
+  title: string | null;
   /** Last few lines of notable events (drops, level-ups) for `;log`. */
   journal: string[];
   /** Today's merchant stock slots already bought (stock is day-seeded). */
@@ -107,6 +120,8 @@ export function freshState(now: number): RpgState {
     lastEvent: true,
     blessing: null,
     seen: [],
+    feats: [],
+    title: null,
   };
 }
 
@@ -161,6 +176,8 @@ export function coerceState(raw: unknown, now: number): RpgState {
     lastEvent: r.lastEvent === true,
     blessing: r.blessing && typeof r.blessing === "object" && num(r.blessing.fights, 0) > 0 ? r.blessing : null,
     seen: Array.isArray(r.seen) ? r.seen.filter((n): n is number => typeof n === "number") : [],
+    feats: Array.isArray(r.feats) ? r.feats.filter((f): f is string => typeof f === "string") : [],
+    title: typeof r.title === "string" ? r.title : null,
   };
 }
 

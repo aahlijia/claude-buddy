@@ -18,7 +18,7 @@ import {
   type ConsumableId,
   type SkillId,
 } from "./data";
-import { statLine, type GearItem } from "./gear";
+import { gearStats, statLine, type GearItem } from "./gear";
 
 export interface Paint {
   color: boolean;
@@ -50,12 +50,13 @@ const RARITY_TAG: Record<Rarity, string> = {
 
 export function gearName(p: Paint, g: GearItem): string {
   const tag = `[${RARITY_TAG[g.rarity]}]`;
-  return paint(p, RARITY_ANSI[g.rarity], `${tag} ${g.name}`) + (g.locked ? " 🔒" : "");
+  const plus = g.plus ? ` +${g.plus}` : "";
+  return paint(p, RARITY_ANSI[g.rarity], `${tag} ${g.name}${plus}`) + (g.locked ? " 🔒" : "");
 }
 
 export function gearLine(p: Paint, g: GearItem): string {
   const u = g.unique ? `  ${paint(p, C.yellow, `★ ${UNIQUES[g.unique].desc}`)}` : "";
-  return `${gearName(p, g)} ${paint(p, C.dim, `i${g.ilvl}`)}  ${statLine(g.stats)}${u}`;
+  return `${gearName(p, g)} ${paint(p, C.dim, `i${g.ilvl}`)}  ${statLine(gearStats(g))}${u}`;
 }
 
 export function bar(cur: number, max: number, width: number = 10): string {

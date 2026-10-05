@@ -64,6 +64,7 @@ export function progress(s: RpgState, kind: BountyKind, n: number, now: number):
   }
   if (!s.daily.bonus && s.daily.tasks.length && s.daily.tasks.every((b) => b.done)) {
     s.daily.bonus = true;
+    s.stats.boards = (s.stats.boards ?? 0) + 1;
     s.items.elixir = Math.min(CONSUMABLE_STACK, (s.items.elixir ?? 0) + 1);
     lines.push("🏅 Bounty board cleared! +1 🥤 Energy Drink");
     journal(s, `Cleared the bounty board (${s.daily.day})`);

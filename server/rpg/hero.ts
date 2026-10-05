@@ -14,7 +14,7 @@ import {
   type TrainStat,
   type UniqueId,
 } from "./data";
-import type { GearItem } from "./gear";
+import { gearStats, type GearItem } from "./gear";
 
 export interface HeroStats {
   /** Power level: buddy level + 20 per prestige (monotonic across ascension). */
@@ -46,7 +46,7 @@ export function powerLevel(buddyLevel: number, prestige: number): number {
 export function gearBonus(gear: readonly GearItem[]): Record<AffixStat, number> {
   const out: Record<AffixStat, number> = { atk: 0, def: 0, hp: 0, spd: 0, crit: 0, leech: 0, gold: 0 };
   for (const g of gear) {
-    for (const [k, v] of Object.entries(g.stats) as [AffixStat, number][]) {
+    for (const [k, v] of Object.entries(gearStats(g)) as [AffixStat, number][]) {
       out[k] += v;
     }
   }

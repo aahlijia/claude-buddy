@@ -70,14 +70,20 @@ export function loadBuddyCtx(): BuddyCtx {
   }
 }
 
-function awardBuddyXp(amount: number): void {
-  if (amount <= 0) return;
+/** Award buddy XP; returns a level-up fanfare when a level was crossed. */
+function awardBuddyXp(amount: number, name: string): string | null {
+  if (amount <= 0) return null;
   try {
-    const { awardXpAmount } = require("../xp.ts") as typeof import("../xp.ts");
-    awardXpAmount(amount);
+    const { awardXpAmount, getXpState } = require("../xp.ts") as typeof import("../xp.ts");
+    const before = getXpState().level;
+    const after = awardXpAmount(amount).level;
+    if (after > before) {
+      return `⭐ LEVEL UP! ${name} reached buddy Lv${after} — every combat stat grows.`;
+    }
   } catch {
     /* XP is a bonus — never fail the command over it */
   }
+  return null;
 }
 
 /** Patch the RPG HUD into status.json so the status line can show it
@@ -124,8 +130,8 @@ export function run(input: string, color: boolean, now: number = Date.now()): st
     saveRpg(s);
     refreshHud(s, ctx);
   }
-  awardBuddyXp(r.xp);
-  return r.out;
+  const fanfare = awardBuddyXp(r.xp, ctx.name);
+  return fanfare ? `${r.out}\n${fanfare}` : r.out;
 }
 
 async function readStdin(): Promise<string> {

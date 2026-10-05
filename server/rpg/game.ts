@@ -59,6 +59,8 @@ import { currentHp, journal, nextEnergyIn, settle, settleEnergy, type RpgState }
 import { bountyReward, bountyText, dayKey, progress, syncDaily } from "./bounty";
 import { EVENTS, EVENT_CHANCE, resolveEvent, rollEventId, type EventOutcome } from "./events";
 import { ENDING, PROLOGUE, ZONE_ARRIVAL, fill } from "./story";
+import { FORGE_CHANCE, FORGE_MAX, forgeCost, forgeError, strike } from "./forge";
+import { FEATS, checkFeats, unlockedTitles } from "./feats";
 
 /** The bug currently standing off on the status line (idle-RPG pending
  *  encounter), if any — `;hunt` fights its shadow. */
@@ -152,6 +154,11 @@ const ALIASES: Record<string, string> = {
   bounty: "daily",
   bounties: "daily",
   bugs: "hunt",
+  achievements: "feats",
+  ach: "feats",
+  titles: "title",
+  smith: "forge",
+  anvil: "forge",
 };
 
 export function parse(input: string): { cmd: string; args: string[] } {
@@ -176,6 +183,11 @@ export function execute(
   p: Paint,
 ): CommandResult {
   const r = dispatch(s, ctx, input, now, p);
+  const feats = checkFeats(s);
+  if (feats.length) {
+    r.out += `\n${paint(p, C.yellow, feats.join("\n"))}`;
+    r.changed = true;
+  }
   // First contact: the prologue opens the game, whatever was typed.
   if (!s.seen.includes(0)) {
     s.seen.push(0);
@@ -215,6 +227,14 @@ function dispatch(
       return r;
     case "choose":
       return choose(s, ctx, hero, Number(args[0]) as 1 | 2, now, p, r);
+    case "forge":
+      return forge(s, ctx, args[0], now, p, r);
+    case "title":
+      return title(s, args[0], p, r);
+    case "feats":
+      r.out = featsText(s, p);
+      r.changed = false;
+      return r;
     case "story":
       r.out = fill(PROLOGUE, ctx.name);
       r.changed = false;
@@ -305,6 +325,7 @@ export function helpText(p: Paint): string {
     h("Gear & town"),
     "  ;bag  ;equip <n>  ;unequip <slot>  ;sell <n|junk>  ;lock <n>",
     "  ;shop  ;buy <n> [qty]  ;train [atk|def|hp|spd|crit]  ;rest  ;skills  ;log",
+    "  ;forge [slot|n]  enhance gear +1..+10   ;feats achievements   ;title [n] wear a title",
     "  ;hud on|off   status-line HUD     (or play full-screen: claude-buddy play)",
     paint(p, C.dim, "Coding fuels the game: commits restore ⚡ energy and pay gold; won bug fights pay a bounty."),
   ].join("\n");
@@ -356,7 +377,7 @@ function dailyText(s: RpgState, now: number, p: Paint): string {
 function sheet(s: RpgState, ctx: BuddyCtx, hero: HeroStats, now: number, p: Paint): string {
   const hp = currentHp(s, hero.maxHp);
   const lines = [
-    paint(p, C.bold, `${ctx.name} the ${ctx.species} — Power Lv${hero.level}`) +
+    paint(p, C.bold, `${ctx.name} the ${ctx.species}${s.title ? ` «${s.title}»` : ""} — Power Lv${hero.level}`) +
       paint(p, C.dim, ` (buddy Lv${ctx.level}${ctx.prestige ? ` · P${ctx.prestige}` : ""})`),
     `${hpBar(p, hp, hero.maxHp, 16)}   ${energyText(s, now, p)}   ${paint(p, C.yellow, `◎ ${s.gold}g`)}`,
     `ATK ${hero.atk}  DEF ${hero.def}  SPD ${hero.spd}  CRIT ${hero.crit}%` +
@@ -378,7 +399,7 @@ function sheet(s: RpgState, ctx: BuddyCtx, hero: HeroStats, now: number, p: Pain
     paint(
       p,
       C.dim,
-      `Bosses ${s.bossKills.length}/${ZONES.length} · kills ${s.stats.kills} · KOs ${s.stats.deaths} · tower best ${s.tower.best}`,
+      `Bosses ${s.bossKills.length}/${ZONES.length} · kills ${s.stats.kills} · KOs ${s.stats.deaths} · tower best ${s.tower.best} · feats ${s.feats.length}/${FEATS.length}`,
     ),
   );
   return lines.join("\n");
@@ -598,6 +619,7 @@ function choose(
     return r;
   }
   s.event = null;
+  s.stats.events = (s.stats.events ?? 0) + 1;
   const lines = [out.text, ...applyOutcome(s, hero, ev.level, out, now, p, r)];
   if (out.mimic) {
     const foe = makeMonster(
@@ -858,6 +880,7 @@ function conclude(
     lines.push("The mimic coughs up its hoard.");
   } else if (b.kind === "hunt") {
     if (ctx.standoff) s.hunted = ctx.standoff.key;
+    s.stats.hunts = (s.stats.hunts ?? 0) + 1;
     dropChance = 0.6;
     luck += 0.15;
     lines.push(paint(p, C.green, "🐛 Bug squashed (in spirit). The real one still needs a commit to banish."));
@@ -1123,6 +1146,103 @@ function buy(s: RpgState, args: string[], now: number, p: Paint, r: CommandResul
   s.shop.bought.push(gi);
   s.bag.push(g);
   r.out = `Bought ${gearName(p, g)} (${statLine(g.stats)}). ;equip ${s.bag.length}`;
+  return r;
+}
+
+// ─── Forge, feats & titles ──────────────────────────────────────────────────
+
+/** Resolve a forge target: an equipped slot name, or a bag index. */
+function forgeTarget(s: RpgState, arg: string | undefined): GearItem | null {
+  const slot = GEAR_SLOTS.find((k) => k === arg);
+  if (slot) return s.equipped[slot] ?? null;
+  const i = bagIndex(s, arg);
+  return i >= 0 ? s.bag[i] : null;
+}
+
+function forge(s: RpgState, ctx: BuddyCtx, arg: string | undefined, now: number, p: Paint, r: CommandResult): CommandResult {
+  if (s.battle) {
+    r.out = "The forge is back in town — finish the fight first.";
+    r.changed = false;
+    return r;
+  }
+  if (!arg) {
+    const lines = [paint(p, C.bold, "⚒  The Forge") + `   ◎ ${s.gold}g   (;forge <weapon|armor|charm|bag n>)`];
+    for (const slot of GEAR_SLOTS) {
+      const g = s.equipped[slot];
+      if (!g) {
+        lines.push(`  ${slot.padEnd(6)} ${paint(p, C.dim, "—")}`);
+        continue;
+      }
+      const n = g.plus ?? 0;
+      const next = n >= FORGE_MAX ? paint(p, C.green, "MAX") : `→ +${n + 1}  ${forgeCost(g)}g  ${Math.round(FORGE_CHANCE[n] * 100)}%`;
+      lines.push(`  ${slot.padEnd(6)} ${gearName(p, g)}  ${next}`);
+    }
+    lines.push(paint(p, C.dim, "Each + is +10% to every stat. Safe to +5; beyond that a failed strike costs only the gold."));
+    r.out = lines.join("\n");
+    r.changed = false;
+    return r;
+  }
+  const g = forgeTarget(s, arg);
+  if (!g) {
+    r.out = "Forge what? ;forge weapon | armor | charm | <bag n>";
+    r.changed = false;
+    return r;
+  }
+  const err = forgeError(g, s.gold);
+  if (err) {
+    r.out = err;
+    r.changed = false;
+    return r;
+  }
+  const before = heroOf(s, ctx);
+  s.gold -= forgeCost(g);
+  const ok = strike(g, mulberry32(nextSeed(s, now)));
+  if (!ok) {
+    r.out = paint(p, C.red, `🔨 CLANG... the strike goes wrong. ${gearName(p, g)} is unharmed, but the gold is gone. ◎ ${s.gold}g`);
+    return r;
+  }
+  const after = heroOf(s, ctx);
+  const diff = (["atk", "def", "maxHp", "spd", "crit"] as const)
+    .map((k) => (after[k] - before[k] ? `${k === "maxHp" ? "HP" : k.toUpperCase()} +${after[k] - before[k]}` : ""))
+    .filter(Boolean)
+    .join(", ");
+  if ((g.plus ?? 0) >= FORGE_MAX) journal(s, `Forged ${g.name} to +${FORGE_MAX}`);
+  r.out = `${paint(p, C.yellow, "🔨 CLANG! ✨")} ${gearName(p, g)}${diff ? ` (${diff})` : ""}  ◎ ${s.gold}g`;
+  return r;
+}
+
+function featsText(s: RpgState, p: Paint): string {
+  const lines = [paint(p, C.bold, `🏆 Achievements ${s.feats.length}/${FEATS.length}`)];
+  for (const f of FEATS) {
+    const got = s.feats.includes(f.id);
+    const t = f.title ? ` «${f.title}»` : "";
+    lines.push(got ? `${paint(p, C.green, "✓")} ${f.name}${t}` : paint(p, C.dim, `· ${f.name} — ${f.desc}${t}`));
+  }
+  return lines.join("\n");
+}
+
+function title(s: RpgState, arg: string | undefined, p: Paint, r: CommandResult): CommandResult {
+  const titles = unlockedTitles(s);
+  if (!arg) {
+    r.out = titles.length
+      ? [paint(p, C.bold, "Titles") + "  (;title <n> | ;title none)", ...titles.map((t, i) => `${i + 1}. ${t}${s.title === t ? "  ← worn" : ""}`)].join("\n")
+      : "No titles yet — earn them from bosses and achievements (;feats).";
+    r.changed = false;
+    return r;
+  }
+  if (arg === "none") {
+    s.title = null;
+    r.out = "Title removed.";
+    return r;
+  }
+  const t = titles[Number(arg) - 1];
+  if (!t) {
+    r.out = "No such title. ;title to list yours.";
+    r.changed = false;
+    return r;
+  }
+  s.title = t;
+  r.out = `You are now known as «${t}».`;
   return r;
 }
 
