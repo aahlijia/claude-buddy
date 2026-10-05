@@ -1,6 +1,6 @@
 # HD Overhaul — brainstorm
 
-_Status: brainstorm · H0 ([h0-spike.md](h0-spike.md)), H1 ([h1-rigs.md](h1-rigs.md)), H2 ([h2-quest-player.md](h2-quest-player.md)), H3 ([h3-ui-kit.md](h3-ui-kit.md)), H4 ([h4-diorama.md](h4-diorama.md)) and H5 ([h5-statusline.md](h5-statusline.md)) done_
+_Status: brainstorm · H0 ([h0-spike.md](h0-spike.md)), H1 ([h1-rigs.md](h1-rigs.md)), H2 ([h2-quest-player.md](h2-quest-player.md)), H3 ([h3-ui-kit.md](h3-ui-kit.md)), H4 ([h4-diorama.md](h4-diorama.md)), H5 ([h5-statusline.md](h5-statusline.md)) and H6 ([h6-roster.md](h6-roster.md)) done — the roadmap is complete_
 
 **Goal:** make claude-buddy look and move like a console game instead of a
 pile of ASCII. That means HD buddies with real shading, motion with weight,
@@ -304,4 +304,4 @@ Name it the **buddy UI kit** (`server/ui/`):
 | **H3 UI kit** ✅ ([h3-ui-kit.md](h3-ui-kit.md)) | Panels, bars, key prompts, banners and portraits across play, TUI and shop | One visual language |
 | **H4 buddy-shell diorama** ✅ ([h4-diorama.md](h4-diorama.md)) | Parallax biomes, day/night, weather particles, live hook reactions | The always-on wow |
 | **H5 Status line T1** ✅ ([h5-statusline.md](h5-statusline.md)) | Baked half-block sprites with key-pose cycling; bash unchanged except for the frame source | HD reaches every user |
-| **H6 Roster** | The remaining 17 species, the hatch cinematic, loot beams, special-move cut-ins, boss cinematics | Content complete |
+| **H6 Roster** ✅ ([h6-roster.md](h6-roster.md)) | The remaining 17 species, the hatch cinematic, loot beams, special-move cut-ins, boss cinematics | Content complete |

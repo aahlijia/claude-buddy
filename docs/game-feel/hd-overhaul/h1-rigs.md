@@ -102,7 +102,8 @@ defender's reaction off `ANIM_INFO.attack.impact`.
    `shiny` ramps.
 3. Build parts from primitives, then add grids for faces. Include every eye
    and mouth variant; the validator test fails on a missing one.
-4. Register it in `RIGS` and `HD_SPECIES` in `hd.ts`.
+4. Register it in `RIGS` in `hd.ts` (`HD_SPECIES` is derived from it). Optional
+   flavor goes in `feel` (float, servo, tempo, waddle, hop; see h6-roster.md).
 5. Look at it with `bun run gfx-demo --species <name>`, or dump PNGs with
    `--png`.
 6. Record the golden hashes: `GOLDEN=print bun test server/gfx/hd.test.ts`.

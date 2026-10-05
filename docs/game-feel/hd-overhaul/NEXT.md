@@ -1,6 +1,6 @@
 # NEXT — handoff for the HD overhaul
 
-_A fresh session starts here. Last updated after H5._
+_A fresh session starts here. Last updated after H6, which completes the roadmap._
 
 **Branch:** `feature/living-world`. Develop, commit and push there:
 `git push -u origin feature/living-world`.
@@ -16,54 +16,38 @@ _A fresh session starts here. Last updated after H5._
 | H3: the buddy UI kit (`server/ui/`) | done | [h3-ui-kit.md](h3-ui-kit.md) |
 | H4: the buddy-shell diorama | done | [h4-diorama.md](h4-diorama.md) |
 | H5: the status line in T1 | done | [h5-statusline.md](h5-statusline.md) |
-| **H6: the roster** | **next** | this file and [brainstorm.md](brainstorm.md) §1, §3, §8 |
+| H6: the roster and the cinematics | done | [h6-roster.md](h6-roster.md) |
+| **Polish (no fixed phase)** | **next** | the loose ends below |
 
 ## Read first (in this order)
 
-1. **[brainstorm.md](brainstorm.md):** §1 (art direction, the style bible,
-   the animation set), §3 (scenes: hatch, loot reveal, battle cut-ins, boss
-   phase change) and §8.
+1. **[h6-roster.md](h6-roster.md):** the 20 rigs, species `feel`, and how
+   the hatch, loot reveal, cut-ins and boss phase change plug in.
 2. **[h1-rigs.md](h1-rigs.md)**, especially "Adding a species": the rig
-   format, materials as ramps, the face grids, the validator, golden hashes.
-   `server/gfx/species/cat.ts` and `dragon.ts` are the references.
-3. **[h2-quest-player.md](h2-quest-player.md):** the fight stage the
-   cut-ins and boss cinematics plug into (`server/rpg/hdstage.ts`).
-4. **`cli/pick.ts`** and **`cli/hunt.ts`:** today's ASCII hatch and reveal.
-5. **[h5-statusline.md](h5-statusline.md)** and
-   **[h4-diorama.md](h4-diorama.md):** every species added to `HD_SPECIES`
-   shows up in the status line, the diorama, the quest player and the
-   portraits with no extra wiring, so check it in all four.
+   format, the validator, golden hashes.
+3. **[h2-quest-player.md](h2-quest-player.md):** the fight stage
+   (`server/rpg/hdstage.ts`); H6 added holds (cut-ins, phase changes) to its
+   timeline.
+4. **[brainstorm.md](brainstorm.md):** the ideas the roadmap didn't cover
+   yet (§1.3 idle-long / react poses, §3.1 boot title, §3.8 the merchant,
+   §4 toasts).
 
-## H6 goal
+## What's next
 
-Content complete: every species in HD, plus the big moments that make the
-game feel like a console game.
+The roadmap (H0–H6) is done. Pick from the loose ends; good candidates:
 
-## H6 checklist
-
-- [ ] **The 17 remaining species** as rigs (duck, goose, octopus, owl,
-      penguin, turtle, snail, ghost, axolotl, capybara, cactus, robot,
-      rabbit, mushroom, chonk, wyvern, sparkit). Follow the style bible
-      (brainstorm §1.2): one light direction, ramps per material, 1-px dark
-      outline. Pilot three that stress the rig (octopus: many limbs; ghost:
-      no legs and translucency; robot: hard edges), then batch the rest.
-- [ ] **Per species:** register in `hd.ts`, golden hashes, a look in
-      `bun run gfx-demo`, `bun run diorama-demo` and the status-line sprite
-      sheet (`bakeStatusSprite`); `HEAD_Y` in `hdstage.ts` needs the new
-      names.
-- [ ] **Hatch cinematic** (`pick` / `hunt`): egg wobble that builds, a crack
-      color that teases the rarity, a shockwave reveal, the shiny sting.
-- [ ] **Loot reveal:** chest shake, lid pop, a rarity-colored light beam;
-      legendary gets a flash (gated) and a slow item spin.
-- [ ] **Special-move cut-ins** in HD fights (~700 ms, skippable): a
-      diagonal panel with the portrait, speed lines and the move name.
-- [ ] **Boss phase change:** dim, glow, roar shake (all gated).
-- [ ] **Gates and tests** as before: gameFeel off → today's ASCII; subtle →
-      no shake or flashes; reduceMotion; golden hashes for new art.
-- [ ] **Docs:** `h6-roster.md` with contact sheets, mark H6 done in
-      brainstorm.md §8, and update this file.
+- **Hats and gear on HD rigs.** Anchors on the rigs, as brainstorm §1.1
+  describes; they would show in every surface at once.
+- **Foe special moves** get a cut-in too (only hero skills do today).
+- **Kitty native animation** for the diorama and fight stage.
+- **The idle-long and react animations** (brainstorm §1.3: yawn → sleep,
+  flinch, cheer, think) for the diorama and status line.
 
 ## Loose ends
+
+- From H6: foe cut-ins; the hatch in onboarding (`install`); `gfx-demo`
+  keys for the hatch and loot; rig tuning (mushroom feet, chonk tail,
+  turtle height, goose neck curve).
 
 - From H2: hats and gear on HD rigs; kitty native animation for the fight
   stage; a smaller HD stage for terminals under 66 × 34.
@@ -77,8 +61,11 @@ game feel like a console game.
 
 ## How to see your work
 
-- `bun run gfx-demo --species dragon --bg` shows the H1 rigs live; `1`–`6`
-  play the animations, `c` cycles species.
+- `bun run gfx-demo --species dragon --bg` shows the rigs live; `1`–`6`
+  play the animations, `c` cycles all 20 species.
+- `bun run scripts/h6-sheet.ts` renders the roster contact sheet (`--species
+  a,b --scale 3` for a closer look) and `bun run scripts/h6-cinema.ts` the
+  cinematics sheet.
 - `bun run diorama-demo` shows the H4 panel alone (keys cycle biome, hour,
   weather, species and fire reactions); `bun run scripts/h4-sheet.ts`
   re-renders its contact sheet (`--rows 3-7 --scale 2` to review a slice).
