@@ -46,6 +46,14 @@
                         "command": "${CLAUDE_PLUGIN_ROOT}/hooks/mood-react.sh"
                     }
                 ]
+            },
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "${CLAUDE_PLUGIN_ROOT}/hooks/rpg-command.sh"
+                    }
+                ]
             }
         ]
     }

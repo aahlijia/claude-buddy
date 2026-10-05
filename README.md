@@ -287,6 +287,28 @@ Let a session run really wild (12+ errors deep) and the standoff **upgrades to a
 
 Like all the ambient animation the standoff (and its boss upgrade, and the visitor cameo) only shows at game-feel `full`; `/buddy gamefeel subtle` keeps just the toast at commit, and `/buddy gamefeel off` disables all of it (no standoff, no boss, no visitors, no spawns, no rewards, no render).
 
+### ⚔️ Buddy Quest — the RPG mini-game
+
+A full turn-based RPG you play **inside Claude Code** without spending a single token. Type a prompt starting with `;` and a `UserPromptSubmit` hook answers it locally, then blocks the prompt, so the model never sees it.
+
+```
+;            status / current fight          ;me     character sheet
+;x           explore the next floor          ;boss   fight the zone boss
+;a ;d ;f     attack · defend · flee           ;s1-;s7 skills    ;i potion  items
+;bag ;equip 3 ;sell junk ;lock 2              ;shop ;buy 5      ;train atk
+;map ;go 2   travel between zones            ;tower  endless post-game tower
+```
+
+- **Six zones, six bosses.** Syntax Meadows → Null Marsh → Callback Caverns → Race Rapids → Leak Mines → Kernel Abyss. Clear five floors to unlock each boss. Every boss has its own mechanic: the *Missing Semicolon* telegraphs a Parse Error you should defend through, the *Null Pointer Lich* drains HP and curses your aim, the *Callback Hydra* grows heads, the *Heisenbug* dodges until you observe it, the *Leaky Golem* outgrows you unless stunned, and the *Segfault Dragon* charges a Core Dump. A first kill unlocks a new skill and the next zone. After the dragon, the **Endless Tower** has an elite every 5 floors and a boss every 10.
+- **Stats layered on your buddy.** Combat stats come from your buddy's level and prestige plus its five personality stats (DEBUGGING → ATK, PATIENCE → HP, WISDOM → DEF, CHAOS → SPD, SNARK → CRIT). Gold-bought **training** ranks and **gear** stack on top.
+- **Gear with rarity and affixes.** Weapon, armor and charm slots. Rarities run common → legendary with up to four affixes (ATK, DEF, HP, SPD, CRIT, LEECH, GOLD). Upgrades are flagged with ▲ in `;bag`. The merchant restocks gear daily.
+- **Coding fuels it.** Fights cost ⚡ energy, which regenerates 1 point per 12 minutes. Every **commit** restores ⚡ and pays gold, with a bounty when the idle bug fight was won. Wins also feed your buddy XP back.
+- **Easy on your machine.** Ordinary prompts exit after a pure-bash prefix check: no jq, no bun, no extra processes. A `;` command is a single ~90 ms bun run. Nothing runs in the background, and HP and energy regen are computed from timestamps when you next look.
+- **HUD.** Once you've played, a dim `⚔ Z2 3/5 ♥40/55 ↯7 ◎120g` row appears under the buddy. Hide it with `;hud off`.
+- **Full screen.** `bun run play` (or `claude-buddy play`) opens the same save in a single-key TUI for another terminal pane. It redraws only on a keypress.
+
+The game saves to `rpg.json` in the buddy state directory.
+
 > All multipliers stack multiplicatively but stay modest: rarity (≤×1.20) × prestige (≤×1.15) × collection (×1.05) caps around ×1.45. Every new reward back-fills cleanly onto existing buddies — nothing is lost on upgrade.
 
 </details>
@@ -397,6 +419,7 @@ claude-buddy/
 | `/buddy statusline combined` | Show rate-limit usage bars alongside buddy (needs python3) |
 | `/buddy statusline basic` | Switch back to buddy-only status line |
 | `/buddy help` | Show all buddy commands |
+| `;help` | Buddy Quest RPG commands — zero tokens, never sent to Claude (see Buddy Quest above) |
 
 ### CLI
 
@@ -406,6 +429,7 @@ claude-buddy/
 | `bun run show` | Show buddy in terminal |
 | `bun run pick` | Interactive TUI to find and save your dream buddy |
 | `bun run hunt` | Legacy search (use `pick` instead) |
+| `bun run play` | Buddy Quest — full-screen RPG (same save as the `;` commands) |
 | `bun run doctor` | Full diagnostic report |
 | `bun run backup` | Snapshot / restore state |
 | `bun run settings` | View / change buddy settings — cooldown, TTL (TUI coming soon) |

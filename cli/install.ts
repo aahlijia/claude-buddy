@@ -187,6 +187,7 @@ function installHooks(settings: Record<string, any>) {
   const suggestHook   = join(PROJECT_ROOT, "hooks", "suggest.sh");
   const nameHook      = join(PROJECT_ROOT, "hooks", "name-react.sh");
   const moodHook      = join(PROJECT_ROOT, "hooks", "mood-react.sh");
+  const questHook     = join(PROJECT_ROOT, "hooks", "rpg-command.sh");
 
   if (!settings.hooks) settings.hooks = {};
 
@@ -229,8 +230,13 @@ function installHooks(settings: Record<string, any>) {
   settings.hooks.UserPromptSubmit.push({
     hooks: [{ type: "command", command: toUnixPath(moodHook) }],
   });
+  // Buddy Quest: `;cmd` prompts are answered locally and blocked before they
+  // reach the model (zero tokens). Pure-bash prefix gate on every other prompt.
+  settings.hooks.UserPromptSubmit.push({
+    hooks: [{ type: "command", command: toUnixPath(questHook) }],
+  });
 
-  ok("Hooks registered: PostToolUse (Bash + Write/Edit) + Stop (comment + suggest) + UserPromptSubmit (name + mood)");
+  ok("Hooks registered: PostToolUse (Bash + Write/Edit) + Stop (comment + suggest) + UserPromptSubmit (name + mood + quest)");
 }
 
 // ─── Step 5: Ensure MCP tools are allowed ───────────────────────────────────

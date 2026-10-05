@@ -115,6 +115,10 @@ interface StatusOverrides {
   weatherFallGapFrames?: string[];
   weatherFallGapGlyph?: string;
   weatherFallGapColor?: string;
+  /** Buddy Quest HUD text patched into status.json by rpg/cli.ts. */
+  rpgHud?: string;
+  /** config.questHud (default true). */
+  questHud?: boolean;
 }
 
 /** Write a minimal status.json into a temp config dir and run buddy-status.sh
@@ -207,6 +211,7 @@ function renderStatus(overrides: StatusOverrides): string {
     status.weatherFallGapGlyph = overrides.weatherFallGapGlyph ?? "❄";
     status.weatherFallGapColor = overrides.weatherFallGapColor ?? "e8f0f7";
   }
+  if (overrides.rpgHud !== undefined) status.rpgHud = overrides.rpgHud;
   if (overrides.wanderSequence) status.wanderSequence = overrides.wanderSequence;
   if (overrides.wanderRowSequence) {
     status.wanderRowSequence = overrides.wanderRowSequence;
@@ -241,9 +246,11 @@ function renderStatus(overrides: StatusOverrides): string {
     overrides.gameFeel !== undefined ||
     overrides.reactionTTL !== undefined ||
     overrides.bubbleMargin !== undefined ||
-    overrides.useCombinedStatus !== undefined
+    overrides.useCombinedStatus !== undefined ||
+    overrides.questHud !== undefined
   ) {
     const cfg: Record<string, unknown> = {};
+    if (overrides.questHud !== undefined) cfg.questHud = overrides.questHud;
     if (overrides.useCombinedStatus !== undefined) {
       cfg.useCombinedStatus = overrides.useCombinedStatus;
     }
@@ -2451,5 +2458,32 @@ describe("buddy-status.sh falling weather — front-layer edge cases", () => {
       expect(stripAnsi(out)).toContain(glyph);
       expect(lines(out).map(displayWidth)).toEqual(baselineWidths({}));
     }
+  });
+});
+
+describe("buddy-status.sh Buddy Quest HUD", () => {
+  const HUD = "Z2 3/5 ♥40/55 ↯7 ◎120g";
+
+  test("renders the HUD as its own dim row when status.json carries rpgHud", () => {
+    const out = renderStatus({ rpgHud: HUD });
+    const row = out.split("\n").find((l) => l.includes(HUD));
+    expect(row).toBeDefined();
+    expect(row).toContain("⚔ ");
+  });
+
+  test("no rpgHud field (never played) ⇒ output is byte-identical to the baseline", () => {
+    expect(renderStatus({ rpgHud: "" })).toBe(renderStatus({}));
+  });
+
+  test("questHud=false hides the row", () => {
+    expect(renderStatus({ rpgHud: HUD, questHud: false })).not.toContain(HUD);
+  });
+
+  test("the HUD is clipped to the terminal width", () => {
+    const long = "Z1 0/5 " + "x".repeat(300);
+    const out = renderStatus({ rpgHud: long, columns: 60 });
+    const row = out.split("\n").find((l) => l.includes("Z1 0/5"))!;
+    // strip ANSI before measuring
+    expect(row.replace(/\x1b\[[0-9;]*m/g, "").length).toBeLessThanOrEqual(60);
   });
 });

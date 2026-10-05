@@ -8,6 +8,7 @@
  *   npx claude-buddy show         Show current buddy
  *   npx claude-buddy pick         Interactive two-pane buddy picker (saved + search)
  *   npx claude-buddy hunt         Search for a specific buddy (non-interactive)
+ *   npx claude-buddy play         Buddy Quest — full-screen RPG mini-game
  *   npx claude-buddy upgrade     Pull latest + reinstall
  *   npx claude-buddy uninstall    Remove all integrations
  *   npx claude-buddy verify       Verify what buddy your ID produces
@@ -27,6 +28,9 @@ switch (command) {
     break;
   case "pick":
     await import("./pick.ts");
+    break;
+  case "play":
+    await import("./play.ts");
     break;
   case "hunt":
     await import("./hunt.ts");
@@ -84,6 +88,7 @@ Buddy:
   show              Display your current buddy
   pick              Interactive two-pane buddy picker (browse saved + search)
   hunt              Search for a specific buddy (non-interactive)
+  play              Buddy Quest — full-screen RPG (same save as ;cmds)
   verify            Verify what buddy your current ID produces
 
   upgrade           Pull latest version + reinstall (add --check to just check)

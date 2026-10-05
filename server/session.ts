@@ -16,7 +16,7 @@
  * cleaned up on uninstall (see TRANSIENT_PREFIXES in state.ts).
  */
 
-import { readFileSync, writeFileSync, mkdirSync, renameSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync } from "fs";
 import { join } from "path";
 import { buddyStateDir } from "./path.ts";
 import {
@@ -880,6 +880,21 @@ export interface SessionCompletion {
   visitorText: string | null;
 }
 
+function grantQuestCommitReward(fightWon: boolean): void {
+  try {
+    const store = require("./rpg/store.ts") as typeof import("./rpg/store.ts");
+    if (!existsSync(store.rpgFile())) return;
+    const { onCommit } = require("./rpg/game.ts") as typeof import("./rpg/game.ts");
+    const { loadBuddyCtx, refreshHud } = require("./rpg/cli.ts") as typeof import("./rpg/cli.ts");
+    const s = store.loadRpg();
+    onCommit(s, fightWon, Date.now());
+    store.saveRpg(s);
+    refreshHud(s, loadBuddyCtx());
+  } catch {
+    /* the quest is optional — a failure here must never break a commit */
+  }
+}
+
 /**
  * Award the session-completion bonus on commit, then re-baseline for the next
  * session. If no baseline exists yet (first commit before any session_start),
@@ -933,6 +948,11 @@ export function awardSessionComplete(
   // A non-zero streak reward means a streak milestone just landed — roll loot
   // on top of the deterministic bonus (additional-rewards FR4.1).
   if (streakReward > 0) rollLoot("streak_milestone", slot);
+
+  // Buddy Quest (rpg/): a commit restores energy and pays gold, plus a bounty
+  // when this commit's idle bug fight was won. Only for players who have
+  // started the game (rpg.json exists); best-effort, never fails the commit.
+  grantQuestCommitReward(fightWon);
 
   // Re-baseline: the next session starts counting from here.
   saveSnapshot({ startedAt: nowSeconds(), baseline: current });

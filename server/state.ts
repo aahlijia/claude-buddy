@@ -414,6 +414,8 @@ export interface BuddyConfig {
   showStats: boolean;
   /** Show the prestige/streak badge line under the title (additional-rewards FR1.5). */
   showPrestigeBadge: boolean;
+  /** Show the Buddy Quest HUD row once the game has been started (rpg/). */
+  questHud: boolean;
   /** Game-feel intensity gate (game-feel NFR0/FR-E1): off silences all juice. */
   gameFeel: GameFeel;
   /** Opt into deep-focus auto-quiet (game-feel FR-E1): during a long, error-free
@@ -465,6 +467,7 @@ export const DEFAULT_CONFIG: BuddyConfig = {
   suggestionCooldown: 180,
   showStats: false,
   showPrestigeBadge: false,
+  questHud: true,
   gameFeel: "subtle",
   autoQuietFocus: false,
   wanderEnabled: true,
@@ -809,6 +812,9 @@ export interface StatusState {
   /** Falling weather: 6-hex RGB (`SKY_FALL_COLOR[theme][kind]`) the shell
    *  tints `weatherFallGapGlyph` with. Present iff `weatherFallGapFrames` is. */
   weatherFallGapColor?: string;
+  /** Buddy Quest one-line HUD (`Z2 3/5 ♥40/55 ↯7 ◎120g`), patched in by
+   *  `rpg/cli.ts` and carried forward by every status write. */
+  rpgHud?: string;
 }
 
 // ─── Celebration channel (game-feel §2 — one transient slot, many producers) ──
@@ -1020,16 +1026,19 @@ export function writeStatusState(
   // pass it explicitly). Every other writer must carry the on-disk value
   // forward — defaulting to false here let any XP award or bug sighting
   // silently unmute the buddy.
+  // The Buddy Quest HUD (rpg/cli.ts patches it in) is likewise carried
+  // forward, so an XP award never blanks the game's status row.
   let mutedState = muted;
-  if (mutedState === undefined) {
-    try {
-      const prev = JSON.parse(readFileSync(statusFile, "utf8")) as {
-        muted?: boolean;
-      };
-      mutedState = prev.muted === true;
-    } catch {
-      mutedState = false;
-    }
+  let rpgHud: string | undefined;
+  try {
+    const prev = JSON.parse(readFileSync(statusFile, "utf8")) as {
+      muted?: boolean;
+      rpgHud?: unknown;
+    };
+    if (mutedState === undefined) mutedState = prev.muted === true;
+    if (typeof prev.rpgHud === "string" && prev.rpgHud) rpgHud = prev.rpgHud;
+  } catch {
+    if (mutedState === undefined) mutedState = false;
   }
   const { renderFace, RARITY_STARS } =
     require("./engine.ts") as typeof import("./engine.ts");
@@ -1670,6 +1679,7 @@ export function writeStatusState(
         weatherFallGapColor,
       }
       : {}),
+    ...(rpgHud ? { rpgHud } : {}),
   };
   // Atomic write (game-feel §2.6): the MCP server, the award-xp.ts process, and
   // react.sh's jq patch all touch status.json — tmp+rename avoids torn reads.

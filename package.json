@@ -11,6 +11,7 @@
     "server": "bun run server/index.ts",
     "pick": "bun run cli/pick.ts",
     "hunt": "bun run cli/hunt.ts",
+    "play": "bun run cli/play.ts",
     "install-buddy": "bun run cli/install.ts",
     "show": "bun run cli/show.ts",
     "doctor": "bun run cli/doctor.ts",

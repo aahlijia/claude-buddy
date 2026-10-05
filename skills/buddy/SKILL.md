@@ -1,7 +1,7 @@
 ---
 name: buddy
 description: "Show, pet, or manage your coding companion. Use when the user types /buddy or mentions their companion by name."
-argument-hint: "[show|menu|pet|stats [bar [on|off]]|xp|upgrades [buy|refund|title <id>|ascend]|badge [on|off]|gamefeel [off|subtle|full]|wander [on|off|hop|wide|bubble|status]|dressing [on|off]|ground [on|off]|brag|mood|memory [resolve <bug-id>]|theme [dark|light|auto]|help|off|on|rename <name>|personality <text>|achievements|summon [slot]|save [slot]|list|dismiss <slot>|pick|frequency [seconds]|style [classic|round]|position [top|left]|rarity [on|off]|rainbow [#hex ...]|statusline [on|off]|uninstall]"
+argument-hint: "[show|quest|menu|pet|stats [bar [on|off]]|xp|upgrades [buy|refund|title <id>|ascend]|badge [on|off]|gamefeel [off|subtle|full]|wander [on|off|hop|wide|bubble|status]|dressing [on|off]|ground [on|off]|brag|mood|memory [resolve <bug-id>]|theme [dark|light|auto]|help|off|on|rename <name>|personality <text>|achievements|summon [slot]|save [slot]|list|dismiss <slot>|pick|frequency [seconds]|style [classic|round]|position [top|left]|rarity [on|off]|rainbow [#hex ...]|statusline [on|off]|uninstall]"
 allowed-tools: mcp__claude_buddy__*, Bash
 ---
 
@@ -42,6 +42,7 @@ Based on `$ARGUMENTS`:
 | _(empty)_ or `show`      | Call `buddy_show`                                                                            |
 | `menu`                   | Call `buddy_menu` (no args → root); follow the MENU NAVIGATION directive to drive the interactive menu |
 | `help`                   | Call `buddy_help`                                                                            |
+| `quest` or `play`        | Do NOT call a tool. Reply in one line: "Buddy Quest is played with `;` commands (type `;help`) — they're handled locally and cost zero tokens. Full-screen: `bun run play`." |
 | `pet`                    | Call `buddy_pet`                                                                             |
 | `stats`                  | Call `buddy_stats`                                                                           |
 | `stats bar`              | Call `buddy_stats_panel` with no args (toggle the live stat-bar panel)                      |

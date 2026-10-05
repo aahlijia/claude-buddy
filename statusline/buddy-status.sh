@@ -45,6 +45,7 @@ MARGIN=8
 SHOW_STATS="false"
 SHOW_PRESTIGE_BADGE="false"
 USE_COMBINED="false"
+QUEST_HUD="true"
 if [ -f "$CONFIG_FILE" ]; then
     # Join with 0x1F (non-whitespace) rather than @tsv: an empty field (e.g. no
     # rainbowColors) would COLLAPSE under IFS=$'\t' (tab is IFS-whitespace),
@@ -52,7 +53,7 @@ if [ -f "$CONFIG_FILE" ]; then
     IFS=$'\x1f' read -r \
         GAME_FEEL _CFG_THEME _RAINBOW_CSV \
         REACTION_TTL INNER_W MARGIN \
-        SHOW_STATS SHOW_PRESTIGE_BADGE USE_COMBINED \
+        SHOW_STATS SHOW_PRESTIGE_BADGE USE_COMBINED QUEST_HUD \
     <<< "$(jq -r '[
         (.gameFeel // "subtle"),
         (.theme // "auto"),
@@ -62,7 +63,8 @@ if [ -f "$CONFIG_FILE" ]; then
         ((.bubbleMargin // 8) | tostring),
         ((.showStats // false) | tostring),
         ((.showPrestigeBadge // false) | tostring),
-        ((.useCombinedStatus // false) | tostring)
+        ((.useCombinedStatus // false) | tostring),
+        (if .questHud == false then "false" else "true" end)
     ] | join("")' "$CONFIG_FILE" 2>/dev/null)"
 fi
 # Re-apply the exact per-field validation/defaulting the old scattered reads did,
@@ -75,6 +77,7 @@ case "$MARGIN" in ''|*[!0-9]*) MARGIN=8 ;; esac
 [ "$SHOW_STATS" = "true" ] || SHOW_STATS="false"
 [ "$SHOW_PRESTIGE_BADGE" = "true" ] || SHOW_PRESTIGE_BADGE="false"
 [ "$USE_COMBINED" = "true" ] || USE_COMBINED="false"
+[ "$QUEST_HUD" = "false" ] || QUEST_HUD="true"
 
 # ─── Single status.json read (perf: ~17 jq forks → 1) ───────────────────────
 # All status.json fields PLUS the celebration-freshness, frame-pick (game-feel
@@ -238,6 +241,7 @@ _STATUS=$(jq -r --argjson now "$NOW" --arg gf "$GAME_FEEL" '
         ($gwcolor | gsub("[\\x01-\\x1f\\x7f]"; " ")),
         ($wfgapglyph | gsub("[\\x01-\\x1f\\x7f]"; " ")),
         ($wfgapcolor | gsub("[\\x01-\\x1f\\x7f]"; " ")),
+        ((.rpgHud // "") | gsub("[\\x01-\\x1f\\x7f]"; " ")),
         ($frame | @base64),
         ($wfgapframe | @base64)
       ] | join("")
@@ -251,7 +255,7 @@ IFS=$'\x1f' read -r \
     _ENC_FRESH _COMBAT_ON ART_WIDTH ENEMY_GLYPH \
     STATS_RAISED GROUND_TILE GROUND_COLOR \
     GROUND_WEATHER_GLYPH GROUND_WEATHER_COLOR \
-    WFGAP_GLYPH WFGAP_COLOR \
+    WFGAP_GLYPH WFGAP_COLOR RPG_HUD \
     _FRAME_B64 _WFGAP_B64 <<< "$_STATUS"
 
 [ "$MUTED" = "true" ] && exit 0
@@ -1532,6 +1536,21 @@ if [ -n "$GROUND_TILE" ]; then
             _grow="${_grow//"$GROUND_WEATHER_GLYPH"/${_WC}${GROUND_WEATHER_GLYPH}${_GC}}"
         fi
         echo "${_GLEAD}${_GC}${_grow}${NC}"
+    fi
+fi
+
+# Buddy Quest HUD: one dim row, present only once the player has started the
+# game (the server patches .rpgHud into status.json on each `;` command).
+# Opt-out via config questHud=false. Narrow glyphs only, so a code-point
+# clip is a column clip (no dwidth fork).
+if [ "$QUEST_HUD" = "true" ] && [ -n "$RPG_HUD" ]; then
+    _HUD_W=$(( COLS - RIGHT_SAFETY - STATS_LEFT_MARGIN ))
+    if [ "$_HUD_W" -gt 4 ] 2>/dev/null; then
+        case "$OSTYPE" in
+            msys*|cygwin*) printf -v _HLEAD '%*s' "$STATS_LEFT_MARGIN" '' ;;
+            *)             printf -v _HLEAD "${B}%${STATS_LEFT_MARGIN}s" "" ;;
+        esac
+        echo "${_HLEAD}"$'\033[2m'"⚔ ${RPG_HUD:0:_HUD_W-2}${NC}"
     fi
 fi
 
