@@ -11,7 +11,7 @@
  */
 
 import type { BuddyStats, Eye, Hat, Species } from "../engine";
-import { execute, hudLine, heroOf, onCommit, type BuddyCtx, type Standoff } from "./game";
+import { execute, hudLine, heroOf, onCommit, type AnimFrame, type BuddyCtx, type CommandResult, type Standoff } from "./game";
 import { loadRpg, saveRpg, type RpgState } from "./store";
 
 const FALLBACK_STATS: BuddyStats = { DEBUGGING: 20, PATIENCE: 20, CHAOS: 20, WISDOM: 20, SNARK: 20 };
@@ -122,8 +122,10 @@ function hudCommand(input: string): string | null {
 
 export interface RunResult {
   out: string;
-  /** Attack-animation screens (only when requested). */
-  anim: string[];
+  /** Timed animation screens to play before `out` (only when requested). */
+  anim: AnimFrame[];
+  /** Idle loop for `out` (only when requested). */
+  loop?: CommandResult["loop"];
 }
 
 export function runFull(input: string, color: boolean, anim = false, now: number = Date.now()): RunResult {
@@ -137,7 +139,8 @@ export function runFull(input: string, color: boolean, anim = false, now: number
     refreshHud(s, ctx);
   }
   const fanfare = awardBuddyXp(r.xp, ctx.name);
-  return { out: fanfare ? `${r.out}\n${fanfare}` : r.out, anim: r.anim ?? [] };
+  // A fanfare appends text, so the loop (built for the bare screen) no longer fits.
+  return { out: fanfare ? `${r.out}\n${fanfare}` : r.out, anim: r.anim ?? [], loop: fanfare ? undefined : r.loop };
 }
 
 export function run(input: string, color: boolean, now: number = Date.now()): string {

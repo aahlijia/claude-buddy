@@ -93,6 +93,11 @@ export interface Battle {
   /** Hits landed (or missed) during the latest turn, in order — drives the
    *  damage pops and the TUI's attack animation. */
   hits?: Hit[];
+  /** Both sides' HP when the latest turn began (the HP bars' ghost). */
+  was?: [number, number];
+  /** Everything visible that happened during the latest turn, in order —
+   *  drives the TUI's choreography (see anim.ts). */
+  beats?: Beat[];
   over?: "win" | "lose" | "fled";
 }
 
@@ -101,6 +106,40 @@ export interface Hit {
   /** 0 on a miss/dodge. */
   dmg: number;
   crit: boolean;
+}
+
+export type Side = "hero" | "foe";
+
+/** How a strike looks, not how it's computed. */
+export type StrikeStyle = "melee" | "heavy" | "multi" | "bomb" | "duck" | "drain";
+
+/** One visible moment of a turn. `line` is the index of the log line that
+ *  narrates it (-1 when none), `hp` both sides' HP right after it. */
+export type Beat = { line: number; hp: [number, number] } & (
+  | { t: "strike"; by: Side; dmg: number; crit: boolean; style: StrikeStyle }
+  | { t: "miss"; by: Side; why: "dodge" | "blind" }
+  | { t: "heal"; who: Side; amount: number; src: "potion" | "elixir" | "hotfix" | "guard" | "leech" | "drain" | "regen" }
+  | { t: "guard" }
+  | { t: "buff"; who: Side; label: string }
+  | { t: "status"; who: Side; fx: "poison" | "stun" | "blind" }
+  | { t: "tick"; who: Side; dmg: number }
+  | { t: "charge" }
+  | { t: "interrupt" }
+  | { t: "thorns"; dmg: number }
+  | { t: "secondwind" }
+  | { t: "grow"; amount: number }
+  | { t: "sprout"; heads: number }
+  | { t: "speech" }
+  | { t: "flee"; ok: boolean }
+  | { t: "ko"; who: Side }
+);
+
+/** Distributive Omit, so each Beat variant keeps its own fields. */
+type BeatData = Beat extends infer B ? (B extends Beat ? Omit<B, "line" | "hp"> : never) : never;
+
+/** Record a beat narrated by the log line just pushed (if any). */
+function beat(b: Battle, log: string[], data: BeatData, narrated = true): void {
+  b.beats?.push({ ...data, line: narrated ? log.length - 1 : -1, hp: [b.hero.hp, b.foe.hp] } as Beat);
 }
 
 export type Action =
@@ -258,6 +297,7 @@ interface HitOpts {
   mult: number;
   sure?: boolean;
   forceCrit?: boolean;
+  style?: StrikeStyle;
 }
 
 /** Hero strikes the foe; returns damage dealt (0 on a miss). */
@@ -267,6 +307,7 @@ function heroHit(b: Battle, rng: () => number, o: HitOpts, log: string[]): numbe
     if (hero.fx.blind && rng() < 0.5) {
       log.push("Cursed aim — you miss!");
       b.hits?.push({ by: "hero", dmg: 0, crit: false });
+      beat(b, log, { t: "miss", by: "hero", why: "blind" });
       return 0;
     }
     let dodge = dodgeChance(foe.spd, hero.spd);
@@ -274,6 +315,7 @@ function heroHit(b: Battle, rng: () => number, o: HitOpts, log: string[]): numbe
     if (rng() < dodge) {
       log.push(`${foe.name} dodges!`);
       b.hits?.push({ by: "hero", dmg: 0, crit: false });
+      beat(b, log, { t: "miss", by: "hero", why: "dodge" });
       return 0;
     }
   }
@@ -287,19 +329,31 @@ function heroHit(b: Battle, rng: () => number, o: HitOpts, log: string[]): numbe
   hero.fx.sureCrit = false;
   log.push(`${crit ? "CRIT! " : ""}You hit ${foe.name} for ${dmg}.`);
   b.hits?.push({ by: "hero", dmg, crit });
+  beat(b, log, { t: "strike", by: "hero", dmg, crit, style: o.style ?? "melee" });
   if (hero.leech > 0) {
     const heal = Math.floor((dmg * hero.leech) / 100);
-    if (heal > 0) hero.hp = Math.min(hero.maxHp, hero.hp + heal);
+    if (heal > 0) {
+      hero.hp = Math.min(hero.maxHp, hero.hp + heal);
+      beat(b, log, { t: "heal", who: "hero", amount: heal, src: "leech" }, false);
+    }
   }
   return dmg;
 }
 
 /** Foe strikes the hero; returns damage dealt. */
-function foeHit(b: Battle, rng: () => number, mult: number, log: string[], verb = "hits"): number {
+function foeHit(
+  b: Battle,
+  rng: () => number,
+  mult: number,
+  log: string[],
+  verb = "hits",
+  style: StrikeStyle = "melee",
+): number {
   const { hero, foe } = b;
   if (rng() < dodgeChance(hero.spd, foe.spd)) {
     log.push(`You dodge ${foe.name}'s attack.`);
     b.hits?.push({ by: "foe", dmg: 0, crit: false });
+    beat(b, log, { t: "miss", by: "foe", why: "dodge" });
     return 0;
   }
   const crit = rng() < 0.05;
@@ -309,10 +363,12 @@ function foeHit(b: Battle, rng: () => number, mult: number, log: string[], verb 
   hero.hp = Math.max(0, hero.hp - dmg);
   log.push(`${crit ? "CRIT! " : ""}${foe.name} ${verb} you for ${dmg}.`);
   b.hits?.push({ by: "foe", dmg, crit });
+  beat(b, log, { t: "strike", by: "foe", dmg, crit, style });
   if (hero.uniques?.includes("thorns")) {
     const back = Math.max(1, Math.round(dmg * 0.25));
     foe.hp = Math.max(0, foe.hp - back);
     log.push(`Thorns reflect ${back}.`);
+    beat(b, log, { t: "thorns", dmg: back });
   }
   secondWind(b, log);
   return dmg;
@@ -325,6 +381,7 @@ function secondWind(b: Battle, log: string[]): void {
   hero.hp = 1;
   hero.fx.windUsed = true;
   log.push("Second Wind! You cling on at 1 HP.");
+  beat(b, log, { t: "secondwind" });
 }
 
 // ─── Foe turn ───────────────────────────────────────────────────────────────
@@ -335,7 +392,10 @@ function monsterTurn(b: Battle, rng: () => number, log: string[]): void {
   switch (special ? foe.move : undefined) {
     case "poison":
       foeHit(b, rng, 0.7, log, "bites");
-      if (!hero.fx.poison) log.push("You are poisoned!");
+      if (!hero.fx.poison) {
+        log.push("You are poisoned!");
+        beat(b, log, { t: "status", who: "hero", fx: "poison" });
+      }
       hero.fx.poison = 3;
       return;
     case "heal":
@@ -343,6 +403,7 @@ function monsterTurn(b: Battle, rng: () => number, log: string[]): void {
         const h = Math.round(foe.maxHp * 0.2);
         foe.hp = Math.min(foe.maxHp, foe.hp + h);
         log.push(`${foe.name} regenerates ${h} HP.`);
+        beat(b, log, { t: "heal", who: "foe", amount: h, src: "regen" });
         return;
       }
       break;
@@ -350,6 +411,7 @@ function monsterTurn(b: Battle, rng: () => number, log: string[]): void {
       if (!foe.fx.enraged && foe.hp < foe.maxHp * 0.5) {
         foe.fx.enraged = true;
         log.push(`${foe.name} becomes enraged!`);
+        beat(b, log, { t: "buff", who: "foe", label: "ENRAGED" });
         return;
       }
       break;
@@ -357,12 +419,13 @@ function monsterTurn(b: Battle, rng: () => number, log: string[]): void {
       if (!foe.fx.shield) {
         foe.fx.shield = 2;
         log.push(`${foe.name} raises a shield.`);
+        beat(b, log, { t: "buff", who: "foe", label: "SHIELD" });
         return;
       }
       break;
     case "double":
-      foeHit(b, rng, 0.65, log, "lunges at");
-      if (hero.hp > 0) foeHit(b, rng, 0.65, log, "lunges at");
+      foeHit(b, rng, 0.65, log, "lunges at", "multi");
+      if (hero.hp > 0) foeHit(b, rng, 0.65, log, "lunges at", "multi");
       return;
   }
   foeHit(b, rng, 1, log);
@@ -375,28 +438,35 @@ function bossTurn(b: Battle, rng: () => number, log: string[]): void {
     case "semicolon":
       if (foe.charge) {
         foe.charge = 0;
-        foeHit(b, rng, 2.4, log, "unleashes PARSE ERROR on");
+        foeHit(b, rng, 2.4, log, "unleashes PARSE ERROR on", "heavy");
       } else if (t % 3 === 2) {
         foe.charge = 1;
         log.push("The Missing Semicolon gathers stray tokens... (defend!)");
+        beat(b, log, { t: "charge" });
       } else foeHit(b, rng, 1, log);
       return;
     case "lich": {
       if (foe.hp < foe.maxHp / 2 && t % 3 === 0 && !hero.fx.blind) {
         hero.fx.blind = 2;
         log.push("The Lich curses you: NullReferenceException! Your aim falters.");
+        beat(b, log, { t: "status", who: "hero", fx: "blind" });
         return;
       }
-      const d = foeHit(b, rng, 1, log, "drains");
-      foe.hp = Math.min(foe.maxHp, foe.hp + Math.round(d * 0.5));
+      const d = foeHit(b, rng, 1, log, "drains", "drain");
+      const drained = Math.min(foe.maxHp - foe.hp, Math.round(d * 0.5));
+      foe.hp += drained;
+      if (drained > 0) beat(b, log, { t: "heal", who: "foe", amount: drained, src: "drain" }, false);
       return;
     }
     case "hydra": {
       const lost = 1 - foe.hp / foe.maxHp;
       const heads = Math.min(5, 2 + Math.floor(lost / 0.25));
-      if (heads > (foe.heads ?? 2)) log.push(`A new callback head sprouts! (${heads} heads)`);
+      if (heads > (foe.heads ?? 2)) {
+        log.push(`A new callback head sprouts! (${heads} heads)`);
+        beat(b, log, { t: "sprout", heads });
+      }
       foe.heads = heads;
-      for (let i = 0; i < heads && hero.hp > 0; i++) foeHit(b, rng, 0.5, log, "bites");
+      for (let i = 0; i < heads && hero.hp > 0; i++) foeHit(b, rng, 0.5, log, "bites", "multi");
       return;
     }
     case "heisenbug":
@@ -410,21 +480,24 @@ function bossTurn(b: Battle, rng: () => number, log: string[]): void {
         foe.maxHp += grow;
         foe.hp = Math.min(foe.maxHp, foe.hp + grow);
         log.push(`The Golem leaks memory: +${grow} max HP.`);
+        beat(b, log, { t: "grow", amount: grow });
       }
-      foeHit(b, rng, 1, log, "slams");
+      foeHit(b, rng, 1, log, "slams", "heavy");
       return;
     }
     case "segfault":
       if (!foe.fx.enraged && foe.hp < foe.maxHp * 0.3) {
         foe.fx.enraged = true;
         log.push("The Segfault Dragon ENRAGES!");
+        beat(b, log, { t: "buff", who: "foe", label: "ENRAGED" });
       }
       if (foe.charge) {
         foe.charge = 0;
-        foeHit(b, rng, 3, log, "CORE DUMPS on");
+        foeHit(b, rng, 3, log, "CORE DUMPS on", "heavy");
       } else if (t % 4 === 3) {
         foe.charge = 1;
         log.push("The dragon inhales... (defend or Breakpoint!)");
+        beat(b, log, { t: "charge" });
       } else foeHit(b, rng, 1, log, "claws");
       return;
   }
@@ -457,6 +530,8 @@ export function act(prev: Battle, a: Action): Battle {
   const { hero, foe } = b;
   b.turn++;
   b.hits = [];
+  b.beats = [];
+  b.was = [hero.hp, foe.hp];
   hero.guard = false;
 
   // ── Hero action ──
@@ -466,41 +541,55 @@ export function act(prev: Battle, a: Action): Battle {
       break;
     case "defend":
       hero.guard = true;
-      hero.hp = Math.min(hero.maxHp, hero.hp + Math.round(hero.maxHp * 0.05));
-      log.push("You brace yourself.");
+      {
+        const h = Math.min(hero.maxHp - hero.hp, Math.round(hero.maxHp * 0.05));
+        hero.hp += h;
+        log.push("You brace yourself.");
+        beat(b, log, { t: "guard" });
+        if (h > 0) beat(b, log, { t: "heal", who: "hero", amount: h, src: "guard" }, false);
+      }
       if (foe.boss === "heisenbug") {
         foe.fx.revealed = 2;
         log.push("You observe the Heisenbug — it can't dodge now!");
+        beat(b, log, { t: "buff", who: "foe", label: "OBSERVED" });
       }
       break;
     case "flee":
       if (rng() < Math.max(0.35, Math.min(0.9, 0.55 + (hero.spd - foe.spd) * 0.04))) {
         b.over = "fled";
         b.log = ["You slip away."];
+        beat(b, b.log, { t: "flee", ok: true });
         return b;
       }
       log.push("You fail to escape!");
+      beat(b, log, { t: "flee", ok: false });
       break;
     case "item":
       switch (a.id) {
         case "potion": {
           const h = Math.round(hero.maxHp * 0.4);
-          hero.hp = Math.min(hero.maxHp, hero.hp + h);
+          const gained = Math.min(hero.maxHp - hero.hp, h);
+          hero.hp += gained;
           log.push(`You drink Coffee: +${h} HP.`);
+          beat(b, log, { t: "heal", who: "hero", amount: gained, src: "potion" });
           break;
         }
-        case "elixir":
+        case "elixir": {
+          const gained = hero.maxHp - hero.hp;
           hero.hp = hero.maxHp;
           hero.cd = {};
           hero.fx.poison = 0;
           log.push("Energy Drink! Full HP, cooldowns reset.");
+          beat(b, log, { t: "heal", who: "hero", amount: gained, src: "elixir" });
           break;
+        }
         case "bomb":
-          heroHit(b, rng, { mult: ITEM_BOMB_MULT, sure: true }, log);
+          heroHit(b, rng, { mult: ITEM_BOMB_MULT, sure: true, style: "bomb" }, log);
           break;
         case "smoke":
           b.over = "fled";
           b.log = ["Ctrl+C! You vanish in smoke."];
+          beat(b, b.log, { t: "flee", ok: true });
           return b;
       }
       break;
@@ -510,18 +599,21 @@ export function act(prev: Battle, a: Action): Battle {
       hero.cd[a.id] = cool + 1; // +1: ticks down at end of this turn
       switch (a.id) {
         case "strike":
-          heroHit(b, rng, { mult: 1.7 }, log);
+          heroHit(b, rng, { mult: 1.7, style: "heavy" }, log);
           break;
         case "hotfix": {
           const h = Math.round(hero.maxHp * 0.35);
-          hero.hp = Math.min(hero.maxHp, hero.hp + h);
+          const gained = Math.min(hero.maxHp - hero.hp, h);
+          hero.hp += gained;
           hero.fx.poison = 0;
           log.push(`Hotfix deployed: +${h} HP.`);
+          beat(b, log, { t: "heal", who: "hero", amount: gained, src: "hotfix" });
           break;
         }
         case "refactor":
           hero.fx.buff = 3;
           log.push("Refactor! ATK +40% for 3 turns.");
+          beat(b, log, { t: "buff", who: "hero", label: "ATK↑" });
           break;
         case "breakpoint":
           if (heroHit(b, rng, { mult: 0.9 }, log) > 0 || foe.boss === "heisenbug") {
@@ -531,24 +623,27 @@ export function act(prev: Battle, a: Action): Battle {
               if (foe.charge) {
                 foe.charge = 0;
                 log.push("Breakpoint hit! The wind-up is interrupted.");
+                beat(b, log, { t: "interrupt" });
               } else log.push(`${foe.name} is frozen at a breakpoint!`);
+              beat(b, log, { t: "status", who: "foe", fx: "stun" }, false);
             }
           }
           break;
         case "duck":
-          heroHit(b, rng, { mult: 1, sure: true, forceCrit: true }, log);
+          heroHit(b, rng, { mult: 1, sure: true, forceCrit: true, style: "duck" }, log);
           break;
         case "gc": {
           const extra = Math.round(foe.hp * 0.12);
-          heroHit(b, rng, { mult: 1 }, log);
+          heroHit(b, rng, { mult: 1, style: "heavy" }, log);
           foe.hp = Math.max(0, foe.hp - extra);
           foe.fx.shield = 0;
           foe.fx.enraged = false;
           log.push(`Garbage collected ${extra} extra HP.`);
+          beat(b, log, { t: "strike", by: "hero", dmg: extra, crit: false, style: "multi" });
           break;
         }
         case "forkbomb":
-          for (let i = 0; i < 3 && foe.hp > 0; i++) heroHit(b, rng, { mult: 0.75 }, log);
+          for (let i = 0; i < 3 && foe.hp > 0; i++) heroHit(b, rng, { mult: 0.75, style: "multi" }, log);
           break;
       }
       break;
@@ -558,17 +653,20 @@ export function act(prev: Battle, a: Action): Battle {
   if (foe.hp <= 0) {
     log.push(foe.boss ? BOSS_LINES[foe.boss].defeat : `${foe.name} is defeated!`);
     b.over = "win";
+    beat(b, log, { t: "ko", who: "foe" });
     b.log = log;
     return b;
   }
   if (foe.boss && !foe.phased && foe.hp < foe.maxHp / 2) {
     foe.phased = true;
     log.push(`${foe.name}: ${BOSS_LINES[foe.boss].phase}`);
+    beat(b, log, { t: "speech" });
   }
 
   // ── Foe action ──
   if (foe.fx.stun) {
     log.push(`${foe.name} is stunned.`);
+    beat(b, log, { t: "status", who: "foe", fx: "stun" });
     foe.fx.stunImmune = 2;
   } else if (foe.boss) {
     bossTurn(b, rng, log);
@@ -581,6 +679,7 @@ export function act(prev: Battle, a: Action): Battle {
     const p = Math.max(1, Math.round(hero.maxHp * 0.06));
     hero.hp = Math.max(0, hero.hp - p);
     log.push(`Poison: -${p} HP.`);
+    beat(b, log, { t: "tick", who: "hero", dmg: p });
     secondWind(b, log);
   }
   tick(hero.fx, ["poison", "blind", "buff", "stun", "stunImmune", "shield", "revealed"]);
@@ -593,10 +692,12 @@ export function act(prev: Battle, a: Action): Battle {
   if (hero.hp <= 0) {
     log.push("You are knocked out...");
     b.over = "lose";
+    beat(b, log, { t: "ko", who: "hero" });
   } else if (foe.hp <= 0) {
     // Thorns can finish a foe on its own turn.
     log.push(`${foe.name} is defeated!`);
     b.over = "win";
+    beat(b, log, { t: "ko", who: "foe" });
   }
   b.log = log;
   return b;

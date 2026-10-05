@@ -115,7 +115,7 @@ pacing in `data.ts`.
 | Feats | `feats.ts` | 21 predicates over the save; `checkFeats` runs after every command (gold + titles) |
 | Level-up | `cli.ts` | XP award compares buddy level before/after → fanfare line |
 | Presentation | `render.ts` | Open-right panels (no right border: emoji widths vary by terminal), damage-pop row from `Battle.hits`, town screen with the buddy sprite |
-| Animation | `render.ts` `animScenes`, `cli/play.ts` | Per hit: lunge 2 → impact 4 (+pop, hurt eyes) → back, built on `composePose` shift; baked only when `Paint.anim` (TUI), played at 85 ms/frame, keys swallowed meanwhile |
+| Animation | `anim.ts`, `stage.ts`, `playkit.ts`, `cli/play.ts` | Replaced by the animation overhaul: battle beats → director cues → stage canvas → diff-painted TUI player. See [design-animation.md](design-animation.md) |
 
 ## Verified in Claude Code
 

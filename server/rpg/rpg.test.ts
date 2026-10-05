@@ -778,7 +778,7 @@ describe("feats & titles", () => {
 
 // ─── Presentation ───────────────────────────────────────────────────────────
 
-import { animScenes, battleScreen, panel } from "./render";
+import { battleScreen, panel } from "./render";
 import { displayWidth } from "../art";
 
 describe("presentation", () => {
@@ -804,19 +804,12 @@ describe("presentation", () => {
     expect(out).toContain(`-${dealt}`);
   });
 
-  test("attack animation frames are all the same height and end at rest", () => {
-    let b = fight(makeMonster(ZONES[0].monsters[2], 3), 9);
-    b = act(b, { type: "attack" });
-    const frames = animScenes(P, b, CTX);
-    expect(frames.length).toBe(b.hits!.length * 3 + 1);
-    const h = frames[0].split("\n").length;
-    for (const f of frames) expect(f.split("\n").length).toBe(h);
-  });
-
   test("only the TUI pays for animation frames", () => {
     const s = freshState(T0);
     execute(s, CTX, ";x", T0, P);
-    expect(execute(s, CTX, ";a", T0, P).anim).toBeUndefined();
+    const plain = execute(s, CTX, ";a", T0, P);
+    expect(plain.anim).toBeUndefined();
+    expect(plain.loop).toBeUndefined();
     if (s.battle) expect(execute(s, CTX, ";a", T0, { color: true, anim: true }).anim?.length).toBeGreaterThan(0);
   });
 

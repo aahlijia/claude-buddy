@@ -5,9 +5,10 @@
  */
 
 import type { Eye, Hat, Rarity, Species } from "../engine";
-import { composePose, type PoseExtras } from "../combat";
-import { applyHat, displayWidth, getArtFrame, rectFrame, trimSharedBlankTopRows } from "../art";
-import { foeIntent, type Battle, type Hit } from "./battle";
+import { applyHat, displayWidth, getArtFrame, rectFrame } from "../art";
+import { afterglow, type Cue } from "./anim";
+import { foeIntent, type Battle } from "./battle";
+import { marksOf, stageFor, type Stage, type StageState } from "./stage";
 import {
   CONSUMABLES,
   FLOORS_PER_ZONE,
@@ -66,11 +67,19 @@ export function bar(cur: number, max: number, width: number = 10): string {
   return "█".repeat(n) + "░".repeat(width - n);
 }
 
-export function hpBar(p: Paint, cur: number, max: number, width: number = 10): string {
+/** An HP bar. `was` (HP before this turn) draws the lost chunk as a ghost
+ *  segment `▓`, so a glance shows what the last turn cost. */
+export function hpBar(p: Paint, cur: number, max: number, width: number = 10, was?: number): string {
   const ratio = max > 0 ? cur / max : 0;
   const col = ratio > 0.5 ? C.green : ratio > 0.25 ? C.yellow : C.red;
-  return `♥ ${cur}/${max} ${paint(p, col, bar(cur, max, width))}`;
+  const fill = (v: number) => (max > 0 ? Math.round((Math.max(0, Math.min(v, max)) / max) * width) : 0);
+  const n = fill(cur);
+  const ghost = was !== undefined && was > cur ? Math.max(0, fill(was) - n) : 0;
+  const seg = (code: string, ch: string, k: number) => (k > 0 ? paint(p, code, ch.repeat(k)) : "");
+  return `♥ ${cur}/${max} ${seg(col, "█", n)}${seg(GHOST, "▓", ghost)}${"░".repeat(width - n - ghost)}`;
 }
+
+const GHOST = "\x1b[2;31m";
 
 export interface Look {
   name: string;
@@ -86,8 +95,8 @@ const PANEL_W = 58;
 /** An open-right panel: rules on top and bottom, a left border on every
  *  body line. Open on the right on purpose — emoji widths differ between
  *  terminals, and a misaligned right border looks worse than none. */
-export function panel(p: Paint, title: string, right: string, body: string[], footer?: string): string {
-  const w = Math.max(PANEL_W, ...body.map((l) => displayWidth(l) + 2));
+export function panel(p: Paint, title: string, right: string, body: string[], footer?: string, minW = PANEL_W): string {
+  const w = Math.max(minW, ...body.map((l) => displayWidth(l) + 2));
   const t = ` ${title} `;
   const rt = right ? ` ${right} ` : "";
   const fill = Math.max(2, w - displayWidth(t) - displayWidth(rt) - 2);
@@ -115,10 +124,11 @@ export function wrap(text: string, width: number): string[] {
 
 // ─── Sprites ────────────────────────────────────────────────────────────────
 
-/** The buddy alone (town screen): hat applied, blank top rows trimmed. */
-export function buddySprite(look: Look): string[] {
+/** The buddy alone (town/title screens): hat applied, blank top rows
+ *  trimmed. `pose` picks an idle frame or a blink for the ambient loop. */
+export function buddySprite(look: Look, pose: 0 | 1 | "blink" = 0): string[] {
   try {
-    const art = getArtFrame(look.species, look.eye, 0);
+    const art = getArtFrame(look.species, pose === "blink" ? ("-" as Eye) : look.eye, pose === "blink" ? 0 : pose);
     if (look.hat && look.hat !== "none") applyHat(look.species, look.hat, art);
     const rows = rectFrame(art);
     while (rows.length > 1 && !rows[0].trim()) rows.shift();
@@ -128,88 +138,43 @@ export function buddySprite(look: Look): string[] {
   }
 }
 
-interface ScenePose {
-  pEye?: Eye;
-  eEye?: Eye;
-  strike?: boolean;
-  shift?: PoseExtras["shift"];
+/** One animation frame's worth of overrides for the battle screen. */
+export interface BattleView {
+  stage: StageState;
+  /** HP shown on the bars [hero, foe]. */
+  hp: [number, number];
+  /** Log lines revealed so far (the rest render blank — same height). */
+  lines: number;
 }
 
-function composeScene(look: Look, foeSpecies: Species, crown: boolean, pose: ScenePose): string {
-  return composePose(
-    look.species,
-    foeSpecies,
-    { pEye: pose.pEye ?? look.eye, eEye: pose.eEye ?? ("×" as Eye), strike: !!pose.strike },
-    "/",
-    pose.shift ? { shift: pose.shift } : undefined,
-    { hat: look.hat },
-    crown,
-  );
+/** The fight scene at rest: idle pose, persistent marks, this turn's damage. */
+export function restStage(b: Battle): StageState {
+  return { marks: marksOf(b), motes: afterglow(b) };
 }
 
-/** The two-sprite scene (buddy vs. mirrored foe), reusing the status-line
- *  combat composer so the art matches the idle fights exactly. */
-export function scene(look: Look, foeSpecies: Species, crown: boolean, strike: boolean): string {
-  try {
-    return trimSharedBlankTopRows([[composeScene(look, foeSpecies, crown, { strike })]])[0][0];
-  } catch {
-    return "";
-  }
+/** Center the stage under the panel title. */
+function stageLines(p: Paint, st: Stage, state: StageState): string[] {
+  const indent = " ".repeat(Math.max(0, Math.floor((PANEL_W - 2 - st.width) / 2)));
+  return st.render(state, p.color).map((l) => indent + l);
 }
 
-/** Damage-number text for one side of a turn. */
-function popText(p: Paint, hits: readonly Hit[]): string {
-  if (!hits.length) return "";
-  const dmg = hits.reduce((a, h) => a + h.dmg, 0);
-  if (dmg === 0) return paint(p, C.dim, "miss");
-  const crit = hits.some((h) => h.crit);
-  return paint(p, crit ? C.yellow : C.red, `${crit ? "CRIT " : ""}-${dmg}`);
+/** Every directed cue as a full battle screen (TUI playback). */
+export function battleFrames(
+  p: Paint,
+  b: Battle,
+  look: Look,
+  skills: readonly SkillId[],
+  items: Partial<Record<ConsumableId, number>>,
+  cues: readonly Cue[],
+): { text: string; ms: number }[] {
+  const st = stageFor(b, look);
+  return cues.map((c) => ({ text: battleScreen(p, b, look, skills, items, c, st), ms: c.ms }));
 }
 
-/** A row of damage numbers: what the hero took over the hero, what the foe
- *  took over the foe. Blank when nothing landed. */
-function popRow(width: number, heroPop: string, foePop: string): string {
-  const place = (center: number, text: string) => Math.max(0, Math.round(center - displayWidth(text) / 2));
-  let row = "";
-  if (heroPop) row += " ".repeat(place(width * 0.22, heroPop)) + heroPop;
-  if (foePop) {
-    const at = place(width * 0.75, foePop);
-    row += " ".repeat(Math.max(1, at - displayWidth(row))) + foePop;
-  }
-  return row;
-}
-
-/** Attack animation for the latest turn's hits: each strike is a lunge
- *  (2 cells), an impact (4 cells + the damage number), and a step back.
- *  Every frame is the same height, so the TUI can swap them in place. */
-export function animScenes(p: Paint, b: Battle, look: Look): string[] {
-  const hits = b.hits ?? [];
-  if (!hits.length) return [];
-  const crown = !!b.foe.boss;
-  const raw: string[] = [];
-  const pops: string[] = [];
-  for (const h of hits) {
-    const side = h.by === "hero" ? "player" : "enemy";
-    const atkEye = ">" as Eye;
-    const hurt = (h.dmg > 0 ? "x" : undefined) as Eye | undefined;
-    const pose = (cells: number, impact: boolean): ScenePose =>
-      h.by === "hero"
-        ? { pEye: atkEye, eEye: impact ? hurt : undefined, shift: { side, cells }, strike: impact }
-        : { eEye: atkEye, pEye: impact ? hurt : undefined, shift: { side, cells }, strike: impact };
-    const pop = popText(p, [h]);
-    for (const [cells, impact] of [[2, false], [4, true], [2, false]] as const) {
-      raw.push(composeScene(look, b.foe.species, crown, pose(cells, impact)));
-      pops.push(impact ? (h.by === "hero" ? `|${pop}` : `${pop}|`) : "|");
-    }
-  }
-  raw.push(composeScene(look, b.foe.species, crown, {}));
-  pops.push("|");
-  const trimmed = trimSharedBlankTopRows([raw])[0];
-  return trimmed.map((f, i) => {
-    const width = displayWidth(f.split("\n")[0] ?? "");
-    const [heroPop, foePop] = pops[i].split("|");
-    return `${popRow(width, heroPop, foePop)}\n${f}`;
-  });
+/** Stage geometry for the director. */
+export function stageGeometry(b: Battle, look: Look): { width: number; height: number; eyeY: number } {
+  const st = stageFor(b, look);
+  return { width: st.width, height: st.height, eyeY: st.eyeY };
 }
 
 export function battleTitle(b: Battle): string {
@@ -221,46 +186,51 @@ export function battleTitle(b: Battle): string {
   return `⚔ ${z?.name ?? "?"} · Floor ${b.floor}/${FLOORS_PER_ZONE}`;
 }
 
-/** The battle screen. `sceneOverride` swaps in one animation frame. */
+/** The battle screen. `view` swaps in one animation frame; every frame of a
+ *  fight has the same height as the resting screen. */
 export function battleScreen(
   p: Paint,
   b: Battle,
   look: Look,
   skills: readonly SkillId[],
   items: Partial<Record<ConsumableId, number>>,
-  sceneOverride?: string,
+  view?: BattleView,
+  stage?: Stage,
 ): string {
   const body: string[] = [];
-  let art = sceneOverride;
-  if (art === undefined) {
-    const s = scene(look, b.foe.species, !!b.foe.boss, false);
-    const hits = b.hits ?? [];
-    const width = displayWidth(s.split("\n")[0] ?? "");
-    const pop = popRow(width, popText(p, hits.filter((h) => h.by === "foe")), popText(p, hits.filter((h) => h.by === "hero")));
-    art = s ? `${pop}\n${s}` : "";
+  try {
+    body.push(...stageLines(p, stage ?? stageFor(b, look), view?.stage ?? restStage(b)));
+  } catch {
+    /* art failure — the bars and log still work */
   }
-  if (art) body.push(...art.split("\n"));
+  const [heroHp, foeHp] = view?.hp ?? [b.hero.hp, b.foe.hp];
+  const [heroWas, foeWas] = b.was ?? [heroHp, foeHp];
+  const settled = !view || view.lines >= b.log.length;
   const foeName = b.foe.boss ? paint(p, C.yellow, `♛ ${b.foe.name}`) : b.foe.name;
   const label = (t: string, w: number) => t + " ".repeat(Math.max(1, w - displayWidth(t)));
   const lw = Math.max(displayWidth(look.name), displayWidth(`${b.foe.boss ? "♛ " : ""}${b.foe.name} Lv${b.foe.level}`)) + 2;
-  body.push(label(paint(p, C.bold, look.name), lw) + hpBar(p, b.hero.hp, b.hero.maxHp, 14));
+  body.push(label(paint(p, C.bold, look.name), lw) + hpBar(p, heroHp, b.hero.maxHp, 14, heroWas));
   const intent = foeIntent(b);
-  body.push(
-    label(`${foeName} Lv${b.foe.level}`, lw) +
-      hpBar(p, b.foe.hp, b.foe.maxHp, 14) +
-      (intent ? `  ${paint(p, C.yellow, intent)}` : ""),
-  );
+  const foeLine = label(`${foeName} Lv${b.foe.level}`, lw) + hpBar(p, foeHp, b.foe.maxHp, 14, foeWas);
+  const intentText = intent ? `  ${paint(p, C.yellow, intent)}` : "";
+  // The intent shows once the turn has played out, but the panel is sized
+  // for it from the first frame so nothing shifts.
+  const widest = label(`${foeName} Lv${b.foe.level}`, lw) + hpBar(p, b.foe.maxHp, b.foe.maxHp, 14);
+  const minW = Math.max(PANEL_W, displayWidth(widest + intentText) + 2);
+  body.push(settled ? foeLine + intentText : foeLine);
   const status: string[] = [];
   if (b.hero.fx.poison) status.push("☠ poisoned");
   if (b.hero.fx.blind) status.push("◌ cursed aim");
   if (b.hero.fx.buff) status.push(`↑ATK ${b.hero.fx.buff}`);
-  if (status.length) body.push(paint(p, C.magenta, status.join("  ")));
-  body.push("");
-  for (const l of b.log) {
-    wrap(l, PANEL_W - 4).forEach((part, i) => body.push((i ? "  " : paint(p, C.dim, "» ")) + part));
-  }
-  const out = panel(p, battleTitle(b), `Turn ${b.turn}`, body);
-  return b.over ? out : `${out}\n${actionHints(p, b, skills, items)}`;
+  // The status row doubles as the spacer above the log, so it never shifts it.
+  body.push(status.length && settled ? paint(p, C.magenta, status.join("  ")) : "");
+  b.log.forEach((l, i) => {
+    const shown = !view || i < view.lines;
+    wrap(l, PANEL_W - 4).forEach((part, j) => body.push(shown ? (j ? "  " : paint(p, C.dim, "» ")) + part : ""));
+  });
+  const out = panel(p, battleTitle(b), `Turn ${b.turn}`, body, undefined, minW);
+  // The TUI (anim) draws its own action bar instead of the `;` hints.
+  return b.over || p.anim ? out : `${out}\n${actionHints(p, b, skills, items)}`;
 }
 
 export function actionHints(

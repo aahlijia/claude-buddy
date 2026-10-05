@@ -49,8 +49,10 @@ import { deriveHero, trainCost, trainError, type HeroStats } from "./hero";
 import {
   C,
   wrap,
-  animScenes,
+  battleFrames,
   battleScreen,
+  restStage,
+  stageGeometry,
   buddySprite,
   panel,
   gearLine,
@@ -67,6 +69,7 @@ import { EVENTS, EVENT_CHANCE, resolveEvent, rollEventId, type EventOutcome } fr
 import { ENDING, PROLOGUE, ZONE_ARRIVAL, fill } from "./story";
 import { FORGE_CHANCE, FORGE_MAX, forgeCost, forgeError, strike } from "./forge";
 import { FEATS, checkFeats, unlockedTitles } from "./feats";
+import { ambient, direct, directIntro } from "./anim";
 
 /** The bug currently standing off on the status line (idle-RPG pending
  *  encounter), if any — `;hunt` fights its shadow. */
@@ -93,9 +96,21 @@ export interface CommandResult {
   xp: number;
   /** State was mutated and should be saved. */
   changed: boolean;
-  /** Attack-animation screens to flash before `out` (only with `Paint.anim`). */
-  anim?: string[];
+  /** Timed screens to play before `out` (only with `Paint.anim`): the turn's
+   *  choreography or a fight's intro. */
+  anim?: AnimFrame[];
+  /** A gentle resting loop for `out` (idle breathing/blinking; TUI only).
+   *  Every frame is `out` with only the art changed. */
+  loop?: { frames: string[]; ms: number };
 }
+
+export interface AnimFrame {
+  text: string;
+  ms: number;
+}
+
+/** Ambient loop cadence — slow enough to read as breathing, not flicker. */
+const LOOP_MS = 650;
 
 /** Final tier: the Endless Tower unlocks once zone 6's boss falls. */
 export const TOWER_UNLOCK = ZONES.length + 1;
@@ -202,7 +217,35 @@ export function execute(
     r.out = `${paint(p, C.dim, fill(PROLOGUE, ctx.name))}\n\n${r.out}`;
     r.changed = true;
   }
+  if (p.anim) r.loop = restLoop(s, ctx, r.out, now, p);
   return r;
+}
+
+/** The idle loop for whatever `out` shows: a live fight breathes and its
+ *  marks pulse; the town screen's buddy breathes and blinks. Built only
+ *  when `out` starts with that screen, so the loop never drops text. */
+function restLoop(s: RpgState, ctx: BuddyCtx, out: string, now: number, p: Paint): CommandResult["loop"] {
+  const b = s.battle;
+  if (b && !b.over) {
+    const base = screen(s, ctx, p);
+    if (!out.startsWith(base)) return undefined;
+    const tail = out.slice(base.length);
+    const frames = battleFrames(p, b, ctx, s.skills, s.items, ambient(b).map((stage) => ({
+      stage: { ...stage, motes: restStage(b).motes },
+      hp: [b.hero.hp, b.foe.hp] as [number, number],
+      lines: b.log.length,
+      ms: LOOP_MS,
+    })));
+    return { frames: frames.map((f) => f.text + tail), ms: LOOP_MS };
+  }
+  if (!b && !s.event) {
+    const hero = heroOf(s, ctx);
+    const base = statusText(s, ctx, hero, now, p);
+    if (out !== base) return undefined;
+    const poses = [0, 1, 0, "blink"] as const;
+    return { frames: poses.map((pose) => statusText(s, ctx, hero, now, p, pose)), ms: LOOP_MS };
+  }
+  return undefined;
 }
 
 function dispatch(
@@ -350,7 +393,14 @@ function energyText(s: RpgState, now: number, p: Paint): string {
   return `${paint(p, C.yellow, `⚡ ${Math.floor(s.energy)}/${ENERGY_MAX}`)}${next ? paint(p, C.dim, ` (+1 in ${next}m)`) : ""}`;
 }
 
-function statusText(s: RpgState, ctx: BuddyCtx, hero: HeroStats, now: number, p: Paint): string {
+function statusText(
+  s: RpgState,
+  ctx: BuddyCtx,
+  hero: HeroStats,
+  now: number,
+  p: Paint,
+  pose: 0 | 1 | "blink" = 0,
+): string {
   const z = zoneById(s.zone);
   const hp = currentHp(s, hero.maxHp);
   const floors = s.floors[String(s.zone)] ?? 0;
@@ -375,8 +425,8 @@ function statusText(s: RpgState, ctx: BuddyCtx, hero: HeroStats, now: number, p:
     info.push(paint(p, C.red, `🐛 ${ctx.standoff.name} is on your status line! ;hunt`));
   }
   // Sprite on the left, info on the right — the "town" screen.
-  const sprite = buddySprite(ctx);
-  const sw = sprite.reduce((m, l) => Math.max(m, displayWidth(l)), 0);
+  const sprite = buddySprite(ctx, pose);
+  const sw = Math.max(...[0, 1].map((f) => buddySprite(ctx, f as 0 | 1).reduce((m, l) => Math.max(m, displayWidth(l)), 0)), 0);
   const rows = Math.max(sprite.length, info.length);
   const top = Math.max(0, Math.floor((rows - sprite.length) / 2));
   const body: string[] = [];
@@ -597,7 +647,13 @@ function startFight(
   s.battle = battle;
   s.stats.battles++;
   r.out = screen(s, ctx, p);
+  if (p.anim) r.anim = introFrames(battle, ctx, s, p);
   return r;
+}
+
+/** The encounter animation for a freshly started fight. */
+function introFrames(b: Battle, ctx: BuddyCtx, s: RpgState, p: Paint): AnimFrame[] {
+  return battleFrames(p, b, ctx, s.skills, s.items, directIntro(b, stageGeometry(b, ctx)));
 }
 
 /** Zone arrival text, once per zone. */
@@ -664,6 +720,7 @@ function choose(
     s.battle = b;
     s.stats.battles++;
     lines.push(screen(s, ctx, p));
+    if (p.anim) r.anim = introFrames(b, ctx, s, p).map((f) => ({ ...f, text: `${lines.slice(0, -1).join("\n")}\n${f.text}` }));
   } else {
     lines.push(paint(p, C.dim, ";x to press on"));
   }
@@ -800,15 +857,16 @@ function turn(
   if (a.type === "item") s.items[a.id] = Math.max(0, (s.items[a.id] ?? 0) - 1);
   const next = act(b, a);
   s.battle = next;
-  if (p.anim) {
-    r.anim = animScenes(p, next, ctx).map((sc) => battleScreen(p, next, ctx, s.skills, s.items, sc));
-  }
   const news = a.type === "skill" ? progress(s, "skills", 1, now) : [];
+  // A finished fight's news joins its log, so bake frames after that.
+  if (next.over && news.length) next.log.push(...news);
+  if (p.anim) {
+    r.anim = battleFrames(p, next, ctx, s.skills, s.items, direct(b, next, stageGeometry(next, ctx)));
+  }
   if (!next.over) {
     r.out = [screen(s, ctx, p), ...news].join("\n");
     return r;
   }
-  if (news.length) next.log.push(...news);
   const out = battleScreen(p, next, ctx, s.skills, s.items);
   const tail = conclude(s, next, ctx, now, p, r);
   r.out = `${out}\n${tail}`;
