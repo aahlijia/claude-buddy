@@ -27,6 +27,8 @@ const TOWN_KEYS: Record<string, string> = {
   x: ";x",
   b: ";boss",
   t: ";tower",
+  u: ";hunt",
+  n: ";daily",
   m: ";map",
   i: ";bag",
   s: ";shop",
@@ -61,7 +63,7 @@ function inFight(): boolean {
 function legend(fight: boolean): string {
   return fight
     ? "[a]ttack [d]efend [1-7] skills  [p]otion [e]lixir b[o]mb [z] smoke  [f]lee   [:] command  [q]uit"
-    : "e[x]plore [b]oss [t]ower [m]ap  [i] bag [s]hop [g] train [r]est  [c]har s[k]ills [l]og [h]elp   [:] command  [q]uit";
+    : "e[x]plore [b]oss [t]ower h[u]nt [m]ap  [i] bag [s]hop [g] train [r]est  [c]har s[k]ills bou[n]ties [l]og [h]elp   [:] command  [q]uit";
 }
 
 function draw(): void {

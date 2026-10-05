@@ -297,11 +297,16 @@ A full turn-based RPG you play **inside Claude Code** without spending a single 
 ;a ;d ;f     attack · defend · flee           ;s1-;s7 skills    ;i potion  items
 ;bag ;equip 3 ;sell junk ;lock 2              ;shop ;buy 5      ;train atk
 ;map ;go 2   travel between zones            ;tower  endless post-game tower
+;hunt        fight the bug on your status line ;daily  bounty board
 ```
 
 - **Six zones, six bosses.** Syntax Meadows → Null Marsh → Callback Caverns → Race Rapids → Leak Mines → Kernel Abyss. Clear five floors to unlock each boss. Every boss has its own mechanic: the *Missing Semicolon* telegraphs a Parse Error you should defend through, the *Null Pointer Lich* drains HP and curses your aim, the *Callback Hydra* grows heads, the *Heisenbug* dodges until you observe it, the *Leaky Golem* outgrows you unless stunned, and the *Segfault Dragon* charges a Core Dump. A first kill unlocks a new skill and the next zone. After the dragon, the **Endless Tower** has an elite every 5 floors and a boss every 10.
 - **Stats layered on your buddy.** Combat stats come from your buddy's level and prestige plus its five personality stats (DEBUGGING → ATK, PATIENCE → HP, WISDOM → DEF, CHAOS → SPD, SNARK → CRIT). Gold-bought **training** ranks and **gear** stack on top.
 - **Gear with rarity and affixes.** Weapon, armor and charm slots. Rarities run common → legendary with up to four affixes (ATK, DEF, HP, SPD, CRIT, LEECH, GOLD). Upgrades are flagged with ▲ in `;bag`. The merchant restocks gear daily.
+- **Your species matters.** Every one of the 20 species has a passive: turtles get a tanky Shell, owls get Night Vision crits, ducks get Quack Fortune gold, and so on (see `;me`).
+- **Legendary uniques.** Legendary gear rolls one special power: Thorns, Second Wind (survive one lethal hit), First Strike, Midas (+50% gold) or Overclock (faster skill cooldowns).
+- **Hunt the bug on your status line.** When Claude hits errors and a bug squares off against your buddy, `;hunt` fights its shadow turn-based for double gold and a likely drop. The real bug still needs a commit to banish it.
+- **Daily bounties.** `;daily` shows three tasks per day, for example "Defeat 6 monsters", "Make 3 commits" or "Squash a status-line bug". Each one pays gold and a coffee, and clearing the board pays an Energy Drink.
 - **Coding fuels it.** Fights cost ⚡ energy, which regenerates 1 point per 12 minutes. Every **commit** restores ⚡ and pays gold, with a bounty when the idle bug fight was won. Wins also feed your buddy XP back.
 - **Easy on your machine.** Ordinary prompts exit after a pure-bash prefix check: no jq, no bun, no extra processes. A `;` command is a single ~90 ms bun run. Nothing runs in the background, and HP and energy regen are computed from timestamps when you next look.
 - **HUD.** Once you've played, a dim `⚔ Z2 3/5 ♥40/55 ↯7 ◎120g` row appears under the buddy. Hide it with `;hud off`.

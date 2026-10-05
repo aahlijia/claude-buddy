@@ -11,10 +11,30 @@
  */
 
 import type { BuddyStats, Eye, Hat, Species } from "../engine";
-import { execute, hudLine, heroOf, onCommit, type BuddyCtx } from "./game";
+import { execute, hudLine, heroOf, onCommit, type BuddyCtx, type Standoff } from "./game";
 import { loadRpg, saveRpg, type RpgState } from "./store";
 
 const FALLBACK_STATS: BuddyStats = { DEBUGGING: 20, PATIENCE: 20, CHAOS: 20, WISDOM: 20, SNARK: 20 };
+
+/** The idle-RPG standoff bug currently on the status line, if any. */
+export function loadStandoff(): Standoff | null {
+  try {
+    const { readPendingEncounter } = require("../combat.ts") as typeof import("../combat.ts");
+    const { bugById } = require("../bugs.ts") as typeof import("../bugs.ts");
+    const rec = readPendingEncounter();
+    const bug = rec ? bugById(rec.bugId) : null;
+    if (!rec || !bug) return null;
+    return {
+      key: `${rec.bugId}:${rec.startedAt}`,
+      name: bug.name.replace(/\b\w/g, (ch) => ch.toUpperCase()),
+      species: bug.species,
+      tier: rec.tier ?? bug.tier,
+      boss: rec.kind === "boss",
+    };
+  } catch {
+    return null;
+  }
+}
 
 /** Build the companion-side context; any failure degrades to a plain blob. */
 export function loadBuddyCtx(): BuddyCtx {
@@ -35,6 +55,7 @@ export function loadBuddyCtx(): BuddyCtx {
       level: xp.level,
       prestige: xp.prestigeLevel,
       stats: look.stats,
+      standoff: loadStandoff(),
     };
   } catch {
     return {

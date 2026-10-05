@@ -15,6 +15,7 @@ import {
   HP_REGEN_PER_MIN,
   STARTER_SKILLS,
   type BossId,
+  type BountyKind,
   type ConsumableId,
   type GearSlot,
   type SkillId,
@@ -53,6 +54,17 @@ export interface RpgState {
   journal: string[];
   /** Today's merchant stock slots already bought (stock is day-seeded). */
   shop: { day: string; bought: number[] };
+  /** Today's bounty board (rolled lazily on first touch each day). */
+  daily: { day: string; tasks: Bounty[]; bonus: boolean };
+  /** Key of the status-line standoff already hunted (one hunt per standoff). */
+  hunted: string;
+}
+
+export interface Bounty {
+  kind: BountyKind;
+  target: number;
+  progress: number;
+  done: boolean;
 }
 
 export function freshState(now: number): RpgState {
@@ -79,6 +91,8 @@ export function freshState(now: number): RpgState {
     stats: { battles: 0, kills: 0, deaths: 0, bosses: 0, goldEarned: 0 },
     journal: [],
     shop: { day: "", bought: [] },
+    daily: { day: "", tasks: [], bonus: false },
+    hunted: "",
   };
 }
 
@@ -124,6 +138,11 @@ export function coerceState(raw: unknown, now: number): RpgState {
       day: typeof r.shop?.day === "string" ? r.shop.day : "",
       bought: Array.isArray(r.shop?.bought) ? r.shop.bought : [],
     },
+    daily:
+      r.daily && typeof r.daily.day === "string" && Array.isArray(r.daily.tasks)
+        ? { day: r.daily.day, tasks: r.daily.tasks, bonus: r.daily.bonus === true }
+        : base.daily,
+    hunted: typeof r.hunted === "string" ? r.hunted : "",
   };
 }
 

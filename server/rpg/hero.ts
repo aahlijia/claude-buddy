@@ -4,13 +4,15 @@
  * training ranks and equipped gear stack on. Pure.
  */
 
-import type { BuddyStats } from "../engine";
+import type { BuddyStats, Species } from "../engine";
 import {
+  SPECIES_PASSIVES,
   TRAIN_GAIN,
   TRAIN_MAX,
   TRAINABLE,
   type AffixStat,
   type TrainStat,
+  type UniqueId,
 } from "./data";
 import type { GearItem } from "./gear";
 
@@ -27,6 +29,8 @@ export interface HeroStats {
   leech: number;
   /** Percent bonus gold. */
   gold: number;
+  /** Legendary unique powers from equipped gear. */
+  uniques: UniqueId[];
 }
 
 export type Training = Partial<Record<TrainStat, number>>;
@@ -55,20 +59,25 @@ export function deriveHero(
   stats: BuddyStats,
   training: Training,
   gear: readonly GearItem[],
+  species?: Species,
 ): HeroStats {
   const level = powerLevel(buddyLevel, prestige);
   const l = level - 1;
   const t = (k: TrainStat) => (training[k] ?? 0) * TRAIN_GAIN[k];
   const g = gearBonus(gear);
+  const ps = species ? SPECIES_PASSIVES[species] : undefined;
+  const pct = (k: "atk" | "def" | "hp", v: number) => Math.round(v * (1 + (ps?.pct?.[k] ?? 0) / 100));
+  const flat = (k: "spd" | "crit" | "leech" | "gold") => ps?.flat?.[k] ?? 0;
   return {
     level,
-    maxHp: Math.round(45 + 7 * l + stats.PATIENCE / 2 + t("hp") + g.hp),
-    atk: Math.round(9 + 1.6 * l + stats.DEBUGGING / 8 + t("atk") + g.atk),
-    def: Math.round(3 + 0.9 * l + stats.WISDOM / 10 + t("def") + g.def),
-    spd: Math.round(10 + stats.CHAOS / 10 + t("spd") + g.spd),
-    crit: Math.min(CRIT_CAP, Math.round(5 + stats.SNARK / 10 + t("crit") + g.crit)),
-    leech: Math.min(LEECH_CAP, g.leech),
-    gold: g.gold,
+    maxHp: pct("hp", 45 + 7 * l + stats.PATIENCE / 2 + t("hp") + g.hp),
+    atk: pct("atk", 9 + 1.6 * l + stats.DEBUGGING / 8 + t("atk") + g.atk),
+    def: pct("def", 3 + 0.9 * l + stats.WISDOM / 10 + t("def") + g.def),
+    spd: Math.max(1, Math.round(10 + stats.CHAOS / 10 + t("spd") + g.spd + flat("spd"))),
+    crit: Math.min(CRIT_CAP, Math.round(5 + stats.SNARK / 10 + t("crit") + g.crit + flat("crit"))),
+    leech: Math.min(LEECH_CAP, g.leech + flat("leech")),
+    gold: g.gold + flat("gold"),
+    uniques: gear.flatMap((x) => (x.unique ? [x.unique] : [])),
   };
 }
 

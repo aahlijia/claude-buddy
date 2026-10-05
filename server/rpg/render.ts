@@ -13,6 +13,7 @@ import {
   FLOORS_PER_ZONE,
   RARITY_ANSI,
   SKILLS,
+  UNIQUES,
   zoneById,
   type ConsumableId,
   type SkillId,
@@ -53,7 +54,8 @@ export function gearName(p: Paint, g: GearItem): string {
 }
 
 export function gearLine(p: Paint, g: GearItem): string {
-  return `${gearName(p, g)} ${paint(p, C.dim, `i${g.ilvl}`)}  ${statLine(g.stats)}`;
+  const u = g.unique ? `  ${paint(p, C.yellow, `★ ${UNIQUES[g.unique].desc}`)}` : "";
+  return `${gearName(p, g)} ${paint(p, C.dim, `i${g.ilvl}`)}  ${statLine(g.stats)}${u}`;
 }
 
 export function bar(cur: number, max: number, width: number = 10): string {
@@ -96,6 +98,7 @@ export function scene(look: Look, foeSpecies: Species, crown: boolean, strike: b
 
 export function battleTitle(b: Battle): string {
   if (b.kind === "tower") return `Endless Tower · Floor ${b.floor}`;
+  if (b.kind === "hunt") return "🐛 Bug Hunt";
   const z = zoneById(b.zone);
   if (b.kind === "boss") return `${z?.name ?? "?"} · BOSS`;
   return `${z?.name ?? "?"} · Floor ${b.floor}/${FLOORS_PER_ZONE}`;

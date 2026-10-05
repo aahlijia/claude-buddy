@@ -5,7 +5,7 @@
  * returned buddy-XP side effect.
  */
 
-import { hashString, mulberry32, type BuddyStats } from "../engine";
+import { hashString, mulberry32, type BuddyStats, type Species } from "../engine";
 import {
   act,
   actionError,
@@ -31,7 +31,9 @@ import {
   INVENTORY_CAP,
   KO_GOLD_LOSS,
   SKILLS,
+  SPECIES_PASSIVES,
   TRAINABLE,
+  UNIQUES,
   TRAIN_GAIN,
   ZONES,
   zoneById,
@@ -54,12 +56,25 @@ import {
   type Paint,
 } from "./render";
 import { currentHp, journal, nextEnergyIn, settle, settleEnergy, type RpgState } from "./store";
+import { bountyReward, bountyText, dayKey, progress, syncDaily } from "./bounty";
+
+/** The bug currently standing off on the status line (idle-RPG pending
+ *  encounter), if any — `;hunt` fights its shadow. */
+export interface Standoff {
+  /** Stable per-standoff key (bugId:startedAt) — one hunt per standoff. */
+  key: string;
+  name: string;
+  species: Species;
+  tier: number;
+  boss: boolean;
+}
 
 /** The companion-side inputs the RPG layers on top of. */
 export interface BuddyCtx extends Look {
   level: number;
   prestige: number;
   stats: BuddyStats;
+  standoff?: Standoff | null;
 }
 
 export interface CommandResult {
@@ -74,7 +89,7 @@ export interface CommandResult {
 export const TOWER_UNLOCK = ZONES.length + 1;
 
 export function heroOf(s: RpgState, ctx: BuddyCtx): HeroStats {
-  return deriveHero(ctx.level, ctx.prestige, ctx.stats, s.training, equippedList(s));
+  return deriveHero(ctx.level, ctx.prestige, ctx.stats, s.training, equippedList(s), ctx.species);
 }
 
 function equippedList(s: RpgState): GearItem[] {
@@ -130,6 +145,11 @@ const ALIASES: Record<string, string> = {
   r: "rest",
   l: "log",
   journal: "log",
+  q: "daily",
+  quests: "daily",
+  bounty: "daily",
+  bounties: "daily",
+  bugs: "hunt",
 };
 
 export function parse(input: string): { cmd: string; args: string[] } {
@@ -198,6 +218,11 @@ export function execute(
       return startFight(s, ctx, hero, "boss", now, p, r);
     case "tower":
       return startFight(s, ctx, hero, "tower", now, p, r);
+    case "hunt":
+      return startFight(s, ctx, hero, "hunt", now, p, r);
+    case "daily":
+      r.out = dailyText(s, now, p);
+      return r;
     case "map":
       r.out = mapText(s, p);
       return r;
@@ -247,6 +272,7 @@ export function helpText(p: Paint): string {
     "  ;            status / current fight      ;me      character sheet",
     "  ;x           explore (fight next floor)   ;boss    zone boss",
     "  ;tower       endless tower (post-game)    ;map     zones · ;go <n> travel",
+    "  ;hunt        fight the bug on your status line   ;daily  bounty board",
     h("In a fight"),
     "  ;a attack  ;d defend  ;s1..;s7 skills  ;i <item>  ;f flee",
     h("Gear & town"),
@@ -280,7 +306,23 @@ function statusText(s: RpgState, ctx: BuddyCtx, hero: HeroStats, now: number, p:
     const next = floors >= FLOORS_PER_ZONE ? "boss ready! ;boss" : `next: floor ${floors + 1} ;x`;
     lines.push(`📍 ${z.name} [${bar(floors, FLOORS_PER_ZONE, FLOORS_PER_ZONE)}] ${next}`);
   }
+  syncDaily(s, now);
+  const done = s.daily.tasks.filter((b) => b.done).length;
+  const extras = [`📜 bounties ${done}/${s.daily.tasks.length} ;daily`];
+  if (ctx.standoff && s.hunted !== ctx.standoff.key) extras.push(`🐛 ${ctx.standoff.name} on your status line! ;hunt`);
+  lines.push(extras.join("   "));
   lines.push(paint(p, C.dim, ";help for commands"));
+  return lines.join("\n");
+}
+
+function dailyText(s: RpgState, now: number, p: Paint): string {
+  syncDaily(s, now);
+  const lines = [paint(p, C.bold, `📜 Bounty board — ${s.daily.day}`) + paint(p, C.dim, `  (+${bountyReward(s)}g ☕ each, all three: +🥤)`)];
+  for (const b of s.daily.tasks) {
+    const mark = b.done ? paint(p, C.green, "✓") : " ";
+    lines.push(` ${mark} ${bountyText(b).padEnd(38)} ${b.progress}/${b.target}`);
+  }
+  if (s.daily.bonus) lines.push(paint(p, C.green, "Board cleared — new bounties tomorrow."));
   return lines.join("\n");
 }
 
@@ -298,6 +340,11 @@ function sheet(s: RpgState, ctx: BuddyCtx, hero: HeroStats, now: number, p: Pain
   for (const slot of GEAR_SLOTS) {
     const g = s.equipped[slot];
     lines.push(`${slot.padEnd(6)} ${g ? gearLine(p, g) : paint(p, C.dim, "—")}`);
+  }
+  const passive = SPECIES_PASSIVES[ctx.species];
+  if (passive) lines.push(`Passive: ${paint(p, C.cyan, passive.name)} — ${passive.desc}`);
+  if (hero.uniques.length) {
+    lines.push(`Uniques: ${hero.uniques.map((u) => `${paint(p, C.yellow, UNIQUES[u].name)} (${UNIQUES[u].desc})`).join(", ")}`);
   }
   lines.push(`Skills: ${s.skills.map((k) => SKILLS[k].name).join(", ")}`);
   lines.push(
@@ -371,11 +418,24 @@ function startFight(
   s: RpgState,
   ctx: BuddyCtx,
   hero: HeroStats,
-  kind: "explore" | "boss" | "tower",
+  kind: "explore" | "boss" | "tower" | "hunt",
   now: number,
   p: Paint,
   r: CommandResult,
 ): CommandResult {
+  if (kind === "hunt") {
+    const so = ctx.standoff;
+    if (!so) {
+      r.out = "No bug on your status line right now. They appear when Claude hits errors — then ;hunt it.";
+      r.changed = false;
+      return r;
+    }
+    if (s.hunted === so.key && !s.battle) {
+      r.out = `You already squashed the ${so.name}'s shadow. Commit to banish the real one.`;
+      r.changed = false;
+      return r;
+    }
+  }
   if (s.battle) {
     r.out = "You're already in a fight!\n" + screen(s, ctx, p);
     return r;
@@ -392,7 +452,7 @@ function startFight(
     }
     kind = "tower";
   }
-  const cost = kind === "boss" ? COST_BOSS : kind === "tower" ? COST_TOWER : COST_EXPLORE;
+  const cost = kind === "boss" ? COST_BOSS : kind === "tower" ? COST_TOWER : COST_EXPLORE; // hunt = explore cost
   if (s.energy < cost) {
     r.out = `Out of energy (${energyText(s, now, p)}). Commit some code or wait — commits restore ⚡.`;
     return r;
@@ -403,6 +463,16 @@ function startFight(
   if (kind === "tower") {
     const floor = s.tower.floor + 1;
     battle = startBattle("tower", 0, floor, hero, hp, towerFoe(floor, rng), seed);
+  } else if (kind === "hunt") {
+    const so = ctx.standoff!;
+    const top = zoneById(Math.min(s.unlocked, ZONES.length))!;
+    const level = top.base + 1 + so.tier;
+    const foe = makeMonster(
+      { id: `bug:${so.key}`, name: so.boss ? `Boss ${so.name}` : so.name, species: so.species,
+        hp: (so.boss ? 2.4 : 1) + 0.15 * so.tier, atk: 1 + 0.05 * so.tier, def: 1, spd: 1.1 },
+      level,
+    );
+    battle = startBattle("hunt", top.id, 0, hero, hp, foe, seed);
   } else {
     const z = zoneById(s.zone);
     if (!z) {
@@ -513,10 +583,12 @@ function turn(
   if (a.type === "item") s.items[a.id] = Math.max(0, (s.items[a.id] ?? 0) - 1);
   const next = act(b, a);
   s.battle = next;
+  const news = a.type === "skill" ? progress(s, "skills", 1, now) : [];
   if (!next.over) {
-    r.out = screen(s, ctx, p);
+    r.out = [screen(s, ctx, p), ...news].join("\n");
     return r;
   }
+  if (news.length) next.log.push(...news);
   const out = battleScreen(p, next, ctx, s.skills, s.items);
   const tail = conclude(s, next, ctx, now, p, r);
   r.out = `${out}\n${tail}`;
@@ -563,12 +635,19 @@ function conclude(
   const isBoss = !!b.foe.boss;
   const rng = mulberry32(nextSeed(s, now));
   let gold = Math.round((4 + 2 * L) * (0.85 + rng() * 0.3) * (isBoss ? 6 : 1) * (b.kind === "tower" ? 1.5 : 1));
-  gold = Math.round(gold * (1 + hero.gold / 100));
+  gold = Math.round(gold * (1 + hero.gold / 100) * (hero.uniques.includes("midas") ? 1.5 : 1) * (b.kind === "hunt" ? 2 : 1));
   s.gold += gold;
   s.stats.goldEarned += gold;
   s.stats.kills++;
   r.xp += isBoss ? 25 + 3 * L : 2 + Math.floor(L / 2);
   lines.push(paint(p, C.yellow, `🏆 Victory! +${gold}g`) + paint(p, C.dim, `  +${r.xp} buddy XP`));
+  const bounties = [
+    ...progress(s, "kills", 1, now),
+    ...progress(s, "gold", gold, now),
+    ...(b.hero.hp >= b.hero.maxHp / 2 ? progress(s, "flawless", 1, now) : []),
+    ...(isBoss ? progress(s, "boss", 1, now) : []),
+    ...(b.kind === "hunt" ? progress(s, "hunt", 1, now) : []),
+  ];
 
   let dropChance = 0.28;
   let floorRarity: GearItem["rarity"] | undefined;
@@ -606,6 +685,12 @@ function conclude(
       lines.push(nz ? `🗺  ${nz.name} unlocked! ;go ${nz.id}` : "🗼 The Endless Tower is open! ;tower");
       s.items.potion = Math.min(CONSUMABLE_STACK, (s.items.potion ?? 0) + 2);
     }
+  } else if (b.kind === "hunt") {
+    if (ctx.standoff) s.hunted = ctx.standoff.key;
+    dropChance = 0.6;
+    luck += 0.15;
+    lines.push(paint(p, C.green, "🐛 Bug squashed (in spirit). The real one still needs a commit to banish."));
+    journal(s, `Hunted a ${b.foe.name}`);
   } else {
     s.tower.floor = b.floor;
     if (b.floor > s.tower.best) {
@@ -627,6 +712,7 @@ function conclude(
     s.items.potion = Math.min(CONSUMABLE_STACK, (s.items.potion ?? 0) + 1);
     lines.push("☕ Found a Coffee.");
   }
+  lines.push(...bounties);
   return lines.join("\n");
 }
 
@@ -764,10 +850,6 @@ function lock(s: RpgState, arg: string | undefined, p: Paint, r: CommandResult):
 }
 
 // ─── Shop ───────────────────────────────────────────────────────────────────
-
-function dayKey(now: number): string {
-  return new Date(now).toISOString().slice(0, 10);
-}
 
 /** Today's gear stock: three day-seeded items scaled to your best zone. */
 export function shopStock(s: RpgState, now: number): GearItem[] {
@@ -936,7 +1018,8 @@ export function onCommit(s: RpgState, fightWon: boolean, now: number): string {
   s.gold += gold;
   s.stats.goldEarned += gold;
   const e = s.energy - before;
-  return `+${gold}g${e > 0 ? ` +${e}⚡` : ""}`;
+  const news = [...progress(s, "commits", 1, now), ...progress(s, "gold", gold, now)];
+  return [`+${gold}g${e > 0 ? ` +${e}⚡` : ""}`, ...news].join("\n");
 }
 
 /** One-line HUD for the status line: `⚔ Z2 3/5 ♥40/55 ⚡7 ◎120g`. */

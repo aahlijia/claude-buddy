@@ -315,3 +315,73 @@ export const TRAIN_GAIN: Record<TrainStat, number> = {
 
 /** Hard cap on training ranks per attribute. */
 export const TRAIN_MAX = 30;
+
+// ─── Species passives ───────────────────────────────────────────────────────
+
+/** Every buddy species brings one passive. `pct` fields are % multipliers on
+ *  the derived stat; flat fields add after. */
+export interface SpeciesPassive {
+  name: string;
+  desc: string;
+  pct?: Partial<Record<"atk" | "def" | "hp", number>>;
+  flat?: Partial<Record<"spd" | "crit" | "leech" | "gold", number>>;
+}
+
+export const SPECIES_PASSIVES: Record<Species, SpeciesPassive> = {
+  duck: { name: "Quack Fortune", desc: "+15% gold", flat: { gold: 15 } },
+  goose: { name: "Menace", desc: "+15% ATK", pct: { atk: 15 } },
+  blob: { name: "Squishy", desc: "+15% HP", pct: { hp: 15 } },
+  cat: { name: "Nine Lives", desc: "+5% CRIT, +5% HP", flat: { crit: 5 }, pct: { hp: 5 } },
+  dragon: { name: "Hoard Fire", desc: "+10% ATK, +5% HP", pct: { atk: 10, hp: 5 } },
+  octopus: { name: "Eight Arms", desc: "+4% LEECH, +5% ATK", flat: { leech: 4 }, pct: { atk: 5 } },
+  owl: { name: "Night Vision", desc: "+7% CRIT", flat: { crit: 7 } },
+  penguin: { name: "Formal Armor", desc: "+15% DEF", pct: { def: 15 } },
+  turtle: { name: "Shell", desc: "+25% DEF, -2 SPD", pct: { def: 25 }, flat: { spd: -2 } },
+  snail: { name: "Slow & Steady", desc: "+20% HP, +10% DEF, -3 SPD", pct: { hp: 20, def: 10 }, flat: { spd: -3 } },
+  ghost: { name: "Incorporeal", desc: "+5 SPD", flat: { spd: 5 } },
+  axolotl: { name: "Regenerate", desc: "+6% LEECH", flat: { leech: 6 } },
+  capybara: { name: "Unbothered", desc: "+10% HP, +10% DEF", pct: { hp: 10, def: 10 } },
+  cactus: { name: "Prickly", desc: "+12% DEF, +3% CRIT", pct: { def: 12 }, flat: { crit: 3 } },
+  robot: { name: "Overclock", desc: "+8% ATK, +8% DEF", pct: { atk: 8, def: 8 } },
+  rabbit: { name: "Quick Feet", desc: "+4 SPD, +3% CRIT", flat: { spd: 4, crit: 3 } },
+  mushroom: { name: "Spore Drain", desc: "+5% LEECH, +5% HP", flat: { leech: 5 }, pct: { hp: 5 } },
+  chonk: { name: "Absolute Unit", desc: "+30% HP, -3 SPD", pct: { hp: 30 }, flat: { spd: -3 } },
+  wyvern: { name: "Sky Strike", desc: "+12% ATK, +2 SPD", pct: { atk: 12 }, flat: { spd: 2 } },
+  pikachu: { name: "Static", desc: "+4 SPD, +4% CRIT", flat: { spd: 4, crit: 4 } },
+};
+
+// ─── Legendary uniques ──────────────────────────────────────────────────────
+
+export type UniqueId = "thorns" | "secondwind" | "firststrike" | "midas" | "overclock";
+
+export const UNIQUES: Record<UniqueId, { name: string; desc: string }> = {
+  thorns: { name: "Thorns", desc: "reflect 25% of damage taken" },
+  secondwind: { name: "Second Wind", desc: "survive one lethal hit per fight at 1 HP" },
+  firststrike: { name: "First Strike", desc: "your first hit each fight is a crit" },
+  midas: { name: "Midas", desc: "+50% gold from fights" },
+  overclock: { name: "Overclock", desc: "skills recharge 1 turn faster" },
+};
+
+// ─── Daily bounties ─────────────────────────────────────────────────────────
+
+export type BountyKind = "kills" | "skills" | "commits" | "boss" | "flawless" | "hunt" | "gold";
+
+export interface BountyDef {
+  kind: BountyKind;
+  /** Inclusive target range, rolled per day. */
+  min: number;
+  max: number;
+  text: (n: number) => string;
+}
+
+export const BOUNTIES: readonly BountyDef[] = [
+  { kind: "kills", min: 4, max: 8, text: (n) => `Defeat ${n} monsters` },
+  { kind: "skills", min: 6, max: 12, text: (n) => `Use skills ${n} times` },
+  { kind: "commits", min: 2, max: 4, text: (n) => `Make ${n} commits` },
+  { kind: "boss", min: 1, max: 1, text: () => "Defeat a boss (repeats count)" },
+  { kind: "flawless", min: 2, max: 3, text: (n) => `Win ${n} fights above half HP` },
+  { kind: "hunt", min: 1, max: 1, text: () => "Squash a status-line bug with ;hunt" },
+  { kind: "gold", min: 80, max: 200, text: (n) => `Earn ${n} gold` },
+];
+
+export const BOUNTIES_PER_DAY = 3;

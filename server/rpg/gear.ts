@@ -10,8 +10,10 @@ import {
   GEAR_SLOTS,
   RARITY_AFFIXES,
   RARITY_POWER,
+  UNIQUES,
   type AffixStat,
   type GearSlot,
+  type UniqueId,
 } from "./data";
 
 export interface GearItem {
@@ -22,6 +24,8 @@ export interface GearItem {
   /** Item level — the monster level it dropped from. */
   ilvl: number;
   stats: Partial<Record<AffixStat, number>>;
+  /** Legendary-only special power. */
+  unique?: UniqueId;
   locked?: boolean;
 }
 
@@ -90,19 +94,19 @@ export function rollGear(
   }
 
   const base = GEAR_BASES[slot][tierFor(ilvl)];
-  const name =
-    rarity === "legendary"
-      ? `${base} of Legend`
-      : prefixes.length
-        ? `${prefixes[0]} ${base}`
-        : base;
+  if (rarity === "legendary") {
+    const ids = Object.keys(UNIQUES) as UniqueId[];
+    const unique = ids[Math.floor(rng() * ids.length)];
+    return { uid, slot, name: `${base} of ${UNIQUES[unique].name}`, rarity, ilvl, stats, unique };
+  }
+  const name = prefixes.length ? `${prefixes[0]} ${base}` : base;
   return { uid, slot, name, rarity, ilvl, stats };
 }
 
 /** Rough single-number value for comparisons and sorting. */
 export function gearScore(g: GearItem): number {
   const s = g.stats;
-  return Math.round(
+  return (g.unique ? 25 : 0) + Math.round(
     (s.atk ?? 0) * 3 +
       (s.def ?? 0) * 2.5 +
       (s.hp ?? 0) * 0.5 +

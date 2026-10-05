@@ -67,8 +67,30 @@ expected gear, while each boss needs some training/gear beyond it (≈0–40%
 win rate "on curve", ≈85–100% one tier up). Tunables live in `data.ts`
 (boss multipliers, pacing) and `battle.ts` `curve()`.
 
+## Depth pass
+
+- **Species passives** (`SPECIES_PASSIVES`, data.ts): one per species, applied
+  as % (ATK/DEF/HP) or flat (SPD/CRIT/LEECH/GOLD) modifiers in `deriveHero`.
+- **Legendary uniques** (`UNIQUES`): every legendary rolls one of Thorns,
+  Second Wind, First Strike, Midas, Overclock. Combat ones live in
+  `battle.ts` (`HeroSide.uniques`); Midas applies in `game.ts` `conclude`.
+- **Daily bounties** (`bounty.ts`): three distinct day-seeded tasks (kills,
+  skills, commits, boss, flawless wins, hunts, gold). Progress hooks sit in
+  `turn`/`conclude`/`onCommit`; completion pays immediately, a cleared board
+  pays an Energy Drink.
+- **`;hunt`**: `cli.ts` `loadStandoff` reads the idle-RPG
+  `pending-encounter.json` (bug + tier + boss flag) into `BuddyCtx.standoff`.
+  The hunt is a scaled fight vs that bug's species, once per standoff
+  (`RpgState.hunted` = `bugId:startedAt`), double gold, 60% drop. It never
+  clears the standoff — the commit-nudge semantics stay intact.
+
+## Verified in Claude Code
+
+`claude -p ";me"` with the hook registered (Claude Code 2.1.289): the result
+is `UserPromptSubmit operation blocked by hook:\n<screen>\n\nOriginal
+prompt: ;me` with `num_turns: 0` and `total_cost_usd: 0` — no model call.
+
 ## Follow-ups
 
-- Fight the live status-line standoff bug manually (`;hunt`) for a bonus.
-- Daily bounties / achievements wired into `achievements.ts`.
-- Set bonuses and legendary uniques.
+- Achievements/titles wired into `achievements.ts`.
+- Set bonuses across matching gear tiers.

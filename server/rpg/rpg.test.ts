@@ -18,6 +18,8 @@ import { execute, hudLine, onCommit, parse, shopStock, type BuddyCtx } from "./g
 import { gearScore, rollGear, sellValue } from "./gear";
 import { deriveHero, trainCost, trainError } from "./hero";
 import { coerceState, freshState, settle, type RpgState } from "./store";
+import { progress, rollBoard, syncDaily } from "./bounty";
+import type { GearItem } from "./gear";
 
 const STATS: BuddyStats = { DEBUGGING: 30, PATIENCE: 30, CHAOS: 30, WISDOM: 30, SNARK: 30 };
 const CTX: BuddyCtx = {
@@ -33,7 +35,7 @@ const T0 = Date.UTC(2026, 9, 5, 12);
 const P = { color: false };
 
 function hero(level = 1) {
-  return deriveHero(level, 0, STATS, {}, []);
+  return deriveHero(level, 0, STATS, {}, [], CTX.species);
 }
 
 function fight(foe = makeMonster(ZONES[0].monsters[0], 1), seed = 1): Battle {
@@ -425,5 +427,151 @@ describe("rpg-command.sh hook", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ─── Depth: passives, uniques, bounties, hunt ───────────────────────────────
+
+function legendary(unique: GearItem["unique"], slot: GearItem["slot"] = "charm"): GearItem {
+  return { uid: 99, slot, name: "Test Relic", rarity: "legendary", ilvl: 1, stats: {}, unique };
+}
+
+describe("species passives", () => {
+  test("shape the derived stats", () => {
+    const plain = deriveHero(1, 0, STATS, {}, []);
+    expect(deriveHero(1, 0, STATS, {}, [], "turtle").def).toBeGreaterThan(plain.def);
+    expect(deriveHero(1, 0, STATS, {}, [], "turtle").spd).toBe(plain.spd - 2);
+    expect(deriveHero(1, 0, STATS, {}, [], "chonk").maxHp).toBe(Math.round(plain.maxHp * 1.3));
+    expect(deriveHero(1, 0, STATS, {}, [], "duck").gold).toBe(15);
+  });
+
+  test("the character sheet names the passive", () => {
+    expect(execute(freshState(T0), CTX, ";me", T0, P).out).toContain("Nine Lives");
+  });
+});
+
+describe("legendary uniques", () => {
+  test("legendary rolls always carry a unique and name it", () => {
+    for (let i = 0; i < 20; i++) {
+      const g = rollGear(mulberry32(i), 10, i, { rarity: "legendary" });
+      expect(g.unique).toBeDefined();
+      expect(g.name).toContain(" of ");
+    }
+  });
+
+  function withUnique(u: GearItem["unique"], foe = makeMonster(ZONES[0].monsters[2], 4)) {
+    const h = deriveHero(1, 0, STATS, {}, [legendary(u)]);
+    return startBattle("explore", 1, 1, h, h.maxHp, foe, 3);
+  }
+
+  test("First Strike makes the first landed hit a crit", () => {
+    let b = withUnique("firststrike");
+    b.foe.spd = 0; // no dodges
+    b = act(b, { type: "attack" });
+    expect(b.log[0]).toStartWith("CRIT!");
+  });
+
+  test("Thorns reflects damage taken", () => {
+    let b = withUnique("thorns");
+    b.foe.hp = b.foe.maxHp = 10_000;
+    b.hero.spd = 0;
+    for (let i = 0; i < 6; i++) b = act(b, { type: "defend" });
+    expect(b.foe.hp).toBeLessThan(10_000);
+  });
+
+  test("Second Wind survives one lethal hit", () => {
+    let b = withUnique("secondwind", makeMonster(ZONES[1].monsters[2], 30)); // single-hit foe
+    b.hero.spd = 0; // never dodge
+    b.foe.hp = b.foe.maxHp = 1e6;
+    b.hero.hp = 2;
+    b = act(b, { type: "attack" });
+    expect(b.hero.hp).toBe(1);
+    expect(b.over).toBeUndefined();
+    expect(b.log.join(" ")).toContain("Second Wind");
+    b = act(b, { type: "attack" });
+    expect(b.over).toBe("lose");
+  });
+
+  test("Overclock shortens cooldowns", () => {
+    const b = act(withUnique("overclock"), { type: "skill", id: "hotfix" });
+    expect(b.hero.cd.hotfix).toBe(3); // 4 - 1
+  });
+
+  test("Midas pays 50% more gold", () => {
+    const run = (gear: GearItem[]) => {
+      const s = freshState(T0);
+      s.equipped = Object.fromEntries(gear.map((g) => [g.slot, g]));
+      execute(s, CTX, ";x", T0, P);
+      winCurrentFight(s);
+      return s.gold;
+    };
+    expect(run([legendary("midas")]) - 30).toBeGreaterThan((run([]) - 30) * 1.3);
+  });
+});
+
+describe("daily bounties", () => {
+  test("the board is deterministic per day with distinct kinds", () => {
+    const a = rollBoard("2026-10-05");
+    expect(a).toEqual(rollBoard("2026-10-05"));
+    expect(new Set(a.map((b) => b.kind)).size).toBe(3);
+  });
+
+  test("completing a bounty pays out; clearing the board pays an elixir", () => {
+    const s = freshState(T0);
+    syncDaily(s, T0);
+    const gold = s.gold;
+    const lines: string[] = [];
+    for (const b of s.daily.tasks) lines.push(...progress(s, b.kind, b.target, T0));
+    expect(lines.filter((l) => l.includes("Bounty complete"))).toHaveLength(3);
+    expect(lines.some((l) => l.includes("board cleared"))).toBe(true);
+    expect(s.gold).toBeGreaterThan(gold);
+    expect(s.items.elixir).toBe(1);
+    // No double payout.
+    expect(progress(s, s.daily.tasks[0].kind, 99, T0)).toEqual([]);
+  });
+
+  test("the board rolls over at midnight UTC", () => {
+    const s = freshState(T0);
+    syncDaily(s, T0);
+    s.daily.tasks[0].progress = 1;
+    syncDaily(s, T0 + 86_400_000);
+    expect(s.daily.day).not.toBe(new Date(T0).toISOString().slice(0, 10));
+    expect(s.daily.tasks.every((b) => b.progress === 0)).toBe(true);
+  });
+
+  test("commits advance a commit bounty", () => {
+    const s = freshState(T0);
+    s.daily = { day: "2026-10-05", tasks: [{ kind: "commits", target: 2, progress: 0, done: false }], bonus: false };
+    onCommit(s, false, T0);
+    expect(s.daily.tasks[0].progress).toBe(1);
+    expect(onCommit(s, false, T0)).toContain("Bounty complete");
+  });
+});
+
+describe(";hunt", () => {
+  const STANDOFF = { key: "null_wraith:123", name: "Null Wraith", species: "ghost" as const, tier: 2, boss: false };
+
+  test("without a status-line bug there is nothing to hunt", () => {
+    const r = execute(freshState(T0), CTX, ";hunt", T0, P);
+    expect(r.out).toContain("No bug on your status line");
+    expect(r.changed).toBe(false);
+  });
+
+  test("hunting the standoff's shadow pays double and is once per standoff", () => {
+    const ctx = { ...CTX, standoff: STANDOFF };
+    const s = freshState(T0);
+    expect(execute(s, ctx, ";", T0, P).out).toContain(";hunt");
+    expect(execute(s, ctx, ";hunt", T0, P).out).toContain("Bug Hunt");
+    expect(s.battle?.foe.species).toBe("ghost");
+    let out = "";
+    for (let i = 0; i < 60 && s.battle; i++) {
+      s.battle.hero.hp = s.battle.hero.maxHp = 1e6;
+      out = execute(s, ctx, ";a", T0, P).out;
+    }
+    expect(out).toContain("Bug squashed");
+    expect(s.hunted).toBe(STANDOFF.key);
+    expect(execute(s, ctx, ";hunt", T0, P).out).toContain("already squashed");
+    // A new standoff (new key) can be hunted again.
+    expect(execute(s, { ...ctx, standoff: { ...STANDOFF, key: "x:1" } }, ";hunt", T0, P).out).toContain("Bug Hunt");
   });
 });

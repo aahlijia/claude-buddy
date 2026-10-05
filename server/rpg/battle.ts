@@ -15,11 +15,12 @@ import {
   type MonsterDef,
   type MonsterMove,
   type SkillId,
+  type UniqueId,
   type ZoneDef,
 } from "./data";
 import type { HeroStats } from "./hero";
 
-export type BattleKind = "explore" | "boss" | "tower";
+export type BattleKind = "explore" | "boss" | "tower" | "hunt";
 
 export interface Effects {
   /** Remaining turns of each timed effect. */
@@ -34,6 +35,9 @@ export interface Effects {
   /** Next hero hit is a guaranteed crit (Rubber Duck). */
   sureCrit?: boolean;
   enraged?: boolean;
+  /** Legendary bookkeeping: Second Wind spent / First Strike landed. */
+  windUsed?: boolean;
+  struck?: boolean;
 }
 
 export interface HeroSide {
@@ -47,6 +51,7 @@ export interface HeroSide {
   cd: Partial<Record<SkillId, number>>;
   fx: Effects;
   guard: boolean;
+  uniques?: UniqueId[];
 }
 
 export interface FoeSide {
@@ -191,6 +196,7 @@ export function startBattle(
       cd: {},
       fx: {},
       guard: false,
+      uniques: hero.uniques.length ? [...hero.uniques] : undefined,
     },
     foe,
     log,
@@ -240,7 +246,9 @@ function heroHit(b: Battle, rng: () => number, o: HitOpts, log: string[]): numbe
       return 0;
     }
   }
-  const crit = o.forceCrit || hero.fx.sureCrit || rng() < hero.crit / 100;
+  const first = !hero.fx.struck && !!hero.uniques?.includes("firststrike");
+  hero.fx.struck = true;
+  const crit = o.forceCrit || hero.fx.sureCrit || first || rng() < hero.crit / 100;
   let mult = o.mult * (crit ? (o.forceCrit ? 2.5 : 1.75) : 1);
   if (foe.fx.shield) mult *= 0.5;
   const dmg = roll(rng, heroAtk(b), foe.def, mult);
@@ -267,7 +275,22 @@ function foeHit(b: Battle, rng: () => number, mult: number, log: string[], verb 
   const dmg = roll(rng, foeAtk(b), hero.def, m);
   hero.hp = Math.max(0, hero.hp - dmg);
   log.push(`${crit ? "CRIT! " : ""}${foe.name} ${verb} you for ${dmg}.`);
+  if (hero.uniques?.includes("thorns")) {
+    const back = Math.max(1, Math.round(dmg * 0.25));
+    foe.hp = Math.max(0, foe.hp - back);
+    log.push(`Thorns reflect ${back}.`);
+  }
+  secondWind(b, log);
   return dmg;
+}
+
+/** Second Wind: the first lethal blow of a fight leaves the hero at 1 HP. */
+function secondWind(b: Battle, log: string[]): void {
+  const { hero } = b;
+  if (hero.hp > 0 || hero.fx.windUsed || !hero.uniques?.includes("secondwind")) return;
+  hero.hp = 1;
+  hero.fx.windUsed = true;
+  log.push("Second Wind! You cling on at 1 HP.");
 }
 
 // ─── Foe turn ───────────────────────────────────────────────────────────────
@@ -448,7 +471,8 @@ export function act(prev: Battle, a: Action): Battle {
       break;
     case "skill": {
       const s = SKILLS[a.id];
-      hero.cd[a.id] = s.cooldown + 1; // +1: ticks down at end of this turn
+      const cool = hero.uniques?.includes("overclock") ? Math.max(1, s.cooldown - 1) : s.cooldown;
+      hero.cd[a.id] = cool + 1; // +1: ticks down at end of this turn
       switch (a.id) {
         case "strike":
           heroHit(b, rng, { mult: 1.7 }, log);
@@ -518,6 +542,7 @@ export function act(prev: Battle, a: Action): Battle {
     const p = Math.max(1, Math.round(hero.maxHp * 0.06));
     hero.hp = Math.max(0, hero.hp - p);
     log.push(`Poison: -${p} HP.`);
+    secondWind(b, log);
   }
   tick(hero.fx, ["poison", "blind", "buff", "stun", "stunImmune", "shield", "revealed"]);
   tick(foe.fx, ["stun", "stunImmune", "shield", "revealed", "blind", "poison"]);
@@ -529,6 +554,10 @@ export function act(prev: Battle, a: Action): Battle {
   if (hero.hp <= 0) {
     log.push("You are knocked out...");
     b.over = "lose";
+  } else if (foe.hp <= 0) {
+    // Thorns can finish a foe on its own turn.
+    log.push(`${foe.name} is defeated!`);
+    b.over = "win";
   }
   b.log = log;
   return b;
