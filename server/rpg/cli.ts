@@ -12,6 +12,7 @@
 
 import type { BuddyStats, Eye, Hat, Species } from "../engine";
 import { execute, hudLine, heroOf, onCommit, type AnimFrame, type BuddyCtx, type CommandResult, type Standoff } from "./game";
+import type { HdPaint } from "./hdstage";
 import { loadRpg, saveRpg, type RpgState } from "./store";
 
 const FALLBACK_STATS: BuddyStats = { DEBUGGING: 20, PATIENCE: 20, CHAOS: 20, WISDOM: 20, SNARK: 20 };
@@ -52,6 +53,8 @@ export function loadBuddyCtx(): BuddyCtx {
       species: c.bones.species,
       eye: c.bones.eye,
       hat: look.hat,
+      rarity: c.bones.rarity,
+      shiny: !!c.bones.shiny,
       level: xp.level,
       prestige: xp.prestigeLevel,
       stats: look.stats,
@@ -126,21 +129,23 @@ export interface RunResult {
   anim: AnimFrame[];
   /** Idle loop for `out` (only when requested). */
   loop?: CommandResult["loop"];
+  /** A won fight's spoils (results card). */
+  results?: CommandResult["results"];
 }
 
-export function runFull(input: string, color: boolean, anim = false, now: number = Date.now()): RunResult {
+export function runFull(input: string, color: boolean, anim = false, now: number = Date.now(), hd?: HdPaint): RunResult {
   const hud = hudCommand(input);
   if (hud) return { out: hud, anim: [] };
   const ctx = loadBuddyCtx();
   const s = loadRpg(now);
-  const r = execute(s, ctx, input, now, { color, anim });
+  const r = execute(s, ctx, input, now, { color, anim, hd: anim ? hd : undefined });
   if (r.changed) {
     saveRpg(s);
     refreshHud(s, ctx);
   }
   const fanfare = awardBuddyXp(r.xp, ctx.name);
   // A fanfare appends text, so the loop (built for the bare screen) no longer fits.
-  return { out: fanfare ? `${r.out}\n${fanfare}` : r.out, anim: r.anim ?? [], loop: fanfare ? undefined : r.loop };
+  return { out: fanfare ? `${r.out}\n${fanfare}` : r.out, anim: r.anim ?? [], loop: fanfare ? undefined : r.loop, results: r.results };
 }
 
 export function run(input: string, color: boolean, now: number = Date.now()): string {

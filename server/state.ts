@@ -433,6 +433,9 @@ export interface BuddyConfig {
   /** Buddy Quest TUI animation speed (`claude-buddy play`, `~` cycles it).
    *  Unset ⇒ follows `gameFeel` (rpg/playkit.ts `defaultSpeed`). */
   questAnim?: "cinematic" | "normal" | "fast" | "off";
+  /** Keep HD art but drop screen shake, flashes and camera moves (quest
+   *  player). `BUDDY_REDUCED_MOTION=1` also implies it. Unset ⇒ false. */
+  reduceMotion?: boolean;
   /** Game-feel intensity gate (game-feel NFR0/FR-E1): off silences all juice. */
   gameFeel: GameFeel;
   /** Opt into deep-focus auto-quiet (game-feel FR-E1): during a long, error-free

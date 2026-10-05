@@ -28,7 +28,7 @@ export const BOUNCE_SECONDS = 1.15;
 
 // ─── Palettes ────────────────────────────────────────────────────────────────
 
-interface BodyPalette {
+export interface BodyPalette {
   /** Dark → bright lighting ramp. */
   ramp: readonly RGBA[];
   /** Warm light bounced up from the ground onto the underside. */
@@ -51,6 +51,30 @@ const SHINY: BodyPalette = {
   outline: hex("#24102e"),
   blush: hex("#ffdf6a"),
 };
+
+/** Rotate a color's hue by `deg` (keeps lightness, so ramps stay ramps). */
+export function hueShift(c: RGBA, deg: number): RGBA {
+  const a = (deg * Math.PI) / 180;
+  const cos = Math.cos(a);
+  const sin = Math.sin(a);
+  // Rotation about the gray axis in RGB space.
+  const k = (1 - cos) / 3;
+  const s3 = Math.sqrt(1 / 3) * sin;
+  const m = [cos + k, k - s3, k + s3, k + s3, cos + k, k - s3, k - s3, k + s3, cos + k];
+  const [r, g, b] = c;
+  const ch = (i: number) => Math.max(0, Math.min(255, Math.round(m[i] * r + m[i + 1] * g + m[i + 2] * b)));
+  return [ch(0), ch(3), ch(6), c[3]];
+}
+
+/** The mint jelly recolored by `deg` — HD stand-ins for foes without a rig. */
+export function blobPalette(deg: number): BodyPalette {
+  return {
+    ramp: MINT.ramp.map((c) => hueShift(c, deg)),
+    bounce: hueShift(MINT.bounce, deg),
+    outline: MINT.outline,
+    blush: MINT.blush,
+  };
+}
 
 /** Rim light per rarity (null = flat). Echoes theme.ts rarity colors. */
 export const RIM_BLOB: Record<Rarity, RGBA | null> = {
@@ -128,6 +152,8 @@ export interface BlobOptions {
   /** Play one of the shared motion-library animations (H1) instead of idle;
    *  `t` is then the time since the animation started. */
   anim?: "idle" | "walk" | "attack" | "hit" | "ko" | "victory";
+  /** Body palette override (stand-in foes); `shiny` is ignored when set. */
+  palette?: BodyPalette;
 }
 
 /** Deterministic 0–1 value for (seed, slot, channel). */
@@ -409,7 +435,7 @@ export function backdrop(fb: Framebuffer, t: number, seed: number): void {
 export function renderBlob(t: number, opts: BlobOptions = {}): Framebuffer {
   const seed = opts.seed ?? 1;
   const rarity = opts.rarity ?? "common";
-  const pal = opts.shiny ? SHINY : MINT;
+  const pal = opts.palette ?? (opts.shiny ? SHINY : MINT);
   const pose = blobPose(t, opts);
   const fb = new Framebuffer(BLOB_W, BLOB_H);
 

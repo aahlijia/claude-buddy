@@ -1,9 +1,9 @@
 # NEXT — handoff for the HD overhaul
 
-_A fresh session starts here. Last updated after H1 (commit `fe9fe99`)._
+_A fresh session starts here. Last updated after H2._
 
-**Branch:** `feature/rpg`. Develop, commit and push there:
-`git push -u origin feature/rpg`.
+**Branch:** `feature/living-world` (it now carries all of `feature/rpg` plus
+H2). Develop, commit and push there: `git push -u origin feature/living-world`.
 
 ## Where things stand
 
@@ -13,71 +13,70 @@ _A fresh session starts here. Last updated after H1 (commit `fe9fe99`)._
 | H0: framebuffer, tier encoders, HD blob, `bun run gfx-demo` | done | [h0-spike.md](h0-spike.md) |
 | H1: rig format, motion library, HD blob, cat and dragon | done | [h1-rigs.md](h1-rigs.md) |
 | `pikachu` → `sparkit` (an original electric mouse) | done | h1-rigs.md, "Also in this phase" |
-| **H2: HD in the quest player** | **next** | this file and [brainstorm.md](brainstorm.md) §2, §3, §5, §8 |
-| H3 UI kit, H4 buddy-shell diorama, H5 status line, H6 roster | later | brainstorm.md §8 |
+| H2: HD fights in the quest player | done | [h2-quest-player.md](h2-quest-player.md) |
+| **H3: the buddy UI kit** | **next** | this file and [brainstorm.md](brainstorm.md) §4, §8 |
+| H4 buddy-shell diorama, H5 status line, H6 roster | later | brainstorm.md §8 |
 
 ## Read first (in this order)
 
-1. **[brainstorm.md](brainstorm.md):** §5 (the quest-player row), §2 (motion
-   feel: hit-stop, camera, particles) and §8 (the H2 row).
-2. **[h1-rigs.md](h1-rigs.md):** rigs, `renderHd(species, anim, t, opts)`, and
-   `ANIM_INFO`, including `attack.impact`.
-3. **[../buddy-quest/design-animation.md](../buddy-quest/design-animation.md):**
-   the current fight pipeline. `act()` → `Beat[]` (battle.ts) → `direct()` →
-   `Cue[]` (anim.ts) → `renderStage()` (stage.ts) → `battleScreen` (render.ts),
-   played by `cli/play.ts` with playkit.ts (speed setting, action bar).
+1. **[brainstorm.md](brainstorm.md):** §4 (the UI kit) and §8 (the H3 row).
+2. **[h2-quest-player.md](h2-quest-player.md):** the HD stage, `Paint.hd`,
+   lazy frames, `hpBarFine` and the results card. H3 should absorb the bar
+   and the card into the kit rather than keep two styles.
+3. **`server/rpg/render.ts`** (`panel`, `hpBar`, `wrap`) and
+   **`server/rpg/playkit.ts`** (action bar, banners, shimmer, reveal,
+   results card): the pieces the kit replaces or promotes.
 
-## H2 goal
+## H3 goal
 
-Fights in `bun run play` render as HD pixel art on a framebuffer stage, with
-the "console game" feel, while the existing choreography stays the source of
-truth for what happens and when.
+One visual language for the quest player, the Ink TUI (`cli/tui.tsx`) and
+the shop: panels, bars, key prompts, banners and portraits as a shared
+`server/ui/` kit, pure and testable, with the T0 (plain) output unchanged
+for the hook path.
 
-## H2 checklist
+## H3 checklist
 
-- [ ] **A framebuffer stage** next to the cell `Canvas` in `server/rpg/stage.ts`
-      (or a new `server/rpg/hdstage.ts`). Draw both combatants with
-      `renderHd`: the player faces right, the foe uses `flip: true`. Map
-      director cues to rig animations (`attack` / `hit` / `ko` / `victory` /
-      `idle` / `walk`), and position actors from cue offsets.
-- [ ] **Encode through the existing tiers** (`server/gfx/detect.ts`: kitty →
-      iTerm → half-block → ASCII). The pixel tiers swap in place; half-block
-      repaints only changed lines (the diff-paint idea `cli/play.ts` already
-      uses).
-- [ ] **Fallback per combatant.** If `hasHd(species)` is false (17 of 20
-      species), the fight keeps today's ASCII stage. Don't mix the two in one
-      scene for now: use the HD stage only when both sides have HD art, or
-      when the foe can be drawn with an HD stand-in. Decide and document it.
-- [ ] **Hit-stop:** freeze 60–120 ms (scaled by damage) at
-      `ANIM_INFO.attack.impact`.
-- [ ] **Camera:** a small push-in on crits and boss specials; screen shake on
-      heavy hits, capped and gated (see Accessibility).
-- [ ] **Particles:** hit sparks, dust on landings, heal motes. Make them a pure
-      `server/gfx/particles.ts` (seeded, `t`-driven).
-- [ ] **Damage ghost bars:** HP bars drain with a lagging ghost segment.
-- [ ] **Battle transition** in (a wipe or flash) and a **victory results card**
-      (gold, XP, drops).
-- [ ] **Speed setting:** respect playkit's `cinematic | normal | fast | off`.
-      `off` must still produce correct final screens.
-- [ ] **Accessibility:** `gameFeel=off` → no animation; `subtle` → no shake, no
-      flashes, no cut-ins; `full` → everything. Add `reduceMotion`. Cap
-      full-screen flashes at 3 per second.
-- [ ] **Performance:** rasterizing a scene takes ≤ 2 ms in Bun; the idle loop
-      sleeps when the terminal is unfocused (the focus logic exists in
-      `play.ts`). The zero-token `;` hook path must never render pixels.
-- [ ] **Tests:** stage composition (both actors, flip, z order), cue →
-      animation mapping, hit-stop timing, particles determinism, fallback
-      selection, and golden hashes for a few key frames, in the style of
-      `server/gfx/hd.test.ts`.
-- [ ] **Docs:** add `h2-quest-player.md` with a contact sheet, mark H2 done in
-      brainstorm.md §8, and update this file for H3.
+- [ ] **`server/ui/` kit:** panels (rounded borders, gradient title bar,
+      rarity accent edge, inner shadow), with slide/fade-in frames. Keep the
+      open-right rule for emoji-width safety, or prove a right border is safe.
+- [ ] **Bars:** promote `hpBarFine` (1/8-cell precision, ghost) to the kit;
+      gradient fills (green → yellow → red), a low-HP pulse; XP bars too.
+- [ ] **Key prompts:** pill chips (`⟨ Enter ⟩ Confirm`) in a consistent
+      bottom-right legend. Generic key glyphs only, no console button symbols.
+- [ ] **Menus:** bounce cursor, highlight sweep on the selected row, a
+      description pane, a slot-in stagger when a menu opens (shop, bag, map).
+- [ ] **Banners:** "VICTORY", "LEVEL UP", "BOSS" as pixel-font renders
+      (`server/gfx/font.ts`) on T1–T3, figlet-style blocks on T0. Replace
+      `bannerFrames` in play.ts.
+- [ ] **Portraits:** a bust per HD species from the rig's head at 2×, for
+      dialogue boxes (with the existing typewriter), the stats screen and
+      later H6 cut-ins.
+- [ ] **Ink TUI:** use the kit's components; for T3 images, a raw kitty
+      placement at the measured box position after each render.
+- [ ] **Accessibility:** the same gates as H2 (`gameFeel`, `reduceMotion`,
+      flash cap).
+- [ ] **Tests:** kit components render to fixed widths, plain mode has no
+      escapes, the hook output is byte-identical, golden strings or hashes
+      for key components.
+- [ ] **Docs:** `h3-ui-kit.md` with screenshots, mark H3 done in
+      brainstorm.md §8, and update this file for H4.
+
+## Loose ends from H2
+
+- Hats and gear on HD rigs (anchors exist in rig.ts).
+- Kitty native animation (upload frames once, let the terminal play them).
+- A smaller HD stage for terminals under 66 × 34 instead of the ASCII
+  fallback.
 
 ## How to see your work
 
 - `bun run gfx-demo --species dragon --bg` shows the H1 rigs live; `1`–`6`
   play the animations, `c` cycles species.
+- `bun run scripts/h2-sheet.ts` re-renders the H2 fight contact sheet.
 - `bun run play` is the quest TUI. Test it headless with
-  `script -qfc "bun run cli/play.ts" /dev/null` and piped keys.
+  `script -qfc "stty rows 50 cols 120; bun run cli/play.ts" /dev/null` and
+  piped keys; `BUDDY_GFX=halfblock` forces the HD stage's text tier, and
+  `CLAUDE_CONFIG_DIR=<tmp>` keeps the run off your real save.
 - **Judge the art by looking at it.** Render PNG contact sheets with
   `encodePng(fb.upscale(n))` from `server/gfx/encode/png.ts` and open them as
   images. H1's sheet script pattern is in h1-rigs.md ("Adding a species").

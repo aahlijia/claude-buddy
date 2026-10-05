@@ -8,7 +8,7 @@
  */
 
 import type { Rarity, Species } from "../engine.ts";
-import { BLOB_H, BLOB_W, RIM_BLOB, SPARK, backdrop, glow, motes, renderBlob } from "./blob.ts";
+import { BLOB_H, BLOB_W, RIM_BLOB, SPARK, backdrop, blobPalette, glow, motes, renderBlob } from "./blob.ts";
 import { Framebuffer } from "./framebuffer.ts";
 import { ANIM_INFO, poseRig, type Anim } from "./motion.ts";
 import { renderRig, type RigDef } from "./rig.ts";
@@ -34,6 +34,8 @@ export interface HdOptions {
   flip?: boolean;
   /** Paint the night-meadow backdrop. */
   backdrop?: boolean;
+  /** Blob only: recolor the jelly by this many degrees of hue (stand-ins). */
+  hue?: number;
 }
 
 export { ANIM_INFO, ANIMS, type Anim } from "./motion.ts";
@@ -43,7 +45,7 @@ export function renderHd(species: Species, anim: Anim, t: number, opts: HdOption
   const seed = opts.seed ?? 1;
   const rarity = opts.rarity ?? "common";
   if (species === "blob") {
-    const fb = renderBlob(t, { rarity, shiny: opts.shiny, seed, backdrop: opts.backdrop, anim });
+    const fb = renderBlob(t, { rarity, shiny: opts.shiny, seed, backdrop: opts.backdrop, anim, palette: opts.hue ? blobPalette(opts.hue) : undefined });
     return opts.flip ? flipX(fb) : fb;
   }
   const rig = RIGS[species];

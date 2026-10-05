@@ -151,6 +151,9 @@ export interface ActorState {
   /** KO: rows sunk into the ground. */
   sink?: number;
   hidden?: boolean;
+  /** HD hint: the actor is travelling on foot (intro, flee). The cell stage
+   *  ignores it. */
+  act?: "walk";
 }
 
 /** A particle: text anchored to an actor's center, the gap, or the canvas. */
@@ -191,6 +194,18 @@ export interface StageState {
   wipe?: number;
   /** Ambient tick, rotates the stun stars / pulses the charge. */
   tick?: number;
+  /** HD hints the cell stage ignores: the contact moment of a blow, which
+   *  the HD stage hangs hit-stop, sparks, shake and the camera on. */
+  hd?: { impact?: Impact };
+}
+
+export interface Impact {
+  by: Side;
+  dmg: number;
+  crit: boolean;
+  heavy: boolean;
+  /** Bombs, the duck, thorns: no lunge, the blow arrives from range. */
+  ranged?: boolean;
 }
 
 export function marksOf(b: Battle): Marks {
@@ -402,7 +417,7 @@ export class Stage {
 }
 
 /** The resting pose implied by the marks (KO, stun, flee). */
-function restPose(side: Side, mk: Marks): ActorState {
+export function restPose(side: Side, mk: Marks): ActorState {
   if (side === "foe") {
     if (mk.over === "win") return { eye: EYES.ko, sink: 2, tint: "dim" };
     if (mk.stun) return { eye: EYES.stun };

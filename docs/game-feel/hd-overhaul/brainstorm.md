@@ -1,6 +1,6 @@
 # HD Overhaul — brainstorm
 
-_Status: brainstorm · H0 spike done ([h0-spike.md](h0-spike.md)) · branch `feature/rpg`_
+_Status: brainstorm · H0 ([h0-spike.md](h0-spike.md)), H1 ([h1-rigs.md](h1-rigs.md)) and H2 ([h2-quest-player.md](h2-quest-player.md)) done_
 
 **Goal:** make claude-buddy look and move like a console game instead of a
 pile of ASCII. That means HD buddies with real shading, motion with weight,
@@ -299,7 +299,7 @@ Name it the **buddy UI kit** (`server/ui/`):
 | --- | --- | --- |
 | **H0 Spike** ✅ | `framebuffer` + `halfblock` + `kitty` encoders, plus one hand-made 48×48 blob sprite with a procedural breathe/blink loop, viewable via `bun run gfx-demo` | The tier ladder works in real terminals, including tmux |
 | **H1 Rig + style bible** ✅ ([h1-rigs.md](h1-rigs.md)) | Rig format, ease/motion library, 3 pilot species (blob, cat, dragon) with idle/walk/attack/hit/KO/victory, and a palette and rarity lighting pass | The rig pipeline scales and looks good |
-| **H2 Quest player HD** | Framebuffer stage in `play.ts`, camera, particles, hit-stop, damage ghost bars, battle transition, victory results card | The "PlayStation moment" |
+| **H2 Quest player HD** ✅ ([h2-quest-player.md](h2-quest-player.md)) | Framebuffer stage in `play.ts`, camera, particles, hit-stop, damage ghost bars, battle transition, victory results card | The "PlayStation moment" |
 | **H3 UI kit** | Panels, bars, key prompts, banners and portraits across play, TUI and shop | One visual language |
 | **H4 buddy-shell diorama** | Parallax biomes, day/night, weather particles, live hook reactions | The always-on wow |
 | **H5 Status line T1** | Baked half-block sprites with key-pose cycling; bash unchanged except for the frame source | HD reaches every user |

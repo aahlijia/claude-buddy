@@ -111,7 +111,9 @@ function strike(r: Reel, b: Extract<Beat, { t: "strike" }>, c: StrikeCtx, eyeY: 
   r.land(b);
   const flash = crit || heavy ? "flash" : "hurt";
   const hold = c.chain > 0 ? 80 : crit ? 170 : heavy ? 150 : 110;
-  r.push(hold, pair(A, { x: 4 * k, ...atkEye }, { eye: EYES.hurt, tint: flash }), [clash, pop(D, text, popInk, false)], crit || heavy ? 1 : 0);
+  r.push(hold, pair(A, { x: 4 * k, ...atkEye }, { eye: EYES.hurt, tint: flash }), [clash, pop(D, text, popInk, false)], crit || heavy ? 1 : 0, {
+    hd: { impact: { by: A, dmg: b.dmg, crit, heavy } },
+  });
 
   // Recoil: the defender is knocked back, the number floats up.
   const knock = heavy || crit ? 2 : 1;
@@ -141,7 +143,9 @@ function projectile(r: Reel, b: Extract<Beat, { t: "strike" }>, eyeY: number): v
     { at: D, y: eyeY + 1, text: "/ | \\", ink: "gold" },
   ];
   const text = dmgText(b.dmg, b.crit);
-  r.push(150, pair(A, {}, { eye: EYES.hurt, tint: "flash" }), [...burst, pop(D, text, "crit", false)], 1);
+  r.push(150, pair(A, {}, { eye: EYES.hurt, tint: "flash" }), [...burst, pop(D, text, "crit", false)], 1, {
+    hd: { impact: { by: A, dmg: b.dmg, crit: b.crit, heavy: true, ranged: true } },
+  });
   r.push(70, pair(A, {}, { x: k, eye: EYES.hurt, tint: "hurt" }), [
     { at: D, y: eyeY - 1, text: ".  ·  .", ink: "dim" },
     { at: D, y: eyeY + 1, text: "·  .  ·", ink: "dim" },
@@ -280,7 +284,9 @@ function interrupt(r: Reel, b: Beat): void {
 function thorns(r: Reel, b: Extract<Beat, { t: "thorns" }>, eyeY: number): void {
   r.push(40, {}, [{ at: "gap", dx: -1, y: eyeY, text: ">>", ink: "yellow" }]);
   r.land(b);
-  r.push(90, { foe: { tint: "hurt" } }, [{ at: "gap", dx: 2, y: eyeY, text: "*", ink: "gold" }, pop("foe", `-${b.dmg}`, "yellow", false)]);
+  r.push(90, { foe: { tint: "hurt" } }, [{ at: "gap", dx: 2, y: eyeY, text: "*", ink: "gold" }, pop("foe", `-${b.dmg}`, "yellow", false)], 0, {
+    hd: { impact: { by: "hero", dmg: b.dmg, crit: false, heavy: false, ranged: true } },
+  });
   r.push(50, {}, [pop("foe", `-${b.dmg}`, "dim", true)]);
 }
 
@@ -319,7 +325,7 @@ function flee(r: Reel, b: Extract<Beat, { t: "flee" }>): void {
     return;
   }
   [-1, -3, -6, -10, -15, -21].forEach((x, i) =>
-    r.push(45, { hero: { x, eye: EYES.shock } }, [{ at: "hero", dx: 6, y: -1, text: i % 2 ? "~ ." : ". ~", ink: "dim" }]),
+    r.push(45, { hero: { x, eye: EYES.shock, act: "walk" } }, [{ at: "hero", dx: 6, y: -1, text: i % 2 ? "~ ." : ". ~", ink: "dim" }]),
   );
   r.push(80, { hero: { hidden: true }, foe: { eye: EYES.shock } }, [{ at: "foe", y: 1, text: "?", ink: "yellow" }]);
 }
@@ -463,16 +469,16 @@ export function directIntro(b: Battle, g: Geometry & { height: number }): Cue[] 
   const boss = !!b.foe.boss;
   const steps = boss
     ? [
-        { foe: { y: -6 }, hero: { x: -12 } },
-        { foe: { y: -4 }, hero: { x: -7 } },
-        { foe: { y: -2 }, hero: { x: -3 } },
+        { foe: { y: -6 }, hero: { x: -12, act: "walk" as const } },
+        { foe: { y: -4 }, hero: { x: -7, act: "walk" as const } },
+        { foe: { y: -2 }, hero: { x: -3, act: "walk" as const } },
         { foe: { y: 0, tint: "flash" as const }, hero: { x: -1, eye: EYES.shock } },
       ]
     : [
-        { foe: { x: 16 }, hero: { x: -12 } },
-        { foe: { x: 9 }, hero: { x: -7 } },
-        { foe: { x: 4 }, hero: { x: -3 } },
-        { foe: { x: 1 }, hero: { x: -1 } },
+        { foe: { x: 16, act: "walk" as const }, hero: { x: -12, act: "walk" as const } },
+        { foe: { x: 9, act: "walk" as const }, hero: { x: -7, act: "walk" as const } },
+        { foe: { x: 4, act: "walk" as const }, hero: { x: -3, act: "walk" as const } },
+        { foe: { x: 1, act: "walk" as const }, hero: { x: -1, act: "walk" as const } },
       ];
   steps.forEach((s, i) => r.push(i === 3 && boss ? 140 : 55, s, [], i === 3 && boss ? 1 : 0));
   if (boss) r.push(90, { foe: { eye: EYES.attack } }, [{ at: "foe", y: 0, text: "♛ BOSS ♛", ink: "gold" }], -1);

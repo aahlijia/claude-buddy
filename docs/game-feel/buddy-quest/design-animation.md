@@ -1,6 +1,6 @@
 # Buddy Quest — animation overhaul
 
-_Status: implemented on `feature/living-world`._
+_Status: implemented on `feature/living-world`. Buddies with HD art fight on a pixel stage driven by these same cues: see [../hd-overhaul/h2-quest-player.md](../hd-overhaul/h2-quest-player.md)._
 
 The first animation pass (`animScenes`) was one move: per hit, the attacker
 slid 2 → 4 → 2 cells into the gap and a number appeared. Every action looked

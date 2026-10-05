@@ -37,12 +37,36 @@ export interface Timed {
   ms: number;
 }
 
+/** A screen that may be built on demand (HD frames rasterize lazily). */
+export type Lazy = string | (() => string);
+
+/** Build a lazy thunk that runs `make` at most once. */
+export function memo(make: () => string): () => string {
+  let v: string | undefined;
+  return () => (v ??= make());
+}
+
+export function force(l: Lazy): string {
+  return typeof l === "string" ? l : l();
+}
+
+/** A timed frame whose text is only built when first read (and kept). */
+export function lazyTimed(make: () => string, ms: number): Timed {
+  const get = memo(make);
+  return {
+    ms,
+    get text() {
+      return get();
+    },
+  };
+}
+
 /** Rescale frame durations; "off" drops the animation entirely. A floor of
- *  16 ms keeps fast mode from outrunning the terminal. */
+ *  16 ms keeps fast mode from outrunning the terminal. Frames stay lazy. */
 export function scaleFrames(frames: readonly Timed[], speed: AnimSpeed): Timed[] {
   const k = SCALE[speed];
   if (!k) return [];
-  return frames.map((f) => ({ text: f.text, ms: Math.max(16, Math.round(f.ms * k)) }));
+  return frames.map((f) => lazyTimed(() => f.text, Math.max(16, Math.round(f.ms * k))));
 }
 
 // ─── Fight action bar ───────────────────────────────────────────────────────
@@ -99,6 +123,7 @@ export function fightActions(s: Pick<RpgState, "battle" | "skills" | "items">): 
 }
 
 const INV = "\x1b[7m";
+const DIM_SGR = "2";
 const DIM = "\x1b[2m";
 const CYAN = "\x1b[36m";
 const RESET = "\x1b[0m";
@@ -205,6 +230,44 @@ export function revealFrames(base: string, tail: readonly string[]): Timed[] {
     shown.push(line);
     frames.push({ text: [base, ...shown].join("\n"), ms: line.trim() ? (tone ? 160 : 85) : 30 });
   }
+  return frames;
+}
+
+// ─── Results card ───────────────────────────────────────────────────────────
+
+export interface CardResults {
+  gold: number;
+  xp: number;
+  drops: readonly string[];
+  boss: boolean;
+}
+
+/** The victory results card; `k` (0..1) counts the numbers up. */
+export function resultsCard(r: CardResults, k: number, color: boolean): string[] {
+  const c = (sgr: string, t: string) => (color ? `\x1b[${sgr}m${t}${RESET}` : t);
+  const n = (v: number) => Math.round(v * Math.max(0, Math.min(1, k)));
+  const W = 34;
+  const title = r.boss ? " ♛ R E S U L T S ♛ " : " ★ R E S U L T S ★ ";
+  const rows = [
+    `${c(DIM_SGR, "Gold")}   ${c("1;33", `+${n(r.gold)}g`)}`,
+    `${c(DIM_SGR, "XP")}     ${c("1;36", `+${n(r.xp)}`)} ${c(DIM_SGR, "buddy XP")}`,
+    ...(r.drops.length ? r.drops : [c(DIM_SGR, "—")]).map((d, i) => `${c(DIM_SGR, i ? "      " : "Loot")}${i ? "" : "  "} ${k >= 1 ? d : c(DIM_SGR, "· · ·")}`),
+  ];
+  const fill = Math.max(2, W - displayWidth(title) - 2);
+  return [
+    c(DIM_SGR, "╭─") + c("1;33", title) + c(DIM_SGR, "─".repeat(fill) + "╮"),
+    ...rows.map((l) => `${c(DIM_SGR, "│")} ${l}`),
+    c(DIM_SGR, `╰${"─".repeat(W)}╯`),
+  ];
+}
+
+/** The card counting up, then the loot landing (each with a shimmer). */
+export function resultsFrames(base: string, r: CardResults, color: boolean): Timed[] {
+  const frames: Timed[] = [];
+  const steps = 8;
+  for (let i = 1; i <= steps; i++) frames.push({ text: [base, ...resultsCard(r, i / steps, color)].join("\n"), ms: 40 });
+  const card = resultsCard(r, 1, color);
+  frames.push({ text: [base, ...card].join("\n"), ms: 0 });
   return frames;
 }
 

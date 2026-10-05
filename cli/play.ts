@@ -28,12 +28,20 @@ import {
   diffPaint,
   fightActions,
   flow,
+  force,
+  lazyTimed,
   nextSpeed,
+  resultsCard,
+  resultsFrames,
   revealFrames,
   scaleFrames,
   type AnimSpeed,
+  type Lazy,
   type Timed,
 } from "../server/rpg/playkit.ts";
+import { detectTier, tmuxWrap } from "../server/gfx/detect.ts";
+import { kittyDelete } from "../server/gfx/encode/kitty.ts";
+import { KITTY_STAGE_ID, STAGE_COLS, hdFeel, type HdPaint } from "../server/rpg/hdstage.ts";
 
 if (!process.stdin.isTTY) {
   console.error("Buddy Quest needs an interactive terminal. In Claude Code, type ;help instead.");
@@ -66,6 +74,30 @@ function loadSpeed(): AnimSpeed {
   }
 }
 
+/** The HD stage needs room: its 15 rows plus the bars, log and action bar. */
+const HD_MIN_ROWS = 34;
+const HD_MIN_COLS = STAGE_COLS + 6;
+
+const gfx = detectTier(process.env);
+
+/** HD paint settings for this terminal, or undefined for the ASCII stage
+ *  (gameFeel off, no pixel tier, or a terminal too small to fit it). */
+function hdPaint(): HdPaint | undefined {
+  if (gfx.tier === "ascii" || rows() < HD_MIN_ROWS || cols() < HD_MIN_COLS) return undefined;
+  let gameFeel: string | undefined;
+  let reduce = !!process.env.BUDDY_REDUCED_MOTION && process.env.BUDDY_REDUCED_MOTION !== "0";
+  try {
+    const { loadConfig } = require("../server/state.ts") as typeof import("../server/state.ts");
+    const c = loadConfig();
+    gameFeel = c.gameFeel;
+    reduce ||= !!c.reduceMotion;
+  } catch {
+    /* defaults */
+  }
+  const feel = hdFeel(gameFeel, reduce);
+  return feel ? { tier: gfx.tier, color: gfx.color, tmux: gfx.tmux, feel } : undefined;
+}
+
 function saveSpeed(s: AnimSpeed): void {
   try {
     const { saveConfig } = require("../server/state.ts") as typeof import("../server/state.ts");
@@ -91,8 +123,8 @@ let lastLoop: RunResult["loop"];
 
 /** A playing animation: frames are full screens. */
 let reel: { frames: Timed[]; i: number; timer: ReturnType<typeof setTimeout> | null; done: () => void } | null = null;
-/** The idle loop for the current screen. */
-let loop: { frames: string[]; ms: number; i: number; timer: ReturnType<typeof setTimeout> | null } | null = null;
+/** The idle loop for the current screen (HD frames are built on demand). */
+let loop: { frames: Lazy[]; ms: number; i: number; timer: ReturnType<typeof setTimeout> | null } | null = null;
 
 function refreshSnap(): void {
   try {
@@ -106,12 +138,26 @@ function refreshSnap(): void {
 
 let painted: string[] = [];
 
+/** A pixel-tier image (kitty / iTerm2) is on screen. */
+const hasImage = (lines: readonly string[]) => lines.some((l) => l.includes("\x1b_G") || l.includes("\x1b]1337;"));
+
 function paint(screen: string): void {
   // Keep the bottom rows if the screen is taller than the terminal: the
   // newest text (rewards, the action bar) matters most.
   const lines = screen.split("\n").slice(-rows());
+  if (hasImage(painted) && !hasImage(lines)) {
+    // Leaving the HD stage: drop the image and repaint from scratch so no
+    // pixels linger under unchanged rows.
+    clearImage();
+    out(`${ESC}H${ESC}2J`);
+    painted = [];
+  }
   out(diffPaint(painted, lines));
   painted = lines;
+}
+
+function clearImage(): void {
+  if (gfx.tier === "kitty") out(gfx.tmux ? tmuxWrap(kittyDelete(KITTY_STAGE_ID)) : kittyDelete(KITTY_STAGE_ID));
 }
 
 function repaintAll(screen: string): void {
@@ -168,8 +214,8 @@ function compose(text: string, bannerLine = banner, playing = !!reel): string {
 }
 
 function draw(): void {
-  if (mode === "title") return paint(loop ? loop.frames[loop.i] : titleScreen(titleState));
-  paint(compose(loop ? loop.frames[loop.i] : body));
+  if (mode === "title") return paint(loop ? force(loop.frames[loop.i]) : titleScreen(titleState));
+  paint(compose(loop ? force(loop.frames[loop.i]) : body));
 }
 
 // ─── Playback ───────────────────────────────────────────────────────────────
@@ -198,10 +244,10 @@ function finish(): void {
   r.done();
 }
 
-function startLoop(frames: string[] | undefined, ms: number): void {
+function startLoop(frames: readonly Lazy[] | undefined, ms: number): void {
   stopLoop();
   if (!frames?.length || speed === "off" || !focused) return;
-  loop = { frames, ms, i: 0, timer: null };
+  loop = { frames: [...frames], ms, i: 0, timer: null };
   const tick = () => {
     const l = loop;
     if (!l) return;
@@ -238,7 +284,7 @@ function exec(cmd: string): void {
   stopLoop();
   let res: RunResult;
   try {
-    res = runFull(cmd, true, true);
+    res = runFull(cmd, true, true, Date.now(), hdPaint());
   } catch (e) {
     banner = "";
     body = `Error: ${(e as Error).message}`;
@@ -251,8 +297,11 @@ function exec(cmd: string): void {
   banner = "";
   const bn = bannerFor(res.out);
 
-  // Every playback frame is a full screen with the "skip" footer.
-  const frame = (f: Timed, bannerLine = ""): Timed => ({ text: compose(f.text, bannerLine, true), ms: f.ms });
+  // Every playback frame is a full screen with the "skip" footer (built
+  // when played: HD frames rasterize on demand).
+  const frame = (f: Timed, bannerLine = ""): Timed => lazyTimed(() => compose(f.text, bannerLine, true), f.ms);
+  // A won fight ends on its results card.
+  const final = res.results ? `${res.out}\n${resultsCard(res.results, 1, true).join("\n")}` : res.out;
 
   // 1 · the turn / intro choreography
   const frames: Timed[] = scaleFrames(res.anim, speed).map((f) => frame(f));
@@ -264,13 +313,18 @@ function exec(cmd: string): void {
     frames.push(...scaleFrames(revealFrames(last, tail), speed).map((f) => frame(f)));
   }
 
-  // 3 · the banner opens over the final screen
+  // 3 · the results card counts up under the rewards
+  if (res.results && speed !== "off") {
+    frames.push(...scaleFrames(resultsFrames(res.out, res.results, true), speed).map((f) => frame(f)));
+  }
+
+  // 4 · the banner opens over the final screen
   if (bn && speed !== "off") {
-    frames.push(...scaleFrames(bannerFrames(bn.text, bn.sgr, cols()), speed).map((f) => frame({ text: res.out, ms: f.ms }, f.text)));
+    frames.push(...scaleFrames(bannerFrames(bn.text, bn.sgr, cols()), speed).map((f) => frame({ text: final, ms: f.ms }, f.text)));
   }
 
   const land = () => {
-    body = res.out;
+    body = final;
     banner = bn ? center(`${ESC}${bn.sgr}m${bn.text}${ESC}0m`, cols()) : "";
     lastLoop = res.loop;
     draw();
@@ -379,6 +433,7 @@ const FIGHT_KEYS: Record<string, string> = {
 
 function quit(): void {
   stopLoop();
+  if (hasImage(painted)) clearImage();
   if (reel?.timer) clearTimeout(reel.timer);
   out(`${ESC}?1004l${ESC}?7h${ESC}?25h${ESC}?1049l`);
   process.stdin.setRawMode(false);
@@ -509,7 +564,7 @@ process.stdin.setEncoding("utf8");
 out(`${ESC}?1049h${ESC}?25l${ESC}?7l${ESC}?1004h${ESC}H${ESC}2J`);
 process.stdout.on("resize", () => {
   if (mode === "title") return repaintAll(titleScreen(titleState));
-  repaintAll(reel ? reel.frames[Math.max(0, reel.i - 1)].text : compose(loop ? loop.frames[loop.i] : body));
+  repaintAll(reel ? reel.frames[Math.max(0, reel.i - 1)].text : compose(loop ? force(loop.frames[loop.i]) : body));
 });
 process.on("exit", () => out(`${ESC}?1004l${ESC}?7h${ESC}?25h`));
 refreshSnap();

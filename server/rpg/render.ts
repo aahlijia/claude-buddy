@@ -10,6 +10,20 @@ import { afterglow, type Cue } from "./anim";
 import { foeIntent, type Battle } from "./battle";
 import { marksOf, stageFor, type Stage, type StageState } from "./stage";
 import {
+  STAGE_COLS,
+  STAGE_ROWS,
+  encodeStage,
+  frameTimes,
+  ghostAt,
+  hdCast,
+  hdTimeline,
+  restScene,
+  sceneAt,
+  type HdPaint,
+  type HdScene,
+} from "./hdstage";
+import { lazyTimed, memo } from "./playkit";
+import {
   CONSUMABLES,
   FLOORS_PER_ZONE,
   RARITY_ANSI,
@@ -25,6 +39,9 @@ export interface Paint {
   color: boolean;
   /** Also bake attack-animation frames (TUI only; the hook can't animate). */
   anim?: boolean;
+  /** Draw fights on the HD pixel stage (TUI only, when the terminal can show
+   *  it). The zero-token hook never sets this, so it never renders pixels. */
+  hd?: HdPaint;
 }
 
 const RESET = "\x1b[0m";
@@ -81,11 +98,42 @@ export function hpBar(p: Paint, cur: number, max: number, width: number = 10, wa
 
 const GHOST = "\x1b[2;31m";
 
+const EIGHTHS = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
+
+/**
+ * The HD stage's HP bar: 1/8-cell precision, a colored fill, and a ghost
+ * segment for HP just lost — white for an instant, then dark red as it
+ * drains toward the real value. Same width as `hpBar`.
+ */
+export function hpBarFine(cur: number, max: number, width: number, ghost: number, fresh: boolean): string {
+  const ratio = max > 0 ? cur / max : 0;
+  const fillC = ratio > 0.5 ? "77" : ratio > 0.25 ? "220" : "203";
+  const ghostC = fresh ? "255" : "88";
+  const track = "236";
+  const eighths = (v: number) => (max > 0 ? Math.round((Math.max(0, Math.min(v, max)) / max) * width * 8) : 0);
+  const f8 = eighths(cur);
+  const g8 = Math.max(f8, eighths(ghost));
+  let out = "";
+  for (let c = 0; c < width; c++) {
+    const f = Math.max(0, Math.min(8, f8 - 8 * c));
+    const g = Math.max(0, Math.min(8, g8 - 8 * c));
+    if (f === 8) out += `\x1b[38;5;${fillC};48;5;${track}m█`;
+    else if (f > 0) out += `\x1b[38;5;${fillC};48;5;${g > f ? ghostC : track}m${EIGHTHS[f]}`;
+    else if (g === 8) out += `\x1b[38;5;${ghostC};48;5;${track}m█`;
+    else if (g > 0) out += `\x1b[38;5;${ghostC};48;5;${track}m${EIGHTHS[g]}`;
+    else out += `\x1b[48;5;${track}m `;
+  }
+  return `♥ ${cur}/${max} ${out}${RESET}`;
+}
+
 export interface Look {
   name: string;
   species: Species;
   eye: Eye;
   hat: Hat;
+  /** HD art only: rarity lighting and the shiny palette. */
+  rarity?: Rarity;
+  shiny?: boolean;
 }
 
 // ─── Frames & panels ────────────────────────────────────────────────────────
@@ -145,6 +193,10 @@ export interface BattleView {
   hp: [number, number];
   /** Log lines revealed so far (the rest render blank — same height). */
   lines: number;
+  /** HD stage: the resolved scene, and the HP bars' draining ghost. */
+  hd?: HdScene;
+  ghost?: [number, number];
+  fresh?: [boolean, boolean];
 }
 
 /** The fight scene at rest: idle pose, persistent marks, this turn's damage. */
@@ -158,7 +210,9 @@ function stageLines(p: Paint, st: Stage, state: StageState): string[] {
   return st.render(state, p.color).map((l) => indent + l);
 }
 
-/** Every directed cue as a full battle screen (TUI playback). */
+/** Every directed cue as a full battle screen (TUI playback). On the HD
+ *  stage each cue is split into ~30 fps sub-frames that tween between the
+ *  director's poses; those frames are built lazily, when played. */
 export function battleFrames(
   p: Paint,
   b: Battle,
@@ -168,7 +222,46 @@ export function battleFrames(
   cues: readonly Cue[],
 ): { text: string; ms: number }[] {
   const st = stageFor(b, look);
+  const cast = p.hd ? hdCast(b, look) : null;
+  if (p.hd && cast && cues.length) {
+    const tl = hdTimeline(cues, cast, p.hd.feel, { maxHp: [b.hero.maxHp, b.foe.maxHp], cell: { width: st.width, height: st.height } });
+    const frames = frameTimes(tl).map(([T, ms]) =>
+      lazyTimed(() => {
+        const c = tl.cues[Math.min(tl.cues.length - 1, cueIndex(tl.starts, T))];
+        const { ghost, fresh } = ghostAt(tl, T);
+        return battleScreen(p, b, look, skills, items, { stage: c.stage, hp: c.hp, lines: c.lines, hd: sceneAt(tl, T), ghost, fresh }, st);
+      }, ms),
+    );
+    // End exactly on the resting screen (what the command prints), so the
+    // player can reveal reward lines under it.
+    frames.push(lazyTimed(() => battleScreen(p, b, look, skills, items, undefined, st), 0));
+    return frames;
+  }
   return cues.map((c) => ({ text: battleScreen(p, b, look, skills, items, c, st), ms: c.ms }));
+}
+
+function cueIndex(starts: readonly number[], T: number): number {
+  let i = 0;
+  while (i + 1 < starts.length && starts[i + 1] <= T) i++;
+  return i;
+}
+
+/** HD resting loop: the idle cycle at a few frames per second (lazy). */
+export function hdAmbientFrames(
+  p: Paint,
+  b: Battle,
+  look: Look,
+  skills: readonly SkillId[],
+  items: Partial<Record<ConsumableId, number>>,
+  count: number,
+  ms: number,
+): (() => string)[] {
+  return Array.from({ length: count }, (_, i) => memo(() => battleScreen(p, b, look, skills, items, undefined, undefined, (i * ms) / 1000)));
+}
+
+/** Whether this fight draws on the HD stage. */
+export function usesHd(p: Paint, b: Battle, look: Look): boolean {
+  return !!p.hd && !!hdCast(b, look);
 }
 
 /** Stage geometry for the director. */
@@ -196,10 +289,20 @@ export function battleScreen(
   items: Partial<Record<ConsumableId, number>>,
   view?: BattleView,
   stage?: Stage,
+  /** HD resting screens: the idle clock (seconds) for the ambient loop. */
+  clock = 0,
 ): string {
   const body: string[] = [];
+  const cast = p.hd ? hdCast(b, look) : null;
+  let suffix: string | undefined;
   try {
-    body.push(...stageLines(p, stage ?? stageFor(b, look), view?.stage ?? restStage(b)));
+    const st = stage ?? stageFor(b, look);
+    if (p.hd && cast) {
+      const scene = view?.hd ?? restScene(b, restStage(b).motes ?? [], { width: st.width, height: st.height }, cast, clock);
+      const enc = encodeStage(cast, scene, p.hd);
+      suffix = enc.suffix;
+      body.push(...enc.lines);
+    } else body.push(...stageLines(p, st, view?.stage ?? restStage(b)));
   } catch {
     /* art failure — the bars and log still work */
   }
@@ -209,9 +312,12 @@ export function battleScreen(
   const foeName = b.foe.boss ? paint(p, C.yellow, `♛ ${b.foe.name}`) : b.foe.name;
   const label = (t: string, w: number) => t + " ".repeat(Math.max(1, w - displayWidth(t)));
   const lw = Math.max(displayWidth(look.name), displayWidth(`${b.foe.boss ? "♛ " : ""}${b.foe.name} Lv${b.foe.level}`)) + 2;
-  body.push(label(paint(p, C.bold, look.name), lw) + hpBar(p, heroHp, b.hero.maxHp, 14, heroWas));
+  // HD: the ghost drains during playback and is gone at rest.
+  const bar = (cur: number, max: number, was: number, k: 0 | 1) =>
+    cast && p.color ? hpBarFine(cur, max, 14, view?.ghost?.[k] ?? cur, !!view?.fresh?.[k]) : hpBar(p, cur, max, 14, was);
+  body.push(label(paint(p, C.bold, look.name), lw) + bar(heroHp, b.hero.maxHp, heroWas, 0));
   const intent = foeIntent(b);
-  const foeLine = label(`${foeName} Lv${b.foe.level}`, lw) + hpBar(p, foeHp, b.foe.maxHp, 14, foeWas);
+  const foeLine = label(`${foeName} Lv${b.foe.level}`, lw) + bar(foeHp, b.foe.maxHp, foeWas, 1);
   const intentText = intent ? `  ${paint(p, C.yellow, intent)}` : "";
   // The intent shows once the turn has played out, but the panel is sized
   // for it from the first frame so nothing shifts.
@@ -228,7 +334,14 @@ export function battleScreen(
     const shown = !view || i < view.lines;
     wrap(l, PANEL_W - 4).forEach((part, j) => body.push(shown ? (j ? "  " : paint(p, C.dim, "» ")) + part : ""));
   });
-  const out = panel(p, battleTitle(b), `Turn ${b.turn}`, body, undefined, minW);
+  let out = panel(p, battleTitle(b), `Turn ${b.turn}`, body, undefined, minW);
+  if (suffix) {
+    // Pixel tiers: the stage rows are blank in the layout; the image is
+    // placed from the end of the last stage row (panel row STAGE_ROWS).
+    const rows = out.split("\n");
+    rows[STAGE_ROWS] += suffix;
+    out = rows.join("\n");
+  }
   // The TUI (anim) draws its own action bar instead of the `;` hints.
   return b.over || p.anim ? out : `${out}\n${actionHints(p, b, skills, items)}`;
 }

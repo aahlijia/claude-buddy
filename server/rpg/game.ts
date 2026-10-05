@@ -51,7 +51,9 @@ import {
   wrap,
   battleFrames,
   battleScreen,
+  hdAmbientFrames,
   restStage,
+  usesHd,
   stageGeometry,
   buddySprite,
   panel,
@@ -70,6 +72,7 @@ import { ENDING, PROLOGUE, ZONE_ARRIVAL, fill } from "./story";
 import { FORGE_CHANCE, FORGE_MAX, forgeCost, forgeError, strike } from "./forge";
 import { FEATS, checkFeats, unlockedTitles } from "./feats";
 import { ambient, direct, directIntro } from "./anim";
+import { memo, type Lazy } from "./playkit";
 
 /** The bug currently standing off on the status line (idle-RPG pending
  *  encounter), if any — `;hunt` fights its shadow. */
@@ -100,8 +103,19 @@ export interface CommandResult {
    *  choreography or a fight's intro. */
   anim?: AnimFrame[];
   /** A gentle resting loop for `out` (idle breathing/blinking; TUI only).
-   *  Every frame is `out` with only the art changed. */
-  loop?: { frames: string[]; ms: number };
+   *  Every frame is `out` with only the art changed. HD frames are built on
+   *  demand (thunks), the cell-stage ones are plain strings. */
+  loop?: { frames: Lazy[]; ms: number };
+  /** A won fight's spoils, for the TUI's results card. */
+  results?: FightResults;
+}
+
+export interface FightResults {
+  gold: number;
+  xp: number;
+  /** Loot lines (gear, coffee), as shown in the log. */
+  drops: string[];
+  boss: boolean;
 }
 
 export interface AnimFrame {
@@ -111,6 +125,9 @@ export interface AnimFrame {
 
 /** Ambient loop cadence — slow enough to read as breathing, not flicker. */
 const LOOP_MS = 650;
+/** The HD idle loop: the rig's 2.6 s breathing cycle at ~5 fps. */
+const HD_LOOP_FRAMES = 13;
+const HD_LOOP_MS = 200;
 
 /** Final tier: the Endless Tower unlocks once zone 6's boss falls. */
 export const TOWER_UNLOCK = ZONES.length + 1;
@@ -230,6 +247,10 @@ function restLoop(s: RpgState, ctx: BuddyCtx, out: string, now: number, p: Paint
     const base = screen(s, ctx, p);
     if (!out.startsWith(base)) return undefined;
     const tail = out.slice(base.length);
+    if (usesHd(p, b, ctx)) {
+      const hd = hdAmbientFrames(p, b, ctx, s.skills, s.items, HD_LOOP_FRAMES, HD_LOOP_MS);
+      return { frames: hd.map((f) => memo(() => f() + tail)), ms: HD_LOOP_MS };
+    }
     const frames = battleFrames(p, b, ctx, s.skills, s.items, ambient(b).map((stage) => ({
       stage: { ...stage, motes: restStage(b).motes },
       hp: [b.hero.hp, b.foe.hp] as [number, number],
@@ -923,6 +944,8 @@ function conclude(
   s.stats.kills++;
   r.xp += isBoss ? 25 + 3 * L : 2 + Math.floor(L / 2);
   lines.push(paint(p, C.yellow, `🏆 Victory! +${gold}g`) + paint(p, C.dim, `  +${r.xp} buddy XP`));
+  const results: FightResults = { gold, xp: r.xp, drops: [], boss: isBoss };
+  r.results = results;
   const bounties = [
     ...progress(s, "kills", 1, now),
     ...progress(s, "gold", gold, now),
@@ -1003,11 +1026,13 @@ function conclude(
   if (rng() < dropChance) {
     const g = rollGear(rng, L, s.nextUid++, { luck, floor: floorRarity });
     lines.push(addToBag(s, g, p));
+    results.drops.push(gearName(p, g));
     if (g.rarity === "epic" || g.rarity === "legendary") journal(s, `Found ${g.name} (${g.rarity})`);
   }
   if (rng() < 0.12) {
     s.items.potion = Math.min(CONSUMABLE_STACK, (s.items.potion ?? 0) + 1);
     lines.push("☕ Found a Coffee.");
+    results.drops.push("☕ Coffee");
   }
   lines.push(...bounties);
   return lines.join("\n");
