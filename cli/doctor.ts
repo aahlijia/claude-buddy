@@ -162,6 +162,17 @@ const wanderFlags = [
 const wanderNote =
   wanderOn && effectiveGf !== "full" ? " (idle until game-feel is full)" : "";
 row("Idle wander", `${wanderFlags}${wanderNote}`);
+// HD status-line sprite (H5): the setting, and whether this buddy gets it.
+{
+  const sprite = cfg?.statusSprite ?? "mini";
+  const hdOn = Array.isArray(status?.hdFrames) && status.hdFrames.length > 0;
+  const why =
+    sprite === "off" ? "ASCII art"
+    : hdOn ? `HD, ${status.hdWidth}×${status.hdFrames[0].split("\n").length} cells`
+    : effectiveGf === "off" ? "ASCII art (game-feel off)"
+    : "ASCII art (no HD art for this species yet)";
+  row("Status-line sprite", `${sprite} → ${why}`);
+}
 if (status) {
   const celeb = status.celebration;
   if (celeb?.at) {

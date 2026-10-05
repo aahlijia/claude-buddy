@@ -69,6 +69,7 @@ import {
   renderAchievementsCardMarkdown,
 } from "./achievements";
 import { getTheme } from "./theme";
+import { HD_SPECIES } from "./gfx/hd";
 import {
   awardXp,
   getXpState,
@@ -1027,6 +1028,44 @@ registerTool(
     saveConfig({ groundEnabled: enabled });
     return {
       content: [{ type: "text", text: groundStateLine(loadConfig()) }],
+    };
+  },
+);
+
+// ─── Tool: buddy_sprite (HD overhaul H5: the status-line sprite) ─────────────
+
+/** The sprite setting, plus why it might not show (no HD art yet, gameFeel off). */
+function spriteStateLine(cfg: BuddyConfig, species: string): string {
+  const notes: string[] = [];
+  if (cfg.statusSprite !== "off") {
+    if (!(HD_SPECIES as readonly string[]).includes(species)) notes.push(`${species} has no HD art yet, so the ASCII art stays`);
+    if (effectiveGameFeel() === "off") notes.push("game-feel is 'off', so the ASCII art shows");
+  }
+  return `Status-line sprite: ${cfg.statusSprite}.${notes.length ? ` Note: ${notes.join("; ")}.` : ""}`;
+}
+
+registerTool(
+  "buddy_sprite",
+  "Choose how the buddy is drawn in Claude Code's status line: 'mini' (default) is the HD pixel-art buddy at about the ASCII art's size (≈12×6 cells), 'full' is a bigger HD buddy (≈24×12 cells), 'off' keeps the classic ASCII art. HD art exists for blob, cat and dragon so far; other species keep the ASCII art. The HD sprite breathes, blinks, flinches on errors and hops on celebrations, one key pose per second. Omit `size` to report the current setting. Backs /buddy sprite. Read live — no restart needed.",
+  {
+    size: z
+      .enum(["mini", "full", "off"])
+      .optional()
+      .describe("mini | full | off. Omit to report the current setting."),
+  },
+  async ({ size }) => {
+    const companion = ensureCompanion();
+    if (size !== undefined) {
+      saveConfig({ statusSprite: size });
+      // Re-bake now so the status line switches on its next tick.
+      try {
+        writeStatusState(companion);
+      } catch {
+        // The next status write picks it up.
+      }
+    }
+    return {
+      content: [{ type: "text", text: spriteStateLine(loadConfig(), companion.bones.species) }],
     };
   },
 );

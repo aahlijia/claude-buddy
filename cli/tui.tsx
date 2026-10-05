@@ -1482,6 +1482,7 @@ const SETTING_DEFS: SettingDef[] = [
   { key: "showRarity", label: "Show Rarity", description: ["Show rarity stars in", "the status line.", "", "true → ★★★★ visible", "false → hidden"], type: "options", options: ["true", "false"], default: "true" },
   { key: "statusLineEnabled", label: "Status Line", description: ["Animated buddy in Claude Code's", "status line bar.", "", "true  → patches settings.json", "false → removes it", "", "Restart Claude Code after toggle."], type: "options", options: ["true", "false"], default: "false" },
   { key: "gameFeel", label: "Game Feel", description: ["How much juice: animations,", "flashes, shake, the HD stage.", "", "off    → still, ASCII fights", "subtle → no shake or flashes", "full   → everything"], type: "options", options: ["off", "subtle", "full"], default: "subtle" },
+  { key: "statusSprite", label: "Status Sprite", description: ["How the buddy is drawn in", "the status line.", "", "mini → HD pixel art (~12×6)", "full → bigger HD (~24×12)", "off  → classic ASCII", "", "HD for blob, cat, dragon."], type: "options", options: ["mini", "full", "off"], default: "mini" },
   { key: "reduceMotion", label: "Reduce Motion", description: ["Keep the HD art but drop", "screen shake, flashes and", "camera moves (buddy play).", "", "Also: BUDDY_REDUCED_MOTION=1"], type: "options", options: ["false", "true"], default: "false" },
 ];
 

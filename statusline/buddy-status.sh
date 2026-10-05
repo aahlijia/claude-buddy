@@ -46,6 +46,7 @@ SHOW_STATS="false"
 SHOW_PRESTIGE_BADGE="false"
 USE_COMBINED="false"
 QUEST_HUD="true"
+STATUS_SPRITE="mini"
 if [ -f "$CONFIG_FILE" ]; then
     # Join with 0x1F (non-whitespace) rather than @tsv: an empty field (e.g. no
     # rainbowColors) would COLLAPSE under IFS=$'\t' (tab is IFS-whitespace),
@@ -54,6 +55,7 @@ if [ -f "$CONFIG_FILE" ]; then
         GAME_FEEL _CFG_THEME _RAINBOW_CSV \
         REACTION_TTL INNER_W MARGIN \
         SHOW_STATS SHOW_PRESTIGE_BADGE USE_COMBINED QUEST_HUD \
+        STATUS_SPRITE \
     <<< "$(jq -r '[
         (.gameFeel // "subtle"),
         (.theme // "auto"),
@@ -64,7 +66,8 @@ if [ -f "$CONFIG_FILE" ]; then
         ((.showStats // false) | tostring),
         ((.showPrestigeBadge // false) | tostring),
         ((.useCombinedStatus // false) | tostring),
-        (if .questHud == false then "false" else "true" end)
+        (if .questHud == false then "false" else "true" end),
+        (.statusSprite // "mini")
     ] | join("")' "$CONFIG_FILE" 2>/dev/null)"
 fi
 # Re-apply the exact per-field validation/defaulting the old scattered reads did,
@@ -78,6 +81,7 @@ case "$MARGIN" in ''|*[!0-9]*) MARGIN=8 ;; esac
 [ "$SHOW_PRESTIGE_BADGE" = "true" ] || SHOW_PRESTIGE_BADGE="false"
 [ "$USE_COMBINED" = "true" ] || USE_COMBINED="false"
 [ "$QUEST_HUD" = "false" ] || QUEST_HUD="true"
+case "$STATUS_SPRITE" in off|mini|full) ;; *) STATUS_SPRITE="mini" ;; esac
 
 # ─── Single status.json read (perf: ~17 jq forks → 1) ───────────────────────
 # All status.json fields PLUS the celebration-freshness, frame-pick (game-feel
@@ -90,7 +94,7 @@ case "$MARGIN" in ''|*[!0-9]*) MARGIN=8 ;; esac
 # sanitized (\x01-\x1f + DEL → space) so a stray tab/newline can't shift the
 # columns and a stray ESC can't inject terminal escapes into the render. The
 # frame art is exempt (base64'd raw) — wyvern's flame legitimately carries ANSI.
-_STATUS=$(jq -r --argjson now "$NOW" --arg gf "$GAME_FEEL" '
+_STATUS=$(jq -r --argjson now "$NOW" --arg gf "$GAME_FEEL" --arg ss "$STATUS_SPRITE" '
     # Celebration freshness — mirrors the old bash TTL/age math, gameFeel-gated.
     (if $gf == "off" then 0
      else
@@ -127,13 +131,27 @@ _STATUS=$(jq -r --argjson now "$NOW" --arg gf "$GAME_FEEL" '
     | (if (($enc_fresh == 1) or ($sticky == 1))
           and ((.combatFrames | type) == "array")
           and ((.combatFrames | length) > 0) then 1 else 0 end) as $combat_on
-    # Frame source: combat scene > flourish (while a celebration is fresh) > idle.
+    # HD sprite (H5, hd-overhaul/h5-statusline.md): server-baked truecolor
+    # half-block key poses. Re-gated here on the LIVE config (gameFeel off or
+    # statusSprite off flips straight back to ASCII without a server write);
+    # a fight keeps its two-sprite ASCII scene.
+    | (if $gf != "off" and $ss != "off" and $combat_on != 1
+          and ((.hdFrames | type) == "array") and ((.hdFrames | length) > 0)
+       then 1 else 0 end) as $hd_on
+    | (if $hd_on == 1 and ((.hdCelebFrames | type) == "array")
+          and ((.hdCelebFrames | length) > 0) then 1 else 0 end) as $has_hdcel
+    # Frame source: combat scene > flourish (while a celebration is fresh) > idle,
+    # each in HD when $hd_on (the HD celebration is the victory hop).
     | (if ((.flourishFrames | type) == "array")
           and ((.flourishFrames | length) > 0) then 1 else 0 end) as $has_fl
     | (if $combat_on == 1 then .combatSequence
+       elif $celeb_fresh == 1 and $has_hdcel == 1 then .hdCelebSequence
+       elif $hd_on == 1 then .hdSequence
        elif $celeb_fresh == 1 and $has_fl == 1 then .flourishSequence
        else .frameSequence end) as $seq
     | (if $combat_on == 1 then .combatFrames
+       elif $celeb_fresh == 1 and $has_hdcel == 1 then .hdCelebFrames
+       elif $hd_on == 1 then .hdFrames
        elif $celeb_fresh == 1 and $has_fl == 1 then .flourishFrames
        else .frames end) as $frms
     | ($seq | length) as $slen
@@ -141,7 +159,8 @@ _STATUS=$(jq -r --argjson now "$NOW" --arg gf "$GAME_FEEL" '
     | ($frms[$idx] // "") as $frame
     # Active art display width: the combat scene widens the art column; 0 ⇒ the
     # shell keeps its default single-sprite ART_W.
-    | (if $combat_on == 1 then (.artWidth // 0) else 0 end) as $awidth
+    | (if $combat_on == 1 then (.artWidth // 0)
+       elif $hd_on == 1 then (.hdWidth // 0) else 0 end) as $awidth
     # Wander offsets — only at gameFeel=full with no fresh celebration AND no
     # combat scene (design-pending-encounter D3: a standoff/fight that ambles
     # around undercuts the tension, and pinning it maximizes the roam-math
@@ -233,6 +252,7 @@ _STATUS=$(jq -r --argjson now "$NOW" --arg gf "$GAME_FEEL" '
         ($enc_fresh | tostring),
         ($combat_on | tostring),
         ($awidth | tostring),
+        ($hd_on | tostring),
         ((.enemyGlyph // "") | gsub("[\\x01-\\x1f\\x7f]"; " ")),
         ($raised_names | gsub("[\\x01-\\x1f\\x7f]"; " ")),
         ($ground | gsub("[\\x01-\\x1f\\x7f]"; " ")),
@@ -252,7 +272,7 @@ IFS=$'\x1f' read -r \
     LEVEL MOOD TITLE PRESTIGE STREAK \
     STATS_TSV XP_PCT XP_GAIN_TSV CELEB_TSV \
     _HAS_FLOURISH _CELEB_FRESH WANDER_OFF WANDER_ROW WANDER_ROW_MAX \
-    _ENC_FRESH _COMBAT_ON ART_WIDTH ENEMY_GLYPH \
+    _ENC_FRESH _COMBAT_ON ART_WIDTH _HD_ON ENEMY_GLYPH \
     STATS_RAISED GROUND_TILE GROUND_COLOR \
     GROUND_WEATHER_GLYPH GROUND_WEATHER_COLOR \
     WFGAP_GLYPH WFGAP_COLOR RPG_HUD \
@@ -283,6 +303,8 @@ case "$WANDER_ROW_MAX" in ''|*[!0-9]*) WANDER_ROW_MAX=0 ;; esac
 # active two-sprite scene; 0 unless a fresh fight is being rendered.
 case "$_COMBAT_ON" in 1) ;; *) _COMBAT_ON=0 ;; esac
 case "$ART_WIDTH" in ''|*[!0-9]*) ART_WIDTH=0 ;; esac
+# HD sprite (H5): the frame body is baked truecolor half-blocks, ART_WIDTH wide.
+case "$_HD_ON" in 1) ;; *) _HD_ON=0 ;; esac
 
 # Fallback when status.json lacks .frames — e.g. server/bash version skew
 # during install or while the MCP server hasn't rewritten the file yet. Keep
@@ -622,7 +644,7 @@ esac
 # Idle art is 12 cols wide ⇒ centre at col 6. The Phase 5 combat scene is wider
 # (server-emitted ART_WIDTH); re-centre the name/title under it. Scoped to the
 # combat path so idle renders keep ART_CENTER=6 byte-identical.
-if [ "$_COMBAT_ON" = 1 ] && [ "$ART_WIDTH" -gt 0 ]; then
+if { [ "$_COMBAT_ON" = 1 ] || [ "$_HD_ON" = 1 ]; } && [ "$ART_WIDTH" -gt 0 ]; then
     ART_CENTER=$(( ART_WIDTH / 2 ))
 else
     ART_CENTER=6
@@ -638,7 +660,10 @@ ALL_COLORS=()
 _arc=0
 for line in "${ART_LINES[@]}"; do
     ALL_LINES+=("$line")
-    if [ "$SHINY" = "true" ]; then
+    if [ "$_HD_ON" = 1 ]; then
+        # HD rows carry their own colors (and shine): no tint over them.
+        ALL_COLORS+=("")
+    elif [ "$SHINY" = "true" ]; then
         ALL_COLORS+=("${RAINBOW[$(( (_arc + RAINBOW_OFFSET) % RAINBOW_LEN ))]}")
     else
         ALL_COLORS+=("$C")
@@ -687,7 +712,7 @@ ART_W=14
 # Idle-RPG Phase 5: a fresh two-sprite scene widens the art column to the
 # server-emitted scene width so TOTAL_W/PAD reserve the right room and the scene
 # stays in-window. Scoped to the combat path ⇒ idle keeps ART_W=14 (byte-ident).
-if [ "$_COMBAT_ON" = 1 ] && [ "$ART_WIDTH" -gt "$ART_W" ]; then
+if { [ "$_COMBAT_ON" = 1 ] || [ "$_HD_ON" = 1 ]; } && [ "$ART_WIDTH" -gt "$ART_W" ]; then
     ART_W=$ART_WIDTH
 fi
 ART_COUNT=${#ALL_LINES[@]}

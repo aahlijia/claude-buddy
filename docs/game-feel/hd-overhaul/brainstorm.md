@@ -1,6 +1,6 @@
 # HD Overhaul — brainstorm
 
-_Status: brainstorm · H0 ([h0-spike.md](h0-spike.md)), H1 ([h1-rigs.md](h1-rigs.md)), H2 ([h2-quest-player.md](h2-quest-player.md)), H3 ([h3-ui-kit.md](h3-ui-kit.md)) and H4 ([h4-diorama.md](h4-diorama.md)) done_
+_Status: brainstorm · H0 ([h0-spike.md](h0-spike.md)), H1 ([h1-rigs.md](h1-rigs.md)), H2 ([h2-quest-player.md](h2-quest-player.md)), H3 ([h3-ui-kit.md](h3-ui-kit.md)), H4 ([h4-diorama.md](h4-diorama.md)) and H5 ([h5-statusline.md](h5-statusline.md)) done_
 
 **Goal:** make claude-buddy look and move like a console game instead of a
 pile of ASCII. That means HD buddies with real shading, motion with weight,
@@ -281,7 +281,8 @@ Name it the **buddy UI kit** (`server/ui/`):
 3. **Status-line limits:** Claude Code controls its height and redraw, and
    refreshes at 1 s. HD there is capped at T1 and key-pose animation. Verify
    it renders `▀` with fg+bg truecolor reliably across Claude Code's
-   renderer.
+   renderer. _Verified in H5:_ Claude Code 2.1.289 re-serializes the SGR but
+   keeps every fg+bg pair and glyph (see [h5-statusline.md](h5-statusline.md)).
 4. **Font variance** for sextants (T2). It may be worth skipping T2 entirely
    and going T3 → T1 → T0.
 5. **Asset format:** palette-indexed text (reviewable, zero deps) vs. PNG +
@@ -302,5 +303,5 @@ Name it the **buddy UI kit** (`server/ui/`):
 | **H2 Quest player HD** ✅ ([h2-quest-player.md](h2-quest-player.md)) | Framebuffer stage in `play.ts`, camera, particles, hit-stop, damage ghost bars, battle transition, victory results card | The "PlayStation moment" |
 | **H3 UI kit** ✅ ([h3-ui-kit.md](h3-ui-kit.md)) | Panels, bars, key prompts, banners and portraits across play, TUI and shop | One visual language |
 | **H4 buddy-shell diorama** ✅ ([h4-diorama.md](h4-diorama.md)) | Parallax biomes, day/night, weather particles, live hook reactions | The always-on wow |
-| **H5 Status line T1** | Baked half-block sprites with key-pose cycling; bash unchanged except for the frame source | HD reaches every user |
+| **H5 Status line T1** ✅ ([h5-statusline.md](h5-statusline.md)) | Baked half-block sprites with key-pose cycling; bash unchanged except for the frame source | HD reaches every user |
 | **H6 Roster** | The remaining 17 species, the hatch cinematic, loot beams, special-move cut-ins, boss cinematics | Content complete |

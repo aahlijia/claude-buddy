@@ -1,6 +1,6 @@
 # NEXT — handoff for the HD overhaul
 
-_A fresh session starts here. Last updated after H4._
+_A fresh session starts here. Last updated after H5._
 
 **Branch:** `feature/living-world`. Develop, commit and push there:
 `git push -u origin feature/living-world`.
@@ -15,53 +15,53 @@ _A fresh session starts here. Last updated after H4._
 | H2: HD fights in the quest player | done | [h2-quest-player.md](h2-quest-player.md) |
 | H3: the buddy UI kit (`server/ui/`) | done | [h3-ui-kit.md](h3-ui-kit.md) |
 | H4: the buddy-shell diorama | done | [h4-diorama.md](h4-diorama.md) |
-| **H5: the status line in T1** | **next** | this file and [brainstorm.md](brainstorm.md) §5, §7.3, §8 |
-| H6 roster | later | brainstorm.md §8 |
+| H5: the status line in T1 | done | [h5-statusline.md](h5-statusline.md) |
+| **H6: the roster** | **next** | this file and [brainstorm.md](brainstorm.md) §1, §3, §8 |
 
 ## Read first (in this order)
 
-1. **[brainstorm.md](brainstorm.md):** §5 (the status-line row), §7.3
-   (status-line limits), §0 (the tier ladder) and §8.
-2. **`statusline/buddy-status.sh`:** the bash renderer Claude Code runs every
-   second. It reads `status.json` and cycles baked frames by
-   `frameSequence[NOW % len]`; it must never rasterize. Its tests are
-   `server/statusline_render.test.ts` and friends.
-3. **`server/state.ts` `writeStatusState`:** where the server bakes the
-   frames, flourish, wander, combat and weather fields into `status.json`.
-   H4 added `sceneWeather` and `gameFeel` there.
-4. **[h4-diorama.md](h4-diorama.md):** `encodeHalfblock`, `downscale` (crisp
-   alpha) and `stepBeat` are the pieces to reuse; the diorama's half-block
-   tier is the closest thing to what the status line will show.
+1. **[brainstorm.md](brainstorm.md):** §1 (art direction, the style bible,
+   the animation set), §3 (scenes: hatch, loot reveal, battle cut-ins, boss
+   phase change) and §8.
+2. **[h1-rigs.md](h1-rigs.md)**, especially "Adding a species": the rig
+   format, materials as ramps, the face grids, the validator, golden hashes.
+   `server/gfx/species/cat.ts` and `dragon.ts` are the references.
+3. **[h2-quest-player.md](h2-quest-player.md):** the fight stage the
+   cut-ins and boss cinematics plug into (`server/rpg/hdstage.ts`).
+4. **`cli/pick.ts`** and **`cli/hunt.ts`:** today's ASCII hatch and reveal.
+5. **[h5-statusline.md](h5-statusline.md)** and
+   **[h4-diorama.md](h4-diorama.md):** every species added to `HD_SPECIES`
+   shows up in the status line, the diorama, the quest player and the
+   portraits with no extra wiring, so check it in all four.
 
-## H5 goal
+## H6 goal
 
-HD reaches every user: the status line shows the HD buddy as truecolor
-half-block sprites. The server bakes them; bash keeps cycling strings and
-stays unchanged except for where the frames come from.
+Content complete: every species in HD, plus the big moments that make the
+game feel like a console game.
 
-## H5 checklist
+## H6 checklist
 
-- [ ] **Bake** half-block frames for the HD species in `writeStatusState`
-      (`renderHd` → `downscale` → `encodeHalfblock`), as a new field (for
-      example `hdFrames` + `hdSequence`) next to the ASCII `frames`.
-- [ ] **Key poses at 1 Hz:** the status line refreshes once a second, so
-      pick poses that read without motion (idle breathe extremes, a blink,
-      the reaction poses for error / cheer). Keep the sequence short.
-- [ ] **Size option** `statusSprite: mini (12×6) | full (24×12) | off` in
-      config, the TUI settings and `doctor`.
-- [ ] **bash:** prefer `hdFrames` when present and the terminal is
-      truecolor; the ASCII frames stay the fallback. Measure the extra
-      bytes per tick and the jq cost.
-- [ ] **Compose** with what the status line already draws around the sprite
-      (bubble, ground, falling weather, combat) without breaking alignment;
-      the sprite is wider than the ASCII art.
-- [ ] **Verify** that Claude Code's renderer shows `▀` with fg + bg
-      truecolor reliably (brainstorm §7.3), and keep T0 byte-identical when
-      the option is off.
-- [ ] **Gates:** `gameFeel` off → ASCII; `reduceMotion` → one still frame.
-- [ ] **Tests and docs:** baked-frame determinism and size, bash fallback,
-      `h5-statusline.md` with screenshots, mark H5 done in brainstorm.md §8,
-      update this file for H6.
+- [ ] **The 17 remaining species** as rigs (duck, goose, octopus, owl,
+      penguin, turtle, snail, ghost, axolotl, capybara, cactus, robot,
+      rabbit, mushroom, chonk, wyvern, sparkit). Follow the style bible
+      (brainstorm §1.2): one light direction, ramps per material, 1-px dark
+      outline. Pilot three that stress the rig (octopus: many limbs; ghost:
+      no legs and translucency; robot: hard edges), then batch the rest.
+- [ ] **Per species:** register in `hd.ts`, golden hashes, a look in
+      `bun run gfx-demo`, `bun run diorama-demo` and the status-line sprite
+      sheet (`bakeStatusSprite`); `HEAD_Y` in `hdstage.ts` needs the new
+      names.
+- [ ] **Hatch cinematic** (`pick` / `hunt`): egg wobble that builds, a crack
+      color that teases the rarity, a shockwave reveal, the shiny sting.
+- [ ] **Loot reveal:** chest shake, lid pop, a rarity-colored light beam;
+      legendary gets a flash (gated) and a slow item spin.
+- [ ] **Special-move cut-ins** in HD fights (~700 ms, skippable): a
+      diagonal panel with the portrait, speed lines and the move name.
+- [ ] **Boss phase change:** dim, glow, roar shake (all gated).
+- [ ] **Gates and tests** as before: gameFeel off → today's ASCII; subtle →
+      no shake or flashes; reduceMotion; golden hashes for new art.
+- [ ] **Docs:** `h6-roster.md` with contact sheets, mark H6 done in
+      brainstorm.md §8, and update this file.
 
 ## Loose ends
 
@@ -72,6 +72,8 @@ stays unchanged except for where the frames come from.
 - From H4: kitty native animation for the diorama buddy's idle loop (it
   swaps frames today, ~1.3 KB/s); living-world ground props as pixel art;
   sixel; the same diorama in the TUI's home screen.
+- From H5: an HD fight scene in the status line (fights keep the ASCII
+  two-sprite scene); hats on the HD sprite; a 256-color sprite variant.
 
 ## How to see your work
 
@@ -80,6 +82,15 @@ stays unchanged except for where the frames come from.
 - `bun run diorama-demo` shows the H4 panel alone (keys cycle biome, hour,
   weather, species and fire reactions); `bun run scripts/h4-sheet.ts`
   re-renders its contact sheet (`--rows 3-7 --scale 2` to review a slice).
+- `/buddy sprite full` (or `statusSprite` in config.json) switches the status
+  line's HD sprite; `bakeStatusSprite` in `server/gfx/statussprite.ts`
+  renders the frames, so a quick Bun script can print them all side by side.
+- **Seeing the real Claude Code status line:** run `claude` in a pty with
+  `env -i`, an isolated `HOME` whose `.claude.json` pre-accepts onboarding,
+  the project's trust dialog and a dummy `ANTHROPIC_API_KEY`, and a
+  `settings.json` whose `statusLine.command` points at the script. It draws
+  the UI without sending anything; feed the stream to pyte. Never run it
+  with this session's own environment. h5-statusline.md shows the result.
 - `bun run scripts/h2-sheet.ts` re-renders the H2 fight contact sheet.
 - Screenshots of text UIs: feed a captured terminal stream to `pyte`
   (`pip install pyte`), turn the screen into HTML (one span per cell;

@@ -1,7 +1,7 @@
 ---
 name: buddy
 description: "Show, pet, or manage your coding companion. Use when the user types /buddy or mentions their companion by name."
-argument-hint: "[show|quest|menu|pet|stats [bar [on|off]]|xp|upgrades [buy|refund|title <id>|ascend]|badge [on|off]|gamefeel [off|subtle|full]|wander [on|off|hop|wide|bubble|status]|dressing [on|off]|ground [on|off]|brag|mood|memory [resolve <bug-id>]|theme [dark|light|auto]|help|off|on|rename <name>|personality <text>|achievements|summon [slot]|save [slot]|list|dismiss <slot>|pick|frequency [seconds]|style [classic|round]|position [top|left]|rarity [on|off]|rainbow [#hex ...]|statusline [on|off]|uninstall]"
+argument-hint: "[show|quest|menu|pet|stats [bar [on|off]]|xp|upgrades [buy|refund|title <id>|ascend]|badge [on|off]|gamefeel [off|subtle|full]|wander [on|off|hop|wide|bubble|status]|dressing [on|off]|ground [on|off]|sprite [mini|full|off]|brag|mood|memory [resolve <bug-id>]|theme [dark|light|auto]|help|off|on|rename <name>|personality <text>|achievements|summon [slot]|save [slot]|list|dismiss <slot>|pick|frequency [seconds]|style [classic|round]|position [top|left]|rarity [on|off]|rainbow [#hex ...]|statusline [on|off]|uninstall]"
 allowed-tools: mcp__claude_buddy__*, Bash
 ---
 
@@ -66,6 +66,8 @@ Based on `$ARGUMENTS`:
 | `dressing on\|off`       | Call `buddy_dressing` with `enabled=<true\|false>`                                           |
 | `ground` or `ground status` | Call `buddy_ground` with no args (report living-ground setting)                          |
 | `ground on\|off`         | Call `buddy_ground` with `enabled=<true\|false>`                                             |
+| `sprite` or `sprite status` | Call `buddy_sprite` with no args (report the status-line sprite setting)                |
+| `sprite mini\|full\|off` | Call `buddy_sprite` with `size=<mini\|full\|off>`                                            |
 | `brag`                   | Call `buddy_brag` (paste-able markdown brag card; add `plain=true` for emoji-light)          |
 | `mood`                   | Call `buddy_mood`                                                                            |
 | `memory`                 | Call `buddy_memory` with no args                                                             |

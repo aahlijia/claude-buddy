@@ -463,6 +463,11 @@ export interface BuddyConfig {
    *  a standalone bottom row the shell paints). Default true; only renders at
    *  effectiveGameFeel() === "full". */
   groundEnabled: boolean;
+  /** HD buddy in the status line (H5, hd-overhaul/h5-statusline.md): baked
+   *  truecolor half-block key poses instead of the ASCII art, for species with
+   *  HD art. `mini` ≈ 12×6 cells (about the ASCII art's footprint), `full` ≈
+   *  24×12, `off` keeps the ASCII art. Shows at gameFeel subtle and full. */
+  statusSprite: "off" | "mini" | "full";
 }
 
 /** Game-feel intensity level (game-feel FR-E1). */
@@ -494,6 +499,7 @@ export const DEFAULT_CONFIG: BuddyConfig = {
   wanderHop: false,
   worldDressing: true,
   groundEnabled: true,
+  statusSprite: "mini",
 };
 
 const GAME_FEEL_LEVELS: readonly GameFeel[] = ["off", "subtle", "full"];
@@ -514,6 +520,7 @@ export function loadConfig(): BuddyConfig {
     const data = JSON.parse(readFileSync(CONFIG_FILE, "utf8"));
     const merged: BuddyConfig = { ...DEFAULT_CONFIG, ...data };
     merged.gameFeel = coerceGameFeel(merged.gameFeel);
+    if (!["off", "mini", "full"].includes(merged.statusSprite)) merged.statusSprite = DEFAULT_CONFIG.statusSprite;
     return merged;
   } catch {
     return { ...DEFAULT_CONFIG };
@@ -841,9 +848,64 @@ export interface StatusState {
   /** The effective (auto-quiet clamped) game-feel, so the shell's diorama
    *  gates the same way every other delight does. */
   gameFeel?: GameFeel;
+  /** HD status-line sprite (H5): truecolor half-block key poses, each frame
+   *  `hdRows` lines of `hdWidth` cells joined by "\n". bash prefers these over
+   *  `frames` (unless gameFeel or statusSprite is off, or a fight is on), and
+   *  `hdCelebFrames` over the ASCII flourish while a celebration is fresh.
+   *  Present iff statusSprite ≠ off, gameFeel ≠ off and the species has HD art. */
+  hdFrames?: string[];
+  hdSequence?: number[];
+  hdWidth?: number;
+  hdCelebFrames?: string[];
+  hdCelebSequence?: number[];
   /** Buddy Quest one-line HUD (`Z2 3/5 ♥40/55 ↯7 ◎120g`), patched in by
    *  `rpg/cli.ts` and carried forward by every status write. */
   rpgHud?: string;
+}
+
+/** Cache of baked HD status sprites, keyed by everything that changes them. */
+const HD_SPRITE_CACHE = "hd-sprite.json";
+const HD_SPRITE_VERSION = 1;
+
+/**
+ * Bake (or reuse) the HD status-line sprite. Baking renders a dozen HD frames
+ * (~50 ms), and status writes happen on every hook, so the last few bakes are
+ * kept on disk keyed by look + size + mood. Best-effort: null on any failure.
+ */
+function hdStatusSprite(
+  companion: Companion,
+  size: "mini" | "full",
+  mood: Emotion,
+  still: boolean,
+): import("./gfx/statussprite.ts").BakedSprite | null {
+  const b = companion.bones;
+  const key = [HD_SPRITE_VERSION, b.species, b.rarity, b.shiny ? 1 : 0, size, mood, still ? 1 : 0, companion.name].join("|");
+  const file = join(STATE_DIR, HD_SPRITE_CACHE);
+  let cache: Record<string, import("./gfx/statussprite.ts").BakedSprite> = {};
+  try {
+    cache = JSON.parse(readFileSync(file, "utf8"));
+    if (cache[key]) return cache[key];
+  } catch {
+    cache = {};
+  }
+  const { bakeStatusSprite } = require("./gfx/statussprite.ts") as typeof import("./gfx/statussprite.ts");
+  let seed = 0x811c9dc5;
+  for (const ch of companion.name) seed = Math.imul(seed ^ ch.charCodeAt(0), 0x01000193) >>> 0;
+  const baked = bakeStatusSprite({ species: b.species, rarity: b.rarity, shiny: !!b.shiny, seed }, size, mood, still);
+  if (!baked) return null;
+  // Keep the newest few: moods come and go, the look rarely changes.
+  const keys = Object.keys(cache).filter((k) => k !== key).slice(-5);
+  const next: Record<string, typeof baked> = {};
+  for (const k of keys) next[k] = cache[k];
+  next[key] = baked;
+  try {
+    const tmp = file + ".tmp";
+    writeFileSync(tmp, JSON.stringify(next));
+    renameSync(tmp, file);
+  } catch {
+    // A cache miss next time is fine.
+  }
+  return baked;
 }
 
 // ─── Celebration channel (game-feel §2 — one transient slot, many producers) ──
@@ -1681,6 +1743,20 @@ export function writeStatusState(
   if (sceneWeather === "rain" && weather === "drizzle") sceneWeather = "storm";
   else if (!sceneWeather && weather) sceneWeather = weather;
 
+  // HD status-line sprite (H5): baked key poses for species with HD art. Shows
+  // at subtle and full (the art itself isn't "juice"; motion is a pose a
+  // second), so it rides the plain clamped `gate`, and it follows the same
+  // emotion the ASCII emote row does. reduceMotion bakes one still pose.
+  let hd: import("./gfx/statussprite.ts").BakedSprite | null = null;
+  if (gate !== "off" && cfg.statusSprite !== "off") {
+    try {
+      const still = cfg.reduceMotion === true || process.env.BUDDY_REDUCED_MOTION === "1";
+      hd = hdStatusSprite(companion, cfg.statusSprite, emotion, still);
+    } catch {
+      // Best-effort: the ASCII frames are always there.
+    }
+  }
+
   const state: StatusState = {
     name: companion.name,
     species: companion.bones.species,
@@ -1736,6 +1812,15 @@ export function writeStatusState(
     ...(rpgHud ? { rpgHud } : {}),
     ...(sceneWeather ? { sceneWeather } : {}),
     gameFeel: gate,
+    ...(hd
+      ? {
+        hdFrames: hd.frames,
+        hdSequence: hd.sequence,
+        hdWidth: hd.width,
+        hdCelebFrames: hd.celebFrames,
+        hdCelebSequence: hd.celebSequence,
+      }
+      : {}),
   };
   // Atomic write (game-feel §2.6): the MCP server, the award-xp.ts process, and
   // react.sh's jq patch all touch status.json — tmp+rename avoids torn reads.
