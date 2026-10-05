@@ -46,8 +46,7 @@ The roadmap (H0–H6) is done. Pick from the loose ends; good candidates:
 ## Loose ends
 
 - From H6: foe cut-ins; the hatch in onboarding (`install`); `gfx-demo`
-  keys for the hatch and loot; rig tuning (mushroom feet, chonk tail,
-  turtle height, goose neck curve).
+  keys for the hatch and loot.
 
 - From H2: hats and gear on HD rigs; kitty native animation for the fight
   stage; a smaller HD stage for terminals under 66 × 34.

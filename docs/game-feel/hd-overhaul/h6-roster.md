@@ -119,6 +119,18 @@ proportions; `full` comes out 11–13 rows.
 
 On the ASCII path, `pick`, `hunt` and `play` are exactly as before.
 
+### Tuning pass
+
+After the first review, four rigs got a second pass:
+
+- **Mushroom:** brown feet that poke out on either side of a raised stem.
+- **Chonk:** a thick, dark-tipped tail that curls up off the low back.
+- **Turtle:** stands tortoise-tall on longer legs, with its head up on a
+  longer neck. Its top is now at y 16, in line with the rest.
+- **Goose:** a four-segment neck with a clear S.
+
+A sweep of every animation keeps all four on the canvas.
+
 ## Tests
 
 - `server/gfx/hd.test.ts`:
@@ -155,9 +167,4 @@ On the ASCII path, `pick`, `hunt` and `play` are exactly as before.
 - The hatch plays inside `pick` and `hunt`. First-run onboarding (`install`)
   could use it too.
 - `gfx-demo` could get keys that play the hatch and the loot reveal.
-- Rig tuning:
-  - the mushroom's feet barely show
-  - the chonk's tail is short
-  - the turtle is shorter than the rest (top at y 20)
-  - the goose's S-curve is mild
 - Everything left over from H2–H5 still stands (see NEXT.md).

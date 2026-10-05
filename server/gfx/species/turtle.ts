@@ -68,7 +68,8 @@ const plates: PartDef[] = PLATES.map(([cx, cy, w, h], i) => ({
   shape: scute(w, h),
 }));
 
-const leg: Shape = { kind: "ellipse", rx: 3.3, ry: 4.6, p: 2.4, mat: "l" };
+/** Sturdy tortoise legs: it stands tall rather than sprawling. */
+const leg: Shape = { kind: "ellipse", rx: 3.4, ry: 6.4, p: 2.6, mat: "l" };
 
 export const TURTLE: RigDef = {
   id: "turtle",
@@ -102,7 +103,7 @@ export const TURTLE: RigDef = {
     p: { ramp: ramp("#d0506a"), flat: true },
   },
   parts: [
-    { name: "body", role: "body", at: [25, 43], pivot: [15, 22], z: 1, group: "body", shape: dome(30, 22) },
+    { name: "body", role: "body", at: [25, 39.4], pivot: [15, 22], z: 1, group: "body", shape: dome(30, 22) },
     ...plates,
     { name: "rim", role: "belly", parent: "body", at: [15, 22], pivot: [16.5, 2.6], z: 1.2, shape: { kind: "ellipse", rx: 16.5, ry: 2.6, mat: "r" } },
 
@@ -113,8 +114,8 @@ export const TURTLE: RigDef = {
 
     { name: "tail0", role: "tail", seg: 0, parent: "body", at: [2, 20.5], pivot: [4, 1.5], rot: -0.25, z: 0.4, shape: { kind: "poly", pts: [[0, 2], [4, 0], [4.5, 3.5]], mat: "l" } },
 
-    { name: "head", role: "head", parent: "body", at: [25, 15.5], pivot: [1, 11], z: 2, shape: { kind: "ellipse", rx: 7.5, ry: 6.6, p: 2.1, mat: "l" } },
-    { name: "neck", role: "detail", parent: "head", at: [1, 11], pivot: [6, 3], z: 0.8, group: "head", shape: { kind: "ellipse", rx: 6, ry: 4, mat: "l" } },
+    { name: "head", role: "head", parent: "body", at: [26, 10.5], pivot: [1, 11], z: 2, shape: { kind: "ellipse", rx: 7.5, ry: 6.6, p: 2.1, mat: "l" } },
+    { name: "neck", role: "detail", parent: "head", at: [1.5, 10], pivot: [4.6, 2], rot: -0.35, z: 0.8, group: "head", shape: { kind: "ellipse", rx: 4.6, ry: 8, mat: "l" } },
     { name: "chin", role: "snout", parent: "head", at: [10, 11.2], pivot: [4.5, 2], z: 2.05, group: "head", shape: { kind: "ellipse", rx: 4.5, ry: 2, mat: "c" } },
     { name: "eyeF", role: "eye", parent: "head", at: [7, 5.5], pivot: [2, 2.5], z: 2.25, group: "head", shape: EYE.open, variants: EYE },
     { name: "eyeN", role: "eye", parent: "head", at: [12.5, 5.5], pivot: [2, 2.5], z: 2.25, group: "head", shape: EYE.open, variants: EYE },

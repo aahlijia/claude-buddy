@@ -30,7 +30,7 @@ const MOUTH: Record<string, Shape> = {
 const stub: Shape = { kind: "ellipse", rx: 3, ry: 3, mat: "c" };
 const ear: Shape = { kind: "poly", pts: [[0, 6], [2.8, 0], [4.2, 0], [7, 6]], mat: "f" };
 const earInner: Shape = { kind: "poly", pts: [[0, 3.6], [1.7, 0], [3.4, 3.6]], mat: "q" };
-const tailSeg: Shape = { kind: "ellipse", rx: 3.2, ry: 3.6, mat: "f" };
+const tailSeg = (rx: number, mat = "f"): Shape => ({ kind: "ellipse", rx, ry: 3.8, mat });
 
 export const CHONK: RigDef = {
   id: "chonk",
@@ -61,7 +61,7 @@ export const CHONK: RigDef = {
     p: { ramp: ramp("#c8304a"), flat: true },
   },
   parts: [
-    { name: "body", role: "body", at: [30, 35], pivot: [17, 15], z: 1, group: "body", shape: { kind: "ellipse", rx: 17, ry: 15, mat: "f" } },
+    { name: "body", role: "body", at: [31, 35], pivot: [17, 15], z: 1, group: "body", shape: { kind: "ellipse", rx: 17, ry: 15, mat: "f" } },
     { name: "belly", role: "belly", parent: "body", at: [22, 21], pivot: [9.5, 7.5], z: 1.1, group: "body", shape: { kind: "ellipse", rx: 9.5, ry: 7.5, mat: "c" } },
     {
       name: "stripes",
@@ -79,8 +79,10 @@ export const CHONK: RigDef = {
     { name: "legBN", role: "legB", side: 1, parent: "body", at: [12, 26.5], pivot: [3, 1], z: 1.5, shape: stub },
     { name: "legFN", role: "legF", side: 1, parent: "body", at: [27, 26], pivot: [3, 1], z: 1.5, shape: stub },
 
-    { name: "tail0", role: "tail", seg: 0, parent: "body", at: [3.5, 16], pivot: [3.2, 5.5], rot: -0.75, z: 0.3, group: "tail", shape: tailSeg },
-    { name: "tail1", role: "tail", seg: 1, parent: "tail0", at: [3.2, 2], pivot: [3.2, 5.5], rot: 0.35, z: 0.31, group: "tail", shape: { kind: "ellipse", rx: 3, ry: 3.4, mat: "s" } },
+    // A thick, short tail: out from the low back, curling up, dark-tipped.
+    { name: "tail0", role: "tail", seg: 0, parent: "body", at: [3, 21], pivot: [3.6, 6], rot: -1.3, z: 0.3, group: "tail", shape: tailSeg(3.6) },
+    { name: "tail1", role: "tail", seg: 1, parent: "tail0", at: [3.6, 1.8], pivot: [3.3, 6], rot: 0.55, z: 0.31, group: "tail", shape: tailSeg(3.3) },
+    { name: "tail2", role: "tail", seg: 2, parent: "tail1", at: [3.3, 1.8], pivot: [3, 6], rot: 0.6, z: 0.32, group: "tail", shape: tailSeg(3, "s") },
 
     { name: "head", role: "head", parent: "body", at: [23, 12], pivot: [12, 15], z: 2, group: "body", shape: { kind: "ellipse", rx: 12, ry: 9, p: 2.2, mat: "f" } },
     { name: "forehead", role: "detail", parent: "head", at: [9.5, 1.5], pivot: [0, 0], z: 2.02, group: "body", shape: { kind: "grid", rows: ["s.s.s", "s.s.s", "..s.."] } },

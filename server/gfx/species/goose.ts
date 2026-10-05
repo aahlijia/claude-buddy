@@ -1,7 +1,7 @@
 /**
  * HD goose — the tall one (H6). A Canada-style goose facing right: a low
  * grey-brown body with a cream belly and a white tail patch, folded dark
- * wings, and a long S-curved neck built as a chain of three segments rising
+ * wings, and a long S-curved neck built as a chain of four segments rising
  * from the chest to a sooty head with a white chinstrap and an orange beak.
  * The neck segments are plain details (they hold the S); the head rides on
  * the last one with its pivot at the neck end, so it bobs from the throat.
@@ -32,7 +32,7 @@ const MOUTH: Record<string, Shape> = {
 const foot: Shape = { kind: "poly", pts: [[0.5, 0], [3, 0], [3, 3.5], [7, 3.6], [8, 6], [0, 6], [0, 3.5]], mat: "o" };
 /** Folded wing: shoulder at the front, primaries crossing over the tail. */
 const wing: Shape = { kind: "poly", pts: [[17, 0.5], [19.5, 3.5], [18, 7.5], [12, 10], [4, 9.5], [0, 7], [5, 4], [11, 1]], mat: "d" };
-const neckSeg = (rx: number): Shape => ({ kind: "ellipse", rx, ry: 4.3, p: 2.4, mat: "n" });
+const neckSeg = (rx: number): Shape => ({ kind: "ellipse", rx, ry: 4.2, p: 2.2, mat: "n" });
 
 export const GOOSE: RigDef = {
   id: "goose",
@@ -81,11 +81,15 @@ export const GOOSE: RigDef = {
     { name: "tail0", role: "tail", seg: 0, parent: "body", at: [4.5, 7], pivot: [5, 2.5], rot: -0.35, z: 0.3, group: "tail", shape: { kind: "poly", pts: [[0, 0.5], [6, 0], [6, 5], [1.5, 4]], mat: "n" } },
     { name: "tailW", role: "detail", parent: "tail0", at: [1, 3], pivot: [0, 0], z: 0.31, group: "tail", shape: { kind: "grid", rows: [".cccc", "ccccc"] } },
 
-    { name: "neck0", role: "detail", parent: "body", at: [23, 6], pivot: [2.6, 7.6], rot: 0.85, z: 2, group: "neck", shape: neckSeg(2.6) },
-    { name: "neck1", role: "detail", parent: "neck0", at: [2.6, 1.5], pivot: [2.1, 7.6], rot: -1.5, z: 2.01, group: "neck", shape: neckSeg(2.1) },
-    { name: "neck2", role: "detail", parent: "neck1", at: [2.1, 1.5], pivot: [2.1, 7.6], rot: 1.05, z: 2.02, group: "neck", shape: neckSeg(2.1) },
+    // The S: the base swells forward off the breast, the middle sweeps back,
+    // the top curls forward again under the head. Overlapping segments keep
+    // the curve smooth.
+    { name: "neck0", role: "detail", parent: "body", at: [22.5, 6.5], pivot: [3.1, 7.4], rot: 0.85, z: 2, group: "neck", shape: neckSeg(3.1) },
+    { name: "neck1", role: "detail", parent: "neck0", at: [3.1, 3.6], pivot: [2.8, 7.4], rot: -0.8, z: 2.01, group: "neck", shape: neckSeg(2.8) },
+    { name: "neck2", role: "detail", parent: "neck1", at: [2.8, 3.6], pivot: [2.6, 7.4], rot: -0.65, z: 2.02, group: "neck", shape: neckSeg(2.6) },
+    { name: "neck3", role: "detail", parent: "neck2", at: [2.6, 3.6], pivot: [2.5, 7.4], rot: 0.75, z: 2.03, group: "neck", shape: neckSeg(2.5) },
 
-    { name: "head", role: "head", parent: "neck2", at: [2.1, 2], pivot: [4.5, 10], rot: -0.4, z: 3, shape: { kind: "ellipse", rx: 7, ry: 5.8, mat: "n" } },
+    { name: "head", role: "head", parent: "neck3", at: [2.5, 2.4], pivot: [4.5, 10], rot: -0.2, z: 3, shape: { kind: "ellipse", rx: 7, ry: 5.8, mat: "n" } },
     { name: "chin", role: "detail", parent: "head", at: [1.5, 5.5], pivot: [0, 0], z: 3.02, group: "head", shape: { kind: "grid", rows: ["..cc", ".ccc", "cccc", "cccc", ".cc."] } },
     { name: "eyeF", role: "eye", parent: "head", at: [4, 2], pivot: [0, 0], z: 3.25, group: "head", shape: EYE.open, variants: EYE },
     { name: "eyeN", role: "eye", parent: "head", at: [9, 2], pivot: [0, 0], z: 3.25, group: "head", shape: EYE.open, variants: EYE },

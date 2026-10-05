@@ -3,7 +3,7 @@
  * cap with white spots (the `head`, pivoting at the top of the stem so it
  * bobs and tips like a hat), a darker gill band peeking out under its rim,
  * and a cream stem that is the body. Like the ASCII buddy, the face sits on
- * the stem, under the cap; two tiny feet (`legB`) shuffle underneath.
+ * the stem, under the cap; two little brown feet (`legB`) poke out on either side and shuffle.
  */
 
 import type { RigDef, Shape } from "../rig.ts";
@@ -40,7 +40,8 @@ function dome(rx: number, ry: number, mat: string): Shape {
   return { kind: "poly", pts, mat };
 }
 
-const foot: Shape = { kind: "ellipse", rx: 3, ry: 2, mat: "f" };
+/** A little brown boot-foot, wider than tall. */
+const foot: Shape = { kind: "ellipse", rx: 3.8, ry: 2.4, p: 2.4, mat: "f" };
 
 export const MUSHROOM: RigDef = {
   id: "mushroom",
@@ -68,8 +69,8 @@ export const MUSHROOM: RigDef = {
       shiny: ramp("#2a2c48", "#3e4266", "#565c88", "#7076a4", "#8a90bc"),
     },
     f: {
-      ramp: ramp("#6a4a36", "#9a7254", "#c89e78", "#e4c49e", "#f6e0c0"),
-      shiny: ramp("#4a5464", "#6e7a8c", "#98a4b4", "#bcc6d2", "#dce4ec"),
+      ramp: ramp("#3a2016", "#5e3624", "#865036", "#a86c4a", "#c88c64"),
+      shiny: ramp("#262c44", "#3a4466", "#54608a", "#727eaa", "#949ec8"),
     },
     q: { ramp: ramp("#ff9ab0"), flat: true },
     k: { ramp: ramp("#24101a"), flat: true },
@@ -77,10 +78,10 @@ export const MUSHROOM: RigDef = {
     p: { ramp: ramp("#c8304a"), flat: true },
   },
   parts: [
-    { name: "body", role: "body", at: [30.5, 49], pivot: [8.5, 19], z: 1, shape: { kind: "ellipse", rx: 8.5, ry: 10, p: 2.8, mat: "c" } },
+    { name: "body", role: "body", at: [30.5, 47], pivot: [8.5, 19], z: 1, shape: { kind: "ellipse", rx: 8.5, ry: 10, p: 2.8, mat: "c" } },
 
-    { name: "footF", role: "legB", side: -1, parent: "body", at: [5.5, 17.5], pivot: [3, 0.5], z: 0.5, shade: 0.72, shape: foot },
-    { name: "footN", role: "legB", side: 1, parent: "body", at: [12, 18], pivot: [3, 0.5], z: 1.5, shape: foot },
+    { name: "footF", role: "legB", side: -1, parent: "body", at: [3.5, 19.2], pivot: [3.8, 0.6], z: 0.5, shade: 0.72, shape: foot },
+    { name: "footN", role: "legB", side: 1, parent: "body", at: [13.5, 19.6], pivot: [3.8, 0.6], z: 1.5, shape: foot },
 
     { name: "eyeF", role: "eye", parent: "body", at: [6.5, 8.5], pivot: [2, 3], z: 1.3, group: "body", shape: EYE.open, variants: EYE },
     { name: "eyeN", role: "eye", parent: "body", at: [12.5, 8.5], pivot: [2, 3], z: 1.3, group: "body", shape: EYE.open, variants: EYE },
