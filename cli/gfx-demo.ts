@@ -13,6 +13,7 @@
  *   bun run gfx-demo --png out/ --anim attack --frames 30  dump PNG frames
  *
  * Keys: 1–6 idle/walk/attack/hit/ko/victory · space victory hop · c species
+ *       h hatch · l loot reveal (H6 cinematics, current species and rarity)
  *       r rarity · s shiny · g backdrop · t tier · q quit
  */
 
@@ -29,6 +30,8 @@ import { encodeHalfblock } from "../server/gfx/encode/halfblock.ts";
 import { encodeIterm } from "../server/gfx/encode/iterm.ts";
 import { encodeKitty, kittyDelete } from "../server/gfx/encode/kitty.ts";
 import { encodePng } from "../server/gfx/encode/png.ts";
+import { HATCH_MS, LOOT_MS, cineFeel, renderHatch, renderLoot, type LootSlot } from "../server/gfx/cinema.ts";
+import type { Framebuffer } from "../server/gfx/framebuffer.ts";
 
 // ─── Args ───────────────────────────────────────────────────────────────────
 
@@ -71,7 +74,30 @@ const state = {
   anim: animArg,
   /** When the current animation started (seconds on the demo clock). */
   animStart: 0,
+  /** An H6 cinematic playing over the buddy (h / l), or null. */
+  cine: null as { kind: "hatch" | "loot"; start: number } | null,
+  /** Loot reveals cycle the item slot (each press, the next one). */
+  slot: -1,
 };
+const LOOT: readonly { slot: LootSlot; name: string }[] = [
+  { slot: "weapon", name: "Segfault Saber" },
+  { slot: "armor", name: "Mutex Mail" },
+  { slot: "charm", name: "Lucky Commit" },
+];
+/** The demo plays the cinematics at full feel (reduce-motion still applies). */
+const CINE_FEEL = cineFeel("full", !!process.env.BUDDY_REDUCED_MOTION && process.env.BUDDY_REDUCED_MOTION !== "0")!;
+/** The cinematic frame at demo time `t`, or null once it has played (plus a beat). */
+function cineFrame(t: number): Framebuffer | null {
+  const c = state.cine;
+  if (!c) return null;
+  const ms = (t - c.start) * 1000;
+  const total = c.kind === "hatch" ? HATCH_MS : LOOT_MS;
+  if (ms > total + 1200) return null;
+  const at = Math.min(ms, total);
+  if (c.kind === "hatch") return renderHatch({ species: state.species, rarity: state.rarity, shiny: state.shiny, seed }, at, CINE_FEEL);
+  const item = LOOT[Math.max(0, state.slot)];
+  return renderLoot({ ...item, rarity: state.rarity, seed }, at, CINE_FEEL);
+}
 const fps = Math.max(1, Math.min(60, Number(opt("fps") ?? 30)));
 const seed = Number(opt("seed") ?? 7);
 
@@ -148,7 +174,7 @@ function hud(): void {
   const lines = [
     `\x1b[1mclaude-buddy · HD\x1b[0m  \x1b[1;93m${state.species}\x1b[0m ${dim(state.anim)}  ${dim("tier")} \x1b[1;96m${state.tier}\x1b[0m ${dim(`(${tierNote})`)}  ${dim("fps")} ${measured}  ${dim("rarity")} ${getRarityColor(state.rarity)}${state.rarity}\x1b[0m${state.shiny ? "  \x1b[1;95m✦ shiny\x1b[0m" : ""}`,
     "",
-    [key("1-6", "idle walk attack hit ko victory"), key("c", "species"), key("r", "rarity"), key("s", "shiny"), key("g", "backdrop"), key("t", "tier"), key("q", "quit")].join("  "),
+    [key("1-6", "idle walk attack hit ko victory"), key("h", "hatch"), key("l", "loot"), key("c", "species"), key("r", "rarity"), key("s", "shiny"), key("g", "backdrop"), key("t", "tier"), key("q", "quit")].join("  "),
   ];
   out.write(`${ESC}1;1H${ESC}2K${lines[0]}`);
   out.write(`${ESC}${TOP + rows + 1};1H${ESC}2K${lines[1]}${ESC}${TOP + rows + 2};1H${ESC}2K${lines[2]}`);
@@ -165,10 +191,16 @@ function drawAscii(t: number): void {
 
 function frame(): void {
   const t = now();
+  const cine = state.tier === "ascii" ? null : cineFrame(t);
+  if (state.cine && !cine) {
+    // The cinematic is over: back to the buddy.
+    state.cine = null;
+    clearAll();
+  }
   if (state.tier === "ascii") {
     drawAscii(t);
   } else {
-    const fb = render(t);
+    const fb = cine ?? render(t);
     if (state.tier === "halfblock") {
       const lines = encodeHalfblock(fb, { color: detected.color });
       lines.forEach((l, i) => {
@@ -177,10 +209,12 @@ function frame(): void {
       prevLines = lines;
     } else {
       const big = fb.upscale(4);
+      // Keep square pixels: the cinematics are wider than the buddy canvas.
+      const cols = Math.round((PIX_ROWS * 2 * fb.width) / fb.height);
       const seq =
         state.tier === "kitty"
-          ? encodeKitty(big, { id: KITTY_ID, placement: 1, cols: PIX_COLS, rows: PIX_ROWS })
-          : encodeIterm(big, { cols: PIX_COLS, rows: PIX_ROWS });
+          ? encodeKitty(big, { id: KITTY_ID, placement: 1, cols, rows: PIX_ROWS })
+          : encodeIterm(big, { cols, rows: PIX_ROWS });
       out.write(`${ESC}${TOP};${LEFT}H${graphics(seq)}`);
     }
   }
@@ -225,6 +259,19 @@ process.stdin.on("data", (key: string) => {
     state.anim = a;
     state.animStart = now();
   };
+  const cinematic = (kind: "hatch" | "loot") => {
+    if (state.tier === "ascii") return;
+    if (kind === "loot") state.slot = (state.slot + 1) % LOOT.length;
+    state.cine = { kind, start: now() };
+    clearAll();
+  };
+  if (key === "h") return cinematic("hatch");
+  if (key === "l") return cinematic("loot");
+  if (state.cine) {
+    // Any other key skips the cinematic.
+    state.cine = null;
+    clearAll();
+  }
   if (key === " " || key === "b") play("victory");
   else if (/^[1-6]$/.test(key)) play(ANIMS[Number(key) - 1]);
   else if (key === "c") {

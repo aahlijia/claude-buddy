@@ -508,6 +508,7 @@ function drawCutin(fb: Framebuffer, cast: HdCast, c: NonNullable<HdScene["cutin"
   const H = fb.height;
   const u = W / SCENE_W; // 1 at full res, 0.5 at half
   const k = c.k;
+  const foe = c.by === "foe";
   const enter = easeOutCubic(span(k, 0, 0.16));
   const leave = easeInOutCubic(span(k, 0.84, 1));
   const shift = (1 - enter) * -W * 1.2 + leave * W * 1.2;
@@ -516,20 +517,23 @@ function drawCutin(fb: Framebuffer, cast: HdCast, c: NonNullable<HdScene["cutin"
   const shade = hex("#05030a");
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) fb.blend(x, y, shade, dim);
 
+  // The panel is laid out for the hero (entering from the left); a foe's
+  // is the mirror image, entering from the right with a red edge.
   const f = cast[c.by];
-  const accent = hex(RIM_HEX[f.rarity]);
+  const accent = foe ? hex("#ff5a6a") : hex(RIM_HEX[f.rarity]);
   const top = Math.round(H * 0.2);
   const bot = Math.round(H * 0.8);
   const slant = Math.round(14 * u);
   const edge = (y: number) => slant * (1 - (y - top) / Math.max(1, bot - top)); // left edge leans
   const ink = hex("#120c22");
-  const band = hex("#2a1c4a");
+  const band = foe ? hex("#4a1c2a") : hex("#2a1c4a");
+  const layer = new Framebuffer(W, H);
   for (let y = top; y < bot; y++) {
     const x0 = Math.round(edge(y) + shift);
     const x1 = Math.round(W - slant + edge(y) + shift);
     for (let x = Math.max(0, x0); x < Math.min(W, x1); x++) {
       const stripe = (x + y * 2) % Math.round(10 * u + 2) < 2;
-      fb.set(x, y, y === top || y === bot - 1 ? accent : stripe ? mix(band, ink, 0.4) : mix(band, ink, (y - top) / (bot - top)));
+      layer.set(x, y, y === top || y === bot - 1 ? accent : stripe ? mix(band, ink, 0.4) : mix(band, ink, (y - top) / (bot - top)));
     }
   }
   // Speed lines: fast streaks racing across the band.
@@ -537,16 +541,15 @@ function drawCutin(fb: Framebuffer, cast: HdCast, c: NonNullable<HdScene["cutin"
     const y = top + 2 + Math.floor(((i * 37) % 97) / 97 * (bot - top - 4));
     const len = Math.round((10 + ((i * 13) % 20)) * u);
     const x = Math.round(((i * 53 + k * 900 * u * (1 + (i % 3))) % (W + len)) - len + shift);
-    for (let j = 0; j < len; j++) fb.blend(x + j, y, hex("#ffffff"), 0.25 + 0.5 * (j / len));
+    for (let j = 0; j < len; j++) layer.blend(x + j, y, hex("#ffffff"), 0.25 + 0.5 * (j / len));
   }
-  // The close-up: the buddy's bust, drifting forward a little.
+  // The close-up: the fighter's bust (facing right), drifting forward a little.
   const bust = portraitFor(f, half);
   const px = Math.round(W * 0.06 + shift + k * 4 * u);
-  if (bust) {
-    const py = Math.round(bot - bust.height);
-    fb.draw(bust, c.by === "hero" ? px : W - px - bust.width, py);
-  }
-  // The move name, sliding in a beat after the panel, right of the bust:
+  if (bust) layer.draw(bust, px, Math.round(bot - bust.height));
+  fb.draw(foe ? flipH(layer) : layer, 0, 0);
+
+  // The move name, sliding in a beat after the panel, beside the bust:
   // big type, wrapped onto two lines when it doesn't fit on one.
   const name = c.name.toUpperCase();
   const left = Math.round(W * 0.06 + (bust?.width ?? 0) + 4 * u);
@@ -556,13 +559,23 @@ function drawCutin(fb: Framebuffer, cast: HdCast, c: NonNullable<HdScene["cutin"
   const lh = 6 * scale + 1;
   const land = easeOutBack(span(k, 0.12, 0.34));
   const tw = Math.max(...lines.map((l) => textWidth(l, scale)));
-  const tx = Math.round(Math.min(W - tw - 2, left) + (1 - land) * W * 0.5 + leave * W * 1.2);
+  const heroX = Math.round(Math.min(W - tw - 2, left) + (1 - land) * W * 0.5 + leave * W * 1.2);
+  const tx = foe ? W - heroX - tw : heroX;
   const ty = Math.round(H / 2 - (lines.length * lh) / 2 + 3 * u);
   lines.forEach((l, i) => {
-    drawText(fb, l, tx + scale, ty + i * lh + scale, ink, { scale });
-    drawText(fb, l, tx, ty + i * lh, hex("#fff6c8"), { scale, outline: ink });
+    // Right-align a foe's lines against the bust.
+    const lx = foe ? tx + tw - textWidth(l, scale) : tx;
+    drawText(fb, l, lx + scale, ty + i * lh + scale, ink, { scale });
+    drawText(fb, l, lx, ty + i * lh, hex("#fff6c8"), { scale, outline: ink });
   });
-  drawText(fb, "SPECIAL", tx, ty - 8, accent, { scale: 1, outline: ink, opacity: Math.min(1, land) });
+  const label = foe ? "DANGER" : "SPECIAL";
+  drawText(fb, label, foe ? tx + tw - textWidth(label) : tx, ty - 8, accent, { scale: 1, outline: ink, opacity: Math.min(1, land) });
+}
+
+function flipH(src: Framebuffer): Framebuffer {
+  const out = new Framebuffer(src.width, src.height);
+  for (let y = 0; y < src.height; y++) for (let x = 0; x < src.width; x++) out.set(src.width - 1 - x, y, src.get(x, y));
+  return out;
 }
 
 /** Greedy word wrap: as many words per line as `fits` allows. */

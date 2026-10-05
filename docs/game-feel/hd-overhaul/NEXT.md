@@ -38,15 +38,11 @@ The roadmap (H0–H6) is done. Pick from the loose ends; good candidates:
 
 - **Hats and gear on HD rigs.** Anchors on the rigs, as brainstorm §1.1
   describes; they would show in every surface at once.
-- **Foe special moves** get a cut-in too (only hero skills do today).
 - **Kitty native animation** for the diorama and fight stage.
 - **The idle-long and react animations** (brainstorm §1.3: yawn → sleep,
   flinch, cheer, think) for the diorama and status line.
 
 ## Loose ends
-
-- From H6: foe cut-ins; the hatch in onboarding (`install`); `gfx-demo`
-  keys for the hatch and loot.
 
 - From H2: hats and gear on HD rigs; kitty native animation for the fight
   stage; a smaller HD stage for terminals under 66 × 34.
@@ -61,7 +57,8 @@ The roadmap (H0–H6) is done. Pick from the loose ends; good candidates:
 ## How to see your work
 
 - `bun run gfx-demo --species dragon --bg` shows the rigs live; `1`–`6`
-  play the animations, `c` cycles all 20 species.
+  play the animations, `c` cycles all 20 species, `h` plays the hatch and
+  `l` the loot reveal.
 - `bun run scripts/h6-sheet.ts` renders the roster contact sheet (`--species
   a,b --scale 3` for a closer look) and `bun run scripts/h6-cinema.ts` the
   cinematics sheet.

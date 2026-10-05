@@ -439,7 +439,7 @@ export function direct(prev: Battle, next: Battle, g: Geometry): Cue[] {
       case "speech":
         return speech(r, b);
       case "special":
-        return r.hintNext({ cutin: { name: b.name, by: "hero" } });
+        return r.hintNext({ cutin: { name: b.name, by: b.by } });
       case "flee":
         return flee(r, b);
       case "ko":

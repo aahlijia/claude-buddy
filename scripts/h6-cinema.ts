@@ -5,8 +5,9 @@
  *   bun run scripts/h6-cinema.ts [out.png]
  *
  * Rows: a legendary shiny hatch, a rare hatch, a legendary loot reveal, an
- * uncommon one, then the fight stage: a special-move cut-in and a boss
- * phase change. Rendered at gameFeel subtle (no flashes) so frames read.
+ * uncommon one, then the fight stage: a special-move cut-in, a foe's
+ * mirrored cut-in, and a boss phase change. Rendered at gameFeel subtle (no
+ * flashes) so frames read.
  */
 
 import { writeFileSync } from "node:fs";
@@ -55,6 +56,20 @@ const stageRow = (tl: Timeline, at: number[]) => at.map((T) => composeFrame(tl.c
   const tl = timeline(look, b0, act(b0, { type: "skill", id: "strike" }));
   const h = tl.holds[0];
   rows.push(stageRow(tl, [h.at + 40, h.at + 120, h.at + 300, h.at + 560, h.at + 660]));
+}
+// A foe's special: the mirrored cut-in (a monster's move, first time only).
+{
+  const look: Look = { name: "Pip", species: "cat", eye: "·", hat: "none", rarity: "rare" };
+  const def = ZONES.flatMap((z) => z.monsters).find((m) => m.id === "zalgo")!;
+  for (let seed = 1; seed < 400; seed++) {
+    const b0 = fight(look, makeMonster(def, 3), seed);
+    const b1 = act(b0, { type: "defend" });
+    const tl = timeline(look, b0, b1);
+    const h = tl.holds.find((x) => x.kind === "cutin" && x.by === "foe");
+    if (!h) continue;
+    rows.push(stageRow(tl, [h.at + 40, h.at + 120, h.at + 300, h.at + 560, h.at + 660]));
+    break;
+  }
 }
 // Boss phase change.
 {

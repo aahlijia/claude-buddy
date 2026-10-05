@@ -21,6 +21,9 @@ import {
 } from "../server/path.ts";
 import { loadCompanion, saveCompanion, resolveUserId, writeStatusState } from "../server/state.ts";
 import { generateFallbackName } from "../server/reactions.ts";
+import { HATCH_MS, renderHatch } from "../server/gfx/cinema.ts";
+import { hasHd } from "../server/gfx/hd.ts";
+import { cineSetup, playCinematic } from "./cinema.ts";
 
 const CYAN = "\x1b[36m";
 const GREEN = "\x1b[32m";
@@ -260,7 +263,7 @@ function initCompanion() {
   let companion = loadCompanion();
   if (companion) {
     info(`Existing companion found: ${companion.name} (${companion.bones.rarity} ${companion.bones.species})`);
-    return companion;
+    return { companion, fresh: false };
   }
 
   const userId = resolveUserId();
@@ -279,7 +282,32 @@ function initCompanion() {
   writeStatusState(companion);
   ok(`Companion hatched: ${companion.name}`);
 
-  return companion;
+  return { companion, fresh: true };
+}
+
+/**
+ * The H6 hatch for a brand-new companion, on HD terminals (gameFeel and
+ * reduce-motion gated, skipped without a TTY). Any key skips it.
+ */
+async function hatchCinematic(c: { bones: ReturnType<typeof generateBones> }): Promise<void> {
+  const setup = hasHd(c.bones.species) ? cineSetup() : null;
+  if (!setup) return;
+  const look = { species: c.bones.species, rarity: c.bones.rarity, shiny: c.bones.shiny, seed: 7 };
+  const play = playCinematic(setup, (ms) => renderHatch(look, ms, setup.feel), HATCH_MS);
+  const stdin = process.stdin;
+  const raw = stdin.isTTY;
+  const skip = () => play.skip();
+  if (raw) {
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.once("data", skip);
+  }
+  await play.done;
+  if (raw) {
+    stdin.off("data", skip);
+    stdin.setRawMode(false);
+    stdin.pause();
+  }
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
@@ -313,9 +341,10 @@ ensurePermissions(settings);
 saveSettings(settings);
 
 console.log("");
-const companion = initCompanion();
+const { companion, fresh } = initCompanion();
 
 console.log("");
+if (fresh) await hatchCinematic(companion);
 console.log(renderBuddy(companion.bones));
 console.log("");
 console.log(`  ${BOLD}${companion.name}${NC} -- ${companion.personality}`);

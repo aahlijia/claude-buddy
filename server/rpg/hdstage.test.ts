@@ -554,6 +554,47 @@ describe("cut-ins and phase changes", () => {
     expect(f.at(-1)![0] + f.at(-1)![1]).toBe(full.total);
   });
 
+  test("a foe's move cuts in once per fight, mirrored; a boss's charged blow every time", () => {
+    const def = ZONES.flatMap((z) => z.monsters).find((m) => m.id === "zalgo")!;
+    let b = fight(makeMonster(def, 3));
+    b.foe.atk = 1;
+    let foeCuts = 0;
+    let prev = b;
+    for (let i = 0; i < 40 && !b.over; i++) {
+      prev = b;
+      b = act(b, { type: "defend" });
+      const cuts = (b.beats ?? []).filter((x) => x.t === "special");
+      for (const c of cuts) expect(c).toMatchObject({ by: "foe", name: "Double Strike", line: -1 });
+      foeCuts += cuts.length;
+      if (cuts.length) {
+        const tl = timeline(prev, b);
+        const h = tl.holds.find((x) => x.kind === "cutin")!;
+        expect(h.by).toBe("foe");
+        const s = sceneAt(tl, h.at + 300);
+        expect(s.cutin?.by).toBe("foe");
+        // Mirrored: the panel's bust sits on the right half.
+        const fr = composeFrame(tl.cast, s, false);
+        const plain = composeFrame(tl.cast, { ...s, cutin: undefined }, false);
+        let left = 0;
+        let right = 0;
+        for (let y = 0; y < fr.height; y++) for (let x = 0; x < fr.width; x++) if (fr.get(x, y).join() !== plain.get(x, y).join()) (x < fr.width / 2 ? left++ : right++);
+        expect(right).toBeGreaterThan(0);
+      }
+    }
+    expect(foeCuts).toBe(1);
+    expect(b.foe.shown).toBe(true);
+
+    // The Missing Semicolon's charged PARSE ERROR always cuts in.
+    let boss = fight(makeBoss("semicolon", 6));
+    boss.foe.hp = boss.foe.maxHp = 100000;
+    let parse = 0;
+    for (let i = 0; i < 12; i++) {
+      boss = act(boss, { type: "defend" });
+      parse += (boss.beats ?? []).filter((x) => x.t === "special" && x.name === "Parse Error").length;
+    }
+    expect(parse).toBeGreaterThanOrEqual(2);
+  });
+
   test("a boss crossing half HP gets the phase change: dim, glow, roar (shake gated)", () => {
     let pair: [Battle, Battle] | undefined;
     for (let seed = 1; seed < 400 && !pair; seed++) {

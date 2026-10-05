@@ -22,7 +22,7 @@ phase change. Rendered at gameFeel subtle, so there are no flashes.
 ## Try it
 
 ```sh
-bun run gfx-demo --species octopus     # c cycles all 20 species
+bun run gfx-demo --species octopus     # c cycles all 20 species; h hatch, l loot
 bun run diorama-demo                   # s cycles species in the diorama
 bun run play                           # skills cut in; bosses change phase; drops open a chest
 bun run cli/pick.ts                    # pick a result → the hatch, then naming
@@ -83,17 +83,18 @@ proportions; `full` comes out 11–13 rows.
 
 | Moment | Where | Beats | Gates |
 | --- | --- | --- | --- |
-| **Hatch** (`renderHatch`, 3.8 s) | `pick` (choosing a result) and `hunt` (applying one) | The egg wobbles in three bursts, each wider and faster. Cracks appear in three stages, glowing in the **rarity's light**, which teases the outcome. Light leaks out, then beams, a squash and a shiver. The shell bursts: a shockwave ring, flying shards and a victory hop. The rarity name lands. **Shiny** adds a sparkle sting and "SHINY!" | Flash on the burst (full only); shake (full only); reduce-motion: no wobble or squash |
-| **Loot reveal** (`renderLoot`, 2.8 s) | The quest player, after a fight that drops gear, before the rewards count up | The chest shakes harder and harder with light leaking from the seam. The lid pops (`easeOutBack`), a **rarity-colored beam** shoots up with a ring, and the item rises on it with motes drifting up. Epic and legendary items **spin**; legendary spins slowly. The name and rarity land | Legendary flash (full only); shake (full only); reduce-motion: no shake or spin |
-| **Special-move cut-in** (`CUTIN_MS` 700) | HD fights, whenever a skill is used | A diagonal panel slams in from the attacker's side with the buddy's close-up (cut from the rig at the head). Speed lines streak across, the move name lands in big type ("SPECIAL" above it, wrapped onto two lines when long), and the panel exits the far side. The fight freezes underneath | full only (not subtle, not reduce-motion). Skippable: any key skips the turn's playback |
+| **Hatch** (`renderHatch`, 3.8 s) | `pick` (choosing a result), `hunt` (applying one), `install` (a brand-new companion only; any key skips) and `gfx-demo` (`h`) | The egg wobbles in three bursts, each wider and faster. Cracks appear in three stages, glowing in the **rarity's light**, which teases the outcome. Light leaks out, then beams, a squash and a shiver. The shell bursts: a shockwave ring, flying shards and a victory hop. The rarity name lands. **Shiny** adds a sparkle sting and "SHINY!" | Flash on the burst (full only); shake (full only); reduce-motion: no wobble or squash |
+| **Loot reveal** (`renderLoot`, 2.8 s) | The quest player, after a fight that drops gear, before the rewards count up; `gfx-demo` (`l`, cycling the item slot) | The chest shakes harder and harder with light leaking from the seam. The lid pops (`easeOutBack`), a **rarity-colored beam** shoots up with a ring, and the item rises on it with motes drifting up. Epic and legendary items **spin**; legendary spins slowly. The name and rarity land | Legendary flash (full only); shake (full only); reduce-motion: no shake or spin |
+| **Special-move cut-in** (`CUTIN_MS` 700) | HD fights: every hero skill; a monster's move the first time it lands in a fight; a boss's charged blow (Parse Error, Core Dump) every time | A diagonal panel slams in from the attacker's side with the fighter's close-up (cut from the rig at the head). Speed lines streak across, the move name lands in big type, wrapped onto two lines when long, and the panel exits the far side. The fight freezes underneath. The hero's panel says "SPECIAL" in its rarity color; a foe's is the mirror image, entering from the right with a red edge and "DANGER" | full only (not subtle, not reduce-motion). Skippable: any key skips the turn's playback |
 | **Boss phase change** (`PHASE_MS` 1100) | HD fights, when a boss first drops under half HP | The stage dims around the boss, a pulsing red glow swells behind it, the camera pushes in, "PHASE 2" lands, then the roar shakes the stage and kicks up dust | Shake (full only); camera (not reduce-motion). The dim and glow always play |
 
 ### How the fight cinematics plug in
 
 `act()` records what happened and the director decides how it looks:
 
-- **Beats** (`battle.ts`): a skill now emits `{ t: "special", id, name }`,
-  which is never narrated. The boss's phase line is
+- **Beats** (`battle.ts`): a special move emits `{ t: "special", by, name,
+  id? }`, which is never narrated. Monsters only emit it once per fight
+  (`foe.shown`), so a move that fires every few turns doesn't drag the fight. The boss's phase line is
   `{ t: "speech", phase: true }`.
 - **Director** (`anim.ts`): these become **HD-only hints** on the next cue
   (`stage.hd.cutin` / `stage.hd.phase`), through the same channel as H2's
@@ -153,6 +154,8 @@ A sweep of every animation keeps all four on the canvas.
   - golden hashes
 - `server/rpg/hdstage.test.ts`:
   - a skill is a special beat
+  - a monster's move cuts in once per fight, mirrored; a boss's charged blow
+    cuts in every time
   - the ASCII cues are unchanged by it
   - full has a 700 ms hold that freezes motion and subtle has none
   - frames tile the timeline
@@ -163,8 +166,8 @@ A sweep of every animation keeps all four on the canvas.
 
 ## Loose ends
 
-- The cut-in only plays for hero skills. Foe special moves could get one.
-- The hatch plays inside `pick` and `hunt`. First-run onboarding (`install`)
-  could use it too.
-- `gfx-demo` could get keys that play the hatch and the loot reveal.
-- Everything left over from H2–H5 still stands (see NEXT.md).
+Done since: foe cut-ins (mirrored, once per monster per fight), the hatch
+in `install` for a brand-new companion, and `gfx-demo` keys for the hatch
+(`h`) and the loot reveal (`l`).
+
+Everything left over from H2–H5 still stands (see NEXT.md).

@@ -76,6 +76,9 @@ export interface FoeSide {
   growCap?: number;
   /** Boss has delivered its half-HP line. */
   phased?: boolean;
+  /** Its special move has had its HD cut-in this fight (once is a moment;
+   *  every time would drag the fight). */
+  shown?: boolean;
 }
 
 export interface Battle {
@@ -130,8 +133,9 @@ export type Beat = { line: number; hp: [number, number] } & (
   | { t: "grow"; amount: number }
   | { t: "sprout"; heads: number }
   | { t: "speech"; phase?: boolean }
-  /** A skill is used (HD: the special-move cut-in). Never narrated. */
-  | { t: "special"; id: SkillId; name: string }
+  /** A special move (HD: the cut-in): a hero skill, a monster's move the
+   *  first time it lands in a fight, a boss's charged blow. Never narrated. */
+  | { t: "special"; by: Side; name: string; id?: SkillId }
   | { t: "flee"; ok: boolean }
   | { t: "ko"; who: Side }
 );
@@ -388,11 +392,28 @@ function secondWind(b: Battle, log: string[]): void {
 
 // ─── Foe turn ───────────────────────────────────────────────────────────────
 
+/** What a monster's move is called on its cut-in. */
+const MOVE_NAMES: Record<MonsterMove, string> = {
+  poison: "Toxic Bite",
+  heal: "Regenerate",
+  enrage: "Rage Mode",
+  shield: "Shield Up",
+  double: "Double Strike",
+};
+
+/** A monster's move gets its cut-in the first time it lands in a fight. */
+function foeSpecial(b: Battle, log: string[], name: string): void {
+  if (b.foe.shown) return;
+  b.foe.shown = true;
+  beat(b, log, { t: "special", by: "foe", name }, false);
+}
+
 function monsterTurn(b: Battle, rng: () => number, log: string[]): void {
   const { foe, hero } = b;
   const special = foe.move && rng() < 0.3;
   switch (special ? foe.move : undefined) {
     case "poison":
+      foeSpecial(b, log, MOVE_NAMES.poison);
       foeHit(b, rng, 0.7, log, "bites");
       if (!hero.fx.poison) {
         log.push("You are poisoned!");
@@ -402,6 +423,7 @@ function monsterTurn(b: Battle, rng: () => number, log: string[]): void {
       return;
     case "heal":
       if (foe.hp < foe.maxHp * 0.6) {
+        foeSpecial(b, log, MOVE_NAMES.heal);
         const h = Math.round(foe.maxHp * 0.2);
         foe.hp = Math.min(foe.maxHp, foe.hp + h);
         log.push(`${foe.name} regenerates ${h} HP.`);
@@ -411,6 +433,7 @@ function monsterTurn(b: Battle, rng: () => number, log: string[]): void {
       break;
     case "enrage":
       if (!foe.fx.enraged && foe.hp < foe.maxHp * 0.5) {
+        foeSpecial(b, log, MOVE_NAMES.enrage);
         foe.fx.enraged = true;
         log.push(`${foe.name} becomes enraged!`);
         beat(b, log, { t: "buff", who: "foe", label: "ENRAGED" });
@@ -419,6 +442,7 @@ function monsterTurn(b: Battle, rng: () => number, log: string[]): void {
       break;
     case "shield":
       if (!foe.fx.shield) {
+        foeSpecial(b, log, MOVE_NAMES.shield);
         foe.fx.shield = 2;
         log.push(`${foe.name} raises a shield.`);
         beat(b, log, { t: "buff", who: "foe", label: "SHIELD" });
@@ -426,6 +450,7 @@ function monsterTurn(b: Battle, rng: () => number, log: string[]): void {
       }
       break;
     case "double":
+      foeSpecial(b, log, MOVE_NAMES.double);
       foeHit(b, rng, 0.65, log, "lunges at", "multi");
       if (hero.hp > 0) foeHit(b, rng, 0.65, log, "lunges at", "multi");
       return;
@@ -440,6 +465,7 @@ function bossTurn(b: Battle, rng: () => number, log: string[]): void {
     case "semicolon":
       if (foe.charge) {
         foe.charge = 0;
+        beat(b, log, { t: "special", by: "foe", name: "Parse Error" }, false);
         foeHit(b, rng, 2.4, log, "unleashes PARSE ERROR on", "heavy");
       } else if (t % 3 === 2) {
         foe.charge = 1;
@@ -495,6 +521,7 @@ function bossTurn(b: Battle, rng: () => number, log: string[]): void {
       }
       if (foe.charge) {
         foe.charge = 0;
+        beat(b, log, { t: "special", by: "foe", name: "Core Dump" }, false);
         foeHit(b, rng, 3, log, "CORE DUMPS on", "heavy");
       } else if (t % 4 === 3) {
         foe.charge = 1;
@@ -599,7 +626,7 @@ export function act(prev: Battle, a: Action): Battle {
       const s = SKILLS[a.id];
       const cool = hero.uniques?.includes("overclock") ? Math.max(1, s.cooldown - 1) : s.cooldown;
       hero.cd[a.id] = cool + 1; // +1: ticks down at end of this turn
-      beat(b, log, { t: "special", id: a.id, name: s.name }, false);
+      beat(b, log, { t: "special", by: "hero", id: a.id, name: s.name }, false);
       switch (a.id) {
         case "strike":
           heroHit(b, rng, { mult: 1.7, style: "heavy" }, log);
