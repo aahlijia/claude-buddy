@@ -359,7 +359,7 @@ describe("sweep", () => {
     const rng = mulberry32(11);
     const cmds = [";a", ";a", ";d", ";s1", ";s2", ";s3", ";s4", ";s5", ";s6", ";s7", ";i potion", ";i bomb", ";f"];
     const P = { color: true, anim: true };
-    for (const species of ["cat", "wyvern", "snail", "pikachu"] as const) {
+    for (const species of ["cat", "wyvern", "snail", "sparkit"] as const) {
       for (const z of [1, 4, 6]) {
         const ctx: BuddyCtx = { ...CTX, species, level: 10 * z };
         const s = freshState(T0);

@@ -25,7 +25,7 @@ export interface Bug {
   reward: number;
   /** The creature kind the bug renders as in the two-sprite fight scene
    *  (design-rpg Phase 5). Curated to clean 5-line, ANSI-free species so the
-   *  mirror pass in `combat.ts` stays well-defined (excludes wyvern/pikachu). */
+   *  mirror pass in `combat.ts` stays well-defined (excludes wyvern/sparkit). */
   species: Species;
   /** Optional resting eye for the enemy sprite; defaults applied at bake time. */
   eye?: Eye;

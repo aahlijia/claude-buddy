@@ -132,10 +132,11 @@ export const SPECIES_ART: Record<Species, string[][]> = {
      " ≈(° °)≈",
      "   'v'"],
   ],
-  pikachu: [
-    ["            ", "   /\\_/\\   ", "  ({E} {E})  ", "   (  ω )   ", "   (__)    "],
-    ["            ", "   /\\_/\\   ", "   (- -)   ", "   (  ω )   ", "   (__)    "],
-    ["            ", "   /\\_/\\   ", "  ({E} {E})  ", "   (  ~ )   ", "   (__)    "],
+  // Sparkit — an original electric mouse: round ears, zig-zag lightning tail.
+  sparkit: [
+    ["            ", "   ()  ()   ", "  ( {E}  {E} )  ", "  (  v   )_/\\/", "   (\")(\")   "],
+    ["            ", "   ()  ()   ", "  ( {E}  {E} )  ", "  (  v   )~/\\/", "   (\")(\")   "],
+    ["            ", "  ()    ()  ", "  ( {E}  {E} )  ", "  (  o   )_/\\/", "   (\")(\")   "],
   ],
 };
 
@@ -230,7 +231,7 @@ export const GEAR_ANCHORS: Record<
   mushroom: { weapon: [3, 9],  trinket: [4, 0] }, // by the stem, under the cap
   chonk:    { weapon: [2, 11], trinket: [4, 0] },
   wyvern:   { weapon: [3, 8],  trinket: [4, 9] }, // row 5 is the ANSI-fire tail — avoid
-  pikachu:  { weapon: [3, 9],  trinket: [4, 0] },
+  sparkit:  { weapon: [2, 11], trinket: [4, 0] },
 };
 
 /**
@@ -334,7 +335,7 @@ export const PROP_ANCHORS: Record<
   mushroom: { feet: [4, 2],  ahead: [4, 11] },
   chonk:    { feet: [3, 2],  ahead: [4, 11] }, // row 4 has only trinket's 2 cols + ahead's col free
   wyvern:   { feet: [4, 0],  ahead: [4, 11] }, // trinket owns [4,9-10]; col 0 is untouched by it
-  pikachu:  { feet: [4, 2],  ahead: [4, 11] },
+  sparkit:  { feet: [4, 2],  ahead: [4, 12] },
 };
 
 /**
@@ -379,7 +380,7 @@ export function applyProp(
  *
  *   duck [9]        goose [8,9,10]     owl [9,10]       penguin [8,9,10]
  *   turtle [10]      snail [10]        axolotl [10]     cactus [7,9,10]
- *   mushroom [9,10]  wyvern [8,9,10]   pikachu [7,8,9,10]
+ *   mushroom [9,10]  wyvern [8,9,10]   sparkit [9,10,11]
  *
  * (blob/cat/dragon/octopus/ghost/capybara/robot/rabbit/chonk have none —
  * `PROP_ANCHORS.feet` already sits at their one otherwise-blank column, or —
@@ -397,7 +398,7 @@ export const PROP_KICK_COLUMNS: Partial<Record<Species, readonly number[]>> = {
   cactus: [10, 9, 7],
   mushroom: [10, 9],
   wyvern: [10, 9, 8],
-  pikachu: [10, 9, 8, 7],
+  sparkit: [11, 10, 9],
 };
 
 /**
@@ -604,7 +605,7 @@ export function rectFrame(lines: string[]): string[] {
  * point** (surrogate-pair safe), then swaps directional glyphs. Pure.
  *
  * Intended for the curated 5-line, ANSI-free roster (`bugs.ts` excludes
- * `wyvern`/`pikachu`): ANSI escapes would reverse into garbage.
+ * `wyvern`/`sparkit`): ANSI escapes would reverse into garbage.
  *
  * @param lines: A rendered (eye-substituted, ANSI-free) frame.
  * @returns The mirrored frame, every line equal display width.

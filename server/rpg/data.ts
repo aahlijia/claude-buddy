@@ -4,7 +4,7 @@
  *
  * Every creature renders as an existing species sprite (art.ts), restricted to
  * the curated 5-line, ANSI-free roster the combat scenes already mirror
- * (bugs.ts excludes wyvern/pikachu for the same reason).
+ * (bugs.ts excludes wyvern/sparkit for the same reason).
  */
 
 import type { Rarity, Species } from "../engine";
@@ -349,7 +349,7 @@ export const SPECIES_PASSIVES: Record<Species, SpeciesPassive> = {
   mushroom: { name: "Spore Drain", desc: "+5% LEECH, +5% HP", flat: { leech: 5 }, pct: { hp: 5 } },
   chonk: { name: "Absolute Unit", desc: "+30% HP, -3 SPD", pct: { hp: 30 }, flat: { spd: -3 } },
   wyvern: { name: "Sky Strike", desc: "+12% ATK, +2 SPD", pct: { atk: 12 }, flat: { spd: 2 } },
-  pikachu: { name: "Static", desc: "+4 SPD, +4% CRIT", flat: { spd: 4, crit: 4 } },
+  sparkit: { name: "Static", desc: "+4 SPD, +4% CRIT", flat: { spd: 4, crit: 4 } },
 };
 
 // ─── Legendary uniques ──────────────────────────────────────────────────────

@@ -868,7 +868,7 @@ describe("applyProp (ground props — living-world P4)", () => {
 //
 //   duck [9]         goose [10,9,8]     owl [10,9]        penguin [10,9,8]
 //   turtle [10]       snail [10]        axolotl [10]      cactus [10,9,7]
-//   mushroom [10,9]   wyvern [10,9,8]   pikachu [10,9,8,7]
+//   mushroom [10,9]   wyvern [10,9,8]   sparkit [11,10,9]
 //
 // — 11 of 20 species DO have room (`PROP_KICK_COLUMNS`, art.ts). The other 9
 // (blob/cat/dragon/octopus/ghost/capybara/robot/rabbit/chonk) are genuinely

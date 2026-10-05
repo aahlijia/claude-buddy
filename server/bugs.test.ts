@@ -4,11 +4,11 @@ import { BUGS, bugsOfTier, spawnBug, tierForErrors } from "./bugs";
 import { SPECIES } from "./engine";
 
 // Species curated for the two-sprite scene (Phase 5): clean 5-line, ANSI-free
-// sprites. wyvern (6 lines + ANSI) and pikachu (irregular) are excluded so the
+// sprites. wyvern (6 lines + ANSI) and sparkit (irregular) are excluded so the
 // mirror pass in combat.ts stays well-defined.
 const COMBAT_ROSTER = new Set(SPECIES);
 COMBAT_ROSTER.delete("wyvern");
-COMBAT_ROSTER.delete("pikachu");
+COMBAT_ROSTER.delete("sparkit");
 
 describe("bug catalog integrity", () => {
   test("ids are unique", () => {

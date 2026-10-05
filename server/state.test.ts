@@ -475,3 +475,13 @@ describe("coerceGameFeel", () => {
     expect(coerceGameFeel(true)).toBe("subtle");
   });
 });
+
+describe("retired species", () => {
+  test("a saved pikachu loads as the original sparkit", () => {
+    const { renameRetiredSpecies } = require("./state.ts") as typeof import("./state.ts");
+    const m = { companions: { a: { bones: { species: "pikachu" } }, b: { bones: { species: "cat" } } } } as any;
+    renameRetiredSpecies(m);
+    expect(m.companions.a.bones.species).toBe("sparkit");
+    expect(m.companions.b.bones.species).toBe("cat");
+  });
+});

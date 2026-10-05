@@ -144,8 +144,10 @@ Every buddy is uniquely generated from your Claude Code account — same species
  `------'     |    |      `------'   (")__(")      |____|    `------'
 ```
 
-> Plus **wyvern** and **pikachu** — two community-contributed species with
-> bespoke, larger art that doesn't fit this fixed-size grid layout.
+> Plus **wyvern** (community-contributed, with bespoke larger art that doesn't
+> fit this grid) and **sparkit**, an original electric mouse with a lightning
+> tail. Sparkit replaced the earlier `pikachu` species, and saved buddies
+> convert automatically.
 
 ### Rarities
 
@@ -570,7 +572,7 @@ bun run cli/uninstall.ts    # full clean removal
 - [x] **Mood system** — `/buddy mood` shifts based on tests, errors, session length, time of day
 - [x] **Achievement badges** — "1000 lines reviewed", "week streak", etc. 💜[ndcorder](https://github.com/ndcorder)💜
 - [x] **Light theme colors** — `/buddy theme light`, auto-detect via `theme auto`
-- [x] **New species + community art** — wyvern and pikachu added 💜[@jpmalone0](https://github.com/jpmalone0)💜 (community contributions welcome)
+- [x] **New species + community art** — wyvern and an electric mouse added 💜[@jpmalone0](https://github.com/jpmalone0)💜 (community contributions welcome; the mouse later became the original **sparkit**)
 - [ ] **`npx claude-buddy`** — one-command install without cloning
 
 <br>

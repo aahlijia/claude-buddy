@@ -30,7 +30,7 @@ import {
   rmSync,
 } from "fs";
 import { join } from "path";
-import type { Companion, BuddyStats, StatName, Rarity, Hat } from "./engine.ts";
+import type { Companion, BuddyStats, StatName, Rarity, Hat, Species } from "./engine.ts";
 import type { Emotion, CelebrationKind } from "./art.ts";
 import type { GroundWeather, WeatherSchedule } from "./ground.ts";
 import type { Theme } from "./theme.ts";
@@ -79,11 +79,25 @@ function emptyManifest(): Manifest {
 
 // ─── Atomic manifest I/O ─────────────────────────────────────────────────────
 
+/** Species renamed in place (same SPECIES index, so generation is
+ *  unchanged). `pikachu` became the original electric mouse `sparkit`. */
+export const RETIRED_SPECIES: Readonly<Record<string, Species>> = { pikachu: "sparkit" };
+
+/** Map retired species ids on saved companions to their replacements, so an
+ *  old save keeps working (read-side only; the next save persists it). */
+export function renameRetiredSpecies(m: { companions: Record<string, Companion> }): void {
+  for (const c of Object.values(m.companions)) {
+    const to = c?.bones && RETIRED_SPECIES[c.bones.species as string];
+    if (to) c.bones.species = to;
+  }
+}
+
 function loadManifest(): Manifest {
   try {
     const raw = readFileSync(MANIFEST_FILE, "utf8");
     const m = JSON.parse(raw) as Manifest;
     if (!m.companions) m.companions = {};
+    renameRetiredSpecies(m);
     // Back-fill the milestone list for manifests written before FR3 shipped.
     if (!Array.isArray(m.raritySetMilestones)) m.raritySetMilestones = [];
     return m;

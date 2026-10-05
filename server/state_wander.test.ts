@@ -801,18 +801,18 @@ describe("writeStatusState — prop kick (living-world P4 Task 4)", () => {
     }
   });
 
-  test("a species with room (pikachu, salt \"x\") genuinely slides the pebble through multiple columns across the real baked walk, and it's never absent", () => {
+  test("a species with room (sparkit, salt \"x\") genuinely slides the pebble through multiple columns across the real baked walk, and it's never absent", () => {
     // This is the state_wander-level proof the kick reaches the real write,
     // not just getStatusFrames in isolation: walk the actual frameSequence
     // this write produced and read the ahead glyph's rendered column at
     // every tick. `stubPhases` pins the walk's phase track (W1 — the real
     // generator seeds off Date.now() with no config-level override, so this
     // is deterministic rather than hoping a real walk happens to travel):
-    // dwell(4) → 5 step ticks (enough to run past pikachu's 4 kick columns
+    // dwell(4) → 5 step ticks (enough to run past sparkit's 3 kick columns
     // and saturate) → edge-dwell(2) → 2 more step ticks → home-linger →
     // dwell. `propKickFrameSequence` only ever overrides a phase===1 tick —
     // every other tick (dwell/edge/home alike) renders the plain prop at its
-    // rest column (11), so the second step run starts fresh from col 10.
+    // rest column (12), so the second step run starts fresh from col 11.
     const stubPhases = [
       0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 1, 1, 3, 0, 0, 0, 0, 0, 0,
     ];
@@ -828,16 +828,16 @@ describe("writeStatusState — prop kick (living-world P4 Task 4)", () => {
     const columns = frameSequence.map((idx) => aheadColumn(frames[idx]));
     // Never absent: every tick's frame contains the pebble somewhere.
     expect(columns.every((c) => c >= 0)).toBe(true);
-    // Genuine motion, deterministically: every one of pikachu's positions —
-    // rest (11) plus all 4 kick columns (10, 9, 8, 7) — actually appears,
+    // Genuine motion, deterministically: every one of sparkit's positions —
+    // rest (12) plus all 3 kick columns (11, 10, 9) — actually appears,
     // and in the expected order over the stubbed run.
     expect(columns).toEqual([
-      11, 11, 11, 11, // dwell
-      10, 9, 8, 7, 7, // 5 step ticks: climbs then saturates at col 7
-      11, 11, // edge-dwell: not a step tick, plain prop at rest
-      10, 9, // 2 more step ticks: fresh run, restarts from col 10
-      11, // home-linger: plain prop at rest
-      11, 11, 11, 11, 11, 11, // dwell
+      12, 12, 12, 12, // dwell
+      11, 10, 9, 9, 9, // 5 step ticks: climbs then saturates at col 9
+      12, 12, // edge-dwell: not a step tick, plain prop at rest
+      11, 10, // 2 more step ticks: fresh run, restarts from col 11
+      12, // home-linger: plain prop at rest
+      12, 12, 12, 12, 12, 12, // dwell
     ]);
   });
 
@@ -851,7 +851,7 @@ describe("writeStatusState — prop kick (living-world P4 Task 4)", () => {
     for (const frame of frames) {
       expect(frame).toContain(PROP.feet);
       expect(frame).toContain(PROP.ahead);
-      expect(aheadColumn(frame)).toBe(11);
+      expect(aheadColumn(frame)).toBe(12);
     }
   });
 });
