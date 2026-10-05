@@ -1,0 +1,73 @@
+/**
+ * HD species registry — one call renders any HD buddy playing any of the
+ * shared animations: `renderHd(species, anim, t, opts)`. Rigged species
+ * (cat, dragon) go through rig.ts + motion.ts; the blob keeps its
+ * procedural jelly renderer, driven by the same animation names and timings.
+ *
+ * Species without HD art yet return null, and callers fall back to ASCII.
+ */
+
+import type { Rarity, Species } from "../engine.ts";
+import { BLOB_H, BLOB_W, RIM_BLOB, SPARK, backdrop, glow, motes, renderBlob } from "./blob.ts";
+import { Framebuffer } from "./framebuffer.ts";
+import { ANIM_INFO, poseRig, type Anim } from "./motion.ts";
+import { renderRig, type RigDef } from "./rig.ts";
+import { CAT } from "./species/cat.ts";
+import { DRAGON } from "./species/dragon.ts";
+
+export const HD_W = BLOB_W;
+export const HD_H = BLOB_H;
+
+const RIGS: Partial<Record<Species, RigDef>> = { cat: CAT, dragon: DRAGON };
+
+export const HD_SPECIES: readonly Species[] = ["blob", "cat", "dragon"];
+
+export function hasHd(species: Species): boolean {
+  return HD_SPECIES.includes(species);
+}
+
+export interface HdOptions {
+  rarity?: Rarity;
+  shiny?: boolean;
+  seed?: number;
+  /** Face left (enemies). */
+  flip?: boolean;
+  /** Paint the night-meadow backdrop. */
+  backdrop?: boolean;
+}
+
+export { ANIM_INFO, ANIMS, type Anim } from "./motion.ts";
+
+/** Render one frame; `t` is seconds since the animation started. */
+export function renderHd(species: Species, anim: Anim, t: number, opts: HdOptions = {}): Framebuffer | null {
+  const seed = opts.seed ?? 1;
+  const rarity = opts.rarity ?? "common";
+  if (species === "blob") {
+    const fb = renderBlob(t, { rarity, shiny: opts.shiny, seed, backdrop: opts.backdrop, anim });
+    return opts.flip ? flipX(fb) : fb;
+  }
+  const rig = RIGS[species];
+  if (!rig) return null;
+  const pose = poseRig(rig, anim, t, seed);
+  const fb = new Framebuffer(rig.width, rig.height);
+  if (opts.backdrop) backdrop(fb, t, seed);
+  // Same rarity dressing as the blob: legendary aura, epic+ motes.
+  if (rarity === "legendary") glow(fb, rig.width / 2, rig.ground - 14 - (pose.lift ?? 0), 28, RIM_BLOB.legendary!, 0.45 * (0.75 + 0.25 * Math.sin(t * 2.2)));
+  const moteCount = rarity === "legendary" ? 8 : rarity === "epic" ? 5 : 0;
+  if (moteCount) motes(fb, t, seed, moteCount, SPARK[rarity], false);
+  fb.draw(renderRig(rig, pose, { rarity, shiny: opts.shiny, flip: opts.flip }), 0, 0);
+  if (moteCount) motes(fb, t, seed, moteCount, SPARK[rarity], true);
+  return fb;
+}
+
+/** Whether a one-shot animation has reached its final pose. */
+export function animDone(anim: Anim, t: number): boolean {
+  const info = ANIM_INFO[anim];
+  return !info.loop && t >= info.duration;
+}
+
+function flipX(fb: Framebuffer): Framebuffer {
+  const out = new Framebuffer(fb.width, fb.height);
+  for (let y = 0; y < fb.height; y++) for (let x = 0; x < fb.width; x++) out.set(fb.width - 1 - x, y, fb.get(x, y));
+  return out;
+}

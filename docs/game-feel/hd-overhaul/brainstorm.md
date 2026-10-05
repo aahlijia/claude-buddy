@@ -274,9 +274,9 @@ Name it the **buddy UI kit** (`server/ui/`):
    small parts per species, but 20 species still need an artist's pass. One
    option is to pilot 3 species (blob for the simplest rig, cat for the
    reference, dragon for the showpiece) before committing.
-2. **`pikachu` is a species name**, and an HD pixel version would be a
-   recognizable copy of a trademarked character. Recommend an original
-   electric-mouse design with a new name before it gets HD art. The same
+2. **`pikachu` was a species name** that an HD pixel version would have
+   turned into a recognizable copy of a trademarked character. _Resolved:_
+   it is now `sparkit`, an original electric mouse (see h1-rigs.md). The same
    caution applies to any "PlayStation" branding or button glyphs.
 3. **Status-line limits:** Claude Code controls its height and redraw, and
    refreshes at 1 s. HD there is capped at T1 and key-pose animation. Verify
@@ -297,8 +297,8 @@ Name it the **buddy UI kit** (`server/ui/`):
 
 | Phase | Deliverable | Proves |
 | --- | --- | --- |
-| **H0 Spike** | `framebuffer` + `halfblock` + `kitty` encoders, plus one hand-made 48×48 blob sprite with a procedural breathe/blink loop, viewable via `bun run gfx-demo` | The tier ladder works in real terminals, including tmux |
-| **H1 Rig + style bible** | Rig format, ease/motion library, 3 pilot species (blob, cat, dragon) with idle/walk/attack/hit/KO/victory, and a palette and rarity lighting pass | The rig pipeline scales and looks good |
+| **H0 Spike** ✅ | `framebuffer` + `halfblock` + `kitty` encoders, plus one hand-made 48×48 blob sprite with a procedural breathe/blink loop, viewable via `bun run gfx-demo` | The tier ladder works in real terminals, including tmux |
+| **H1 Rig + style bible** ✅ ([h1-rigs.md](h1-rigs.md)) | Rig format, ease/motion library, 3 pilot species (blob, cat, dragon) with idle/walk/attack/hit/KO/victory, and a palette and rarity lighting pass | The rig pipeline scales and looks good |
 | **H2 Quest player HD** | Framebuffer stage in `play.ts`, camera, particles, hit-stop, damage ghost bars, battle transition, victory results card | The "PlayStation moment" |
 | **H3 UI kit** | Panels, bars, key prompts, banners and portraits across play, TUI and shop | One visual language |
 | **H4 buddy-shell diorama** | Parallax biomes, day/night, weather particles, live hook reactions | The always-on wow |

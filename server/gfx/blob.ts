@@ -53,7 +53,7 @@ const SHINY: BodyPalette = {
 };
 
 /** Rim light per rarity (null = flat). Echoes theme.ts rarity colors. */
-const RIM: Record<Rarity, RGBA | null> = {
+export const RIM_BLOB: Record<Rarity, RGBA | null> = {
   common: null,
   uncommon: hex("#7ee69a"),
   rare: hex("#b1b9f9"),
@@ -61,7 +61,7 @@ const RIM: Record<Rarity, RGBA | null> = {
   legendary: hex("#ffd25a"),
 };
 
-const SPARK: Record<Rarity, RGBA> = {
+export const SPARK: Record<Rarity, RGBA> = {
   common: hex("#ffffff"),
   uncommon: hex("#a0ffb8"),
   rare: hex("#c8d0ff"),
@@ -78,20 +78,23 @@ const FACE_INK: Record<string, RGBA> = {
   r: hex("#e05a74"),
 };
 
-export type EyeState = "open" | "half" | "closed" | "happy";
+export type EyeState = "open" | "half" | "closed" | "happy" | "angry" | "x";
 
 const EYE: Record<EyeState, Sprite> = {
   open: sprite(["..##..", ".####.", "#oo###", "#oo###", "######", "##pp##", ".####.", "..##.."], FACE_INK),
   half: sprite(["......", "......", "......", ".####.", "######", "##pp##", ".####.", "......"], FACE_INK),
   closed: sprite(["......", "......", "......", "......", "#....#", ".####.", "......", "......"], FACE_INK),
   happy: sprite(["......", "......", "..##..", ".#..#.", "#....#", "......", "......", "......"], FACE_INK),
+  angry: sprite(["##....", ".###..", "..####", "#oo###", "######", "##pp##", ".####.", "..##.."], FACE_INK),
+  x: sprite(["......", "#....#", ".#..#.", "..##..", "..##..", ".#..#.", "#....#", "......"], FACE_INK),
 };
 
-export type MouthState = "smile" | "open";
+export type MouthState = "smile" | "open" | "frown";
 
 const MOUTH: Record<MouthState, Sprite> = {
   smile: sprite(["#...#", ".###."], FACE_INK),
   open: sprite([".##.", "#rr#", ".##."], FACE_INK),
+  frown: sprite([".###.", "#...#"], FACE_INK),
 };
 
 // ─── Pose ───────────────────────────────────────────────────────────────────
@@ -106,6 +109,12 @@ export interface BlobPose {
   mouth: MouthState;
   /** Gaze, -1 (left) … 1 (right). */
   look: number;
+  /** Horizontal offset (lunges, recoils). */
+  dx?: number;
+  /** White hit-flash, 0..1. */
+  flash?: number;
+  /** Desaturate (knocked out). */
+  ko?: boolean;
 }
 
 export interface BlobOptions {
@@ -116,6 +125,9 @@ export interface BlobOptions {
   bounces?: readonly number[];
   /** Paint a sky + ground behind the buddy (otherwise transparent). */
   backdrop?: boolean;
+  /** Play one of the shared motion-library animations (H1) instead of idle;
+   *  `t` is then the time since the animation started. */
+  anim?: "idle" | "walk" | "attack" | "hit" | "ko" | "victory";
 }
 
 /** Deterministic 0–1 value for (seed, slot, channel). */
@@ -188,7 +200,72 @@ export function blobPose(t: number, opts: BlobOptions = {}): BlobPose {
     if (u > 0.1 && u < 0.95) eye = "happy";
     if (u > 0.14 && u < 0.72) mouth = "open";
   }
-  return { sx, sy, lift, eye, mouth, look: lookAt(t, seed) };
+  const pose: BlobPose = { sx, sy, lift, eye, mouth, look: lookAt(t, seed) };
+  return opts.anim && opts.anim !== "idle" ? animate(pose, opts.anim, t) : pose;
+}
+
+/** The shared animation set on the blob's jelly body (same timings as
+ *  motion.ts ANIM_INFO, so a blob and a rig stay in sync in one fight). */
+function animate(p: BlobPose, anim: NonNullable<BlobOptions["anim"]>, t: number): BlobPose {
+  switch (anim) {
+    case "walk": {
+      const u = (t % 0.7) / 0.7;
+      const hop = Math.sin(Math.PI * u);
+      const land = u < 0.12 ? 1 - u / 0.12 : 0;
+      return { ...p, lift: 3 * hop, sx: p.sx * (1 + 0.1 * land - 0.04 * hop), sy: p.sy * (1 - 0.1 * land + 0.06 * hop) };
+    }
+    case "attack": {
+      let dx = 0;
+      let sx = 1;
+      let sy = 1;
+      if (t < 0.28) {
+        const k = easeOutCubic(t / 0.28);
+        dx = -3 * k;
+        sx = 1 + 0.12 * k;
+        sy = 1 - 0.14 * k;
+      } else if (t < 0.36) {
+        const k = easeInCubic(span(t, 0.28, 0.36));
+        dx = lerp(-3, 10, k);
+        sx = lerp(1.12, 1.22, k);
+        sy = lerp(0.86, 0.82, k);
+      } else if (t < 0.5) {
+        dx = 10 - 1.5 * Math.sin(Math.PI * span(t, 0.36, 0.5));
+        sx = 1.18;
+        sy = 0.86;
+      } else {
+        const k = easeInOutCubic(span(t, 0.5, 0.85));
+        dx = lerp(10, 0, k);
+        const w = 0.12 * springDecay(t - 0.5, 2.6, 6);
+        sx = 1 + w;
+        sy = 1 - w;
+      }
+      return { ...p, dx, sx: p.sx * sx, sy: p.sy * sy, eye: "angry", mouth: t > 0.26 && t < 0.6 ? "open" : "frown" };
+    }
+    case "hit": {
+      const k = t < 0.07 ? easeOutCubic(t / 0.07) : springDecay(t - 0.07, 2.4, 7);
+      return {
+        ...p,
+        dx: -5 * k,
+        sx: p.sx * (1 + 0.16 * k),
+        sy: p.sy * (1 - 0.16 * k),
+        flash: t < 0.12 ? 1 - t / 0.12 : 0,
+        eye: t < 0.32 ? "closed" : "half",
+        mouth: "frown",
+      };
+    }
+    case "ko": {
+      if (t < 0.15) return animate(p, "hit", t);
+      const k = easeInCubic(span(t, 0.15, 0.7));
+      const w = t > 0.7 ? 0.08 * springDecay(t - 0.7, 2.2, 6) : 0;
+      return { ...p, sx: 1 + 0.28 * k - w, sy: 1 - 0.38 * k + w, lift: 0, eye: "x", mouth: "frown", ko: t > 0.6 };
+    }
+    case "victory": {
+      const cycle = 1.1;
+      const start = Math.floor(t / cycle) * cycle;
+      return { ...blobPose(t, { bounces: [start] }), look: 0, eye: "happy" };
+    }
+  }
+  return p;
 }
 
 // ─── Rendering ──────────────────────────────────────────────────────────────
@@ -211,7 +288,7 @@ const smooth = (a: number, b: number, x: number) => {
 function drawBody(fb: Framebuffer, pose: BlobPose, pal: BodyPalette, rim: RGBA | null): { cx: number; cy: number; rx: number; ry: number } {
   const rx = RX * pose.sx;
   const ry = RY * pose.sy;
-  const cx = CX;
+  const cx = CX + (pose.dx ?? 0);
   const cy = GROUND - pose.lift - ry;
   const layer = new Framebuffer(fb.width, fb.height);
   const top = pal.ramp.length - 1;
@@ -265,7 +342,7 @@ function drawBody(fb: Framebuffer, pose: BlobPose, pal: BodyPalette, rim: RGBA |
 }
 
 /** Soft additive glow blob (aura, motes). */
-function glow(fb: Framebuffer, cx: number, cy: number, r: number, c: RGBA, strength: number): void {
+export function glow(fb: Framebuffer, cx: number, cy: number, r: number, c: RGBA, strength: number): void {
   for (let y = Math.floor(cy - r); y <= Math.ceil(cy + r); y++) {
     for (let x = Math.floor(cx - r); x <= Math.ceil(cx + r); x++) {
       const d = Math.hypot(x + 0.5 - cx, y + 0.5 - cy) / r;
@@ -274,7 +351,7 @@ function glow(fb: Framebuffer, cx: number, cy: number, r: number, c: RGBA, stren
   }
 }
 
-function motes(fb: Framebuffer, t: number, seed: number, count: number, c: RGBA, front: boolean): void {
+export function motes(fb: Framebuffer, t: number, seed: number, count: number, c: RGBA, front: boolean): void {
   const RANGE = 42;
   for (let i = 0; i < count; i++) {
     if ((i % 2 === 0) !== front) continue;
@@ -307,7 +384,7 @@ function twinkle(fb: Framebuffer, t: number, seed: number, body: { cx: number; c
   }
 }
 
-function backdrop(fb: Framebuffer, t: number, seed: number): void {
+export function backdrop(fb: Framebuffer, t: number, seed: number): void {
   fb.gradient(hex("#1a1440"), hex("#5a3a78"));
   // twinkling stars
   for (let i = 0; i < 14; i++) {
@@ -341,30 +418,45 @@ export function renderBlob(t: number, opts: BlobOptions = {}): Framebuffer {
   // Legendary aura: a slow golden pulse behind the body.
   if (rarity === "legendary") {
     const pulse = 0.75 + 0.25 * Math.sin(t * 2.2);
-    glow(fb, CX, GROUND - pose.lift - RY, 28, RIM.legendary!, 0.45 * pulse);
+    glow(fb, CX, GROUND - pose.lift - RY, 28, RIM_BLOB.legendary!, 0.45 * pulse);
   }
 
   // Contact shadow shrinks and fades as the body rises.
   const h = pose.lift / JUMP;
-  fb.ellipse(CX, GROUND + 0.5, 19 * pose.sx * (1 - 0.35 * h), 2.6 * (1 - 0.3 * h), hex("#0c0818"), 0.42 * (1 - 0.5 * h));
+  fb.ellipse(CX + (pose.dx ?? 0), GROUND + 0.5, 19 * pose.sx * (1 - 0.35 * h), 2.6 * (1 - 0.3 * h), hex("#0c0818"), 0.42 * (1 - 0.5 * h));
 
   const moteCount = rarity === "legendary" ? 8 : rarity === "epic" ? 5 : 0;
   if (moteCount) motes(fb, t, seed, moteCount, SPARK[rarity], false);
 
-  const body = drawBody(fb, pose, pal, RIM[rarity]);
+  const body = drawBody(fb, pose, pal, RIM_BLOB[rarity]);
 
   // Face rides the body: positions scale with squash, gaze shifts it.
   const gaze = Math.round(pose.look * 1.6);
   const eyeY = Math.round(body.cy - body.ry * 0.12);
   const eyeDX = Math.round(body.rx * 0.36);
   for (const side of [-1, 1]) {
-    fb.ellipse(CX + side * body.rx * 0.6 + gaze * 0.5, eyeY + 5.5, 3.2, 1.6, pal.blush, 0.4);
-    blit(fb, EYE[pose.eye], CX + side * eyeDX - 3 + gaze, eyeY - 4);
+    fb.ellipse(body.cx + side * body.rx * 0.6 + gaze * 0.5, eyeY + 5.5, 3.2, 1.6, pal.blush, 0.4);
+    blit(fb, EYE[pose.eye], body.cx + side * eyeDX - 3 + gaze, eyeY - 4);
   }
   const m = MOUTH[pose.mouth];
-  blit(fb, m, CX - Math.floor(m.width / 2) + Math.round(pose.look), eyeY + 3);
+  blit(fb, m, body.cx - Math.floor(m.width / 2) + Math.round(pose.look), eyeY + 3);
 
   if (moteCount) motes(fb, t, seed, moteCount, SPARK[rarity], true);
   if (opts.shiny) twinkle(fb, t, seed, body);
+  if (pose.flash || pose.ko) {
+    const white = hex("#ffffff");
+    for (let y = 0; y < fb.height; y++) {
+      for (let x = 0; x < fb.width; x++) {
+        let c = fb.get(x, y);
+        if (!c[3] || (opts.backdrop && y >= GROUND)) continue;
+        if (pose.ko) {
+          const g = Math.round(c[0] * 0.3 + c[1] * 0.55 + c[2] * 0.15);
+          c = mix(c, [g, g, g, c[3]], 0.45);
+        }
+        if (pose.flash) c = mix(c, [white[0], white[1], white[2], c[3]], pose.flash * 0.85);
+        fb.set(x, y, c);
+      }
+    }
+  }
   return fb;
 }

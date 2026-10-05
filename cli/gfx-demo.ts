@@ -2,16 +2,18 @@
 /**
  * gfx-demo — H0 spike for the HD overhaul (docs/game-feel/hd-overhaul/).
  *
- * Plays the HD blob live in whatever render tier this terminal supports:
+ * Plays the HD buddies live in whatever render tier this terminal supports:
  * kitty graphics → iTerm2 inline images → truecolor half-blocks → ASCII.
  *
  *   bun run gfx-demo                       auto-detect tier, interactive
+ *   bun run gfx-demo --species cat         blob | cat | dragon
  *   bun run gfx-demo --tier halfblock      force a tier (kitty|iterm|halfblock|ascii)
  *   bun run gfx-demo --rarity legendary --shiny --bg
- *   bun run gfx-demo --snapshot            print one half-block frame and exit
- *   bun run gfx-demo --png out/ --frames 60  dump frames as PNGs and exit
+ *   bun run gfx-demo --snapshot --anim hit --t 0.1   print one frame and exit
+ *   bun run gfx-demo --png out/ --anim attack --frames 30  dump PNG frames
  *
- * Keys: space bounce · r rarity · s shiny · g backdrop · t tier · q quit
+ * Keys: 1–6 idle/walk/attack/hit/ko/victory · space victory hop · c species
+ *       r rarity · s shiny · g backdrop · t tier · q quit
  */
 
 import { mkdirSync } from "node:fs";
@@ -20,7 +22,8 @@ import { join } from "node:path";
 import { getArtFrame } from "../server/art.ts";
 import { RARITIES, type Rarity } from "../server/engine.ts";
 import { getRarityColor } from "../server/theme.ts";
-import { BLOB_H, BLOB_W, BOUNCE_SECONDS, renderBlob, type BlobOptions } from "../server/gfx/blob.ts";
+import { ANIMS, ANIM_INFO, HD_H as BLOB_H, HD_SPECIES, HD_W as BLOB_W, renderHd, type Anim } from "../server/gfx/hd.ts";
+import type { Species } from "../server/engine.ts";
 import { detectTier, isTier, tmuxWrap, TIERS, type Tier } from "../server/gfx/detect.ts";
 import { encodeHalfblock } from "../server/gfx/encode/halfblock.ts";
 import { encodeIterm } from "../server/gfx/encode/iterm.ts";
@@ -47,24 +50,48 @@ if (!(RARITIES as readonly string[]).includes(rarityArg)) {
   process.exit(1);
 }
 
+const speciesArg = (opt("species") ?? "blob") as Species;
+if (!HD_SPECIES.includes(speciesArg)) {
+  console.error(`No HD art for "${speciesArg}" yet. Try one of: ${HD_SPECIES.join(", ")}`);
+  process.exit(1);
+}
+const animArg = (opt("anim") ?? "idle") as Anim;
+if (!(ANIMS as readonly string[]).includes(animArg)) {
+  console.error(`Unknown animation "${animArg}". Use one of: ${ANIMS.join(", ")}`);
+  process.exit(1);
+}
+
 const detected = detectTier(process.env, tierArg);
 const state = {
   tier: detected.tier as Tier,
   rarity: rarityArg as Rarity,
   shiny: flag("shiny"),
   backdrop: flag("bg"),
-  bounces: [] as number[],
+  species: speciesArg,
+  anim: animArg,
+  /** When the current animation started (seconds on the demo clock). */
+  animStart: 0,
 };
 const fps = Math.max(1, Math.min(60, Number(opt("fps") ?? 30)));
 const seed = Number(opt("seed") ?? 7);
 
-const options = (): BlobOptions => ({
-  rarity: state.rarity,
-  shiny: state.shiny,
-  backdrop: state.backdrop,
-  bounces: state.bounces,
-  seed,
-});
+/** Render the current animation at demo time `t`. One-shot animations hold
+ *  their last pose briefly, then hand back to idle (KO stays down). */
+function render(t: number) {
+  const info = ANIM_INFO[state.anim];
+  let local = state.anim === "idle" ? t : t - state.animStart;
+  const over = info.loop ? state.anim === "victory" && local > info.duration * 2 : state.anim !== "ko" && local > info.duration + 0.5;
+  if (over) {
+    state.anim = "idle";
+    local = t;
+  }
+  return renderHd(state.species, state.anim, local, {
+    rarity: state.rarity,
+    shiny: state.shiny,
+    backdrop: state.backdrop,
+    seed,
+  })!;
+}
 
 // ─── Non-interactive modes ──────────────────────────────────────────────────
 
@@ -73,18 +100,16 @@ if (pngDir) {
   const frames = Math.max(1, Number(opt("frames") ?? 60));
   const scale = Math.max(1, Number(opt("scale") ?? 4));
   mkdirSync(pngDir, { recursive: true });
-  // Bounce once in the middle so a dump shows both idle and motion.
-  state.bounces = [(frames / fps) * 0.4];
   for (let i = 0; i < frames; i++) {
-    const file = join(pngDir, `blob-${String(i).padStart(4, "0")}.png`);
-    await Bun.write(file, encodePng(renderBlob(i / fps, options()).upscale(scale)));
+    const file = join(pngDir, `${state.species}-${state.anim}-${String(i).padStart(4, "0")}.png`);
+    await Bun.write(file, encodePng(render(i / fps).upscale(scale)));
   }
   console.log(`Wrote ${frames} frames (${BLOB_W * scale}×${BLOB_H * scale}) to ${pngDir}`);
   process.exit(0);
 }
 
 if (flag("snapshot") || !process.stdout.isTTY || !process.stdin.isTTY) {
-  const fb = renderBlob(Number(opt("t") ?? 0), options());
+  const fb = render(Number(opt("t") ?? 0));
   console.log(encodeHalfblock(fb, { color: detected.color }).join("\n"));
   process.exit(0);
 }
@@ -121,9 +146,9 @@ function hud(): void {
   const key = (k: string, label: string) => `\x1b[1;97;48;2;60;56;90m ${k} \x1b[0m ${dim(label)}`;
   const tierNote = state.tier === detected.tier ? `auto: ${detected.reason}` : "manual";
   const lines = [
-    `\x1b[1mclaude-buddy · HD spike\x1b[0m  ${dim("tier")} \x1b[1;96m${state.tier}\x1b[0m ${dim(`(${tierNote})`)}  ${dim("fps")} ${measured}  ${dim("rarity")} ${getRarityColor(state.rarity)}${state.rarity}\x1b[0m${state.shiny ? "  \x1b[1;95m✦ shiny\x1b[0m" : ""}`,
+    `\x1b[1mclaude-buddy · HD\x1b[0m  \x1b[1;93m${state.species}\x1b[0m ${dim(state.anim)}  ${dim("tier")} \x1b[1;96m${state.tier}\x1b[0m ${dim(`(${tierNote})`)}  ${dim("fps")} ${measured}  ${dim("rarity")} ${getRarityColor(state.rarity)}${state.rarity}\x1b[0m${state.shiny ? "  \x1b[1;95m✦ shiny\x1b[0m" : ""}`,
     "",
-    [key("space", "bounce"), key("r", "rarity"), key("s", "shiny"), key("g", "backdrop"), key("t", "tier"), key("q", "quit")].join("  "),
+    [key("1-6", "idle walk attack hit ko victory"), key("c", "species"), key("r", "rarity"), key("s", "shiny"), key("g", "backdrop"), key("t", "tier"), key("q", "quit")].join("  "),
   ];
   out.write(`${ESC}1;1H${ESC}2K${lines[0]}`);
   out.write(`${ESC}${TOP + rows + 1};1H${ESC}2K${lines[1]}${ESC}${TOP + rows + 2};1H${ESC}2K${lines[2]}`);
@@ -132,8 +157,8 @@ function hud(): void {
 function drawAscii(t: number): void {
   // T0: today's art, so the fallback is visibly the same buddy.
   const pose = Math.floor(t * 2) % 3;
-  const bouncing = state.bounces.some((b) => t >= b && t - b < BOUNCE_SECONDS);
-  const lines = getArtFrame("blob", bouncing ? "✦" : "·", bouncing ? 1 : pose);
+  const busy = state.anim !== "idle";
+  const lines = getArtFrame(state.species, busy ? "✦" : "·", busy ? 1 : pose);
   const color = getRarityColor(state.rarity);
   lines.forEach((l, i) => out.write(`${ESC}${TOP + i};${LEFT}H${color}${l}\x1b[0m`));
 }
@@ -143,7 +168,7 @@ function frame(): void {
   if (state.tier === "ascii") {
     drawAscii(t);
   } else {
-    const fb = renderBlob(t, options());
+    const fb = render(t);
     if (state.tier === "halfblock") {
       const lines = encodeHalfblock(fb, { color: detected.color });
       lines.forEach((l, i) => {
@@ -196,8 +221,16 @@ process.stdin.resume();
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (key: string) => {
   if (key === "q" || key === "\x1b" || key === "\x03") return quit();
-  if (key === " " || key === "b") state.bounces = [...state.bounces.filter((b) => now() - b < BOUNCE_SECONDS), now()];
-  else if (key === "r") state.rarity = RARITIES[(RARITIES.indexOf(state.rarity) + 1) % RARITIES.length];
+  const play = (a: Anim) => {
+    state.anim = a;
+    state.animStart = now();
+  };
+  if (key === " " || key === "b") play("victory");
+  else if (/^[1-6]$/.test(key)) play(ANIMS[Number(key) - 1]);
+  else if (key === "c") {
+    state.species = HD_SPECIES[(HD_SPECIES.indexOf(state.species) + 1) % HD_SPECIES.length];
+    clearAll();
+  } else if (key === "r") state.rarity = RARITIES[(RARITIES.indexOf(state.rarity) + 1) % RARITIES.length];
   else if (key === "s") state.shiny = !state.shiny;
   else if (key === "g") state.backdrop = !state.backdrop;
   else if (key === "t") {
