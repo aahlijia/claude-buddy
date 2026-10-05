@@ -1,6 +1,7 @@
 # HD overhaul — H5 the status line in T1
 
-_Status: done · see [brainstorm.md](brainstorm.md) §5, §7.3 and §8_
+_Status: done · see [brainstorm.md](brainstorm.md) §5, §7.3 and §8 · mini
+was later redrawn at its own size: [mini-sprite.md](mini-sprite.md)_
 
 **Goal:** HD reaches every user. The Claude Code status line shows the HD
 buddy as truecolor half-block sprites. The server bakes them, and bash keeps

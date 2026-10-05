@@ -137,12 +137,12 @@ describe("writeStatusState bakes the sprite", () => {
     const { status: s, cached } = write("cat", {});
     expect(Array.isArray(s.hdFrames)).toBe(true);
     expect((s.hdFrames as string[]).length).toBeGreaterThan(1);
-    expect(s.hdWidth).toBeLessThanOrEqual(14);
+    expect(s.hdWidth).toBeLessThanOrEqual(16);
     expect(cached).toBe(true);
   });
 
   test("full is bigger; off and gameFeel off bake nothing; every species bakes", () => {
-    expect(write("cat", { statusSprite: "full" }).status.hdWidth as number).toBeGreaterThan(14);
+    expect(write("cat", { statusSprite: "full" }).status.hdWidth as number).toBeGreaterThan(16);
     expect(write("cat", { statusSprite: "off" }).status.hdFrames).toBeUndefined();
     expect(write("cat", { gameFeel: "off" }).status.hdFrames).toBeUndefined();
     expect(write("duck", {}).status.hdFrames).toBeDefined();

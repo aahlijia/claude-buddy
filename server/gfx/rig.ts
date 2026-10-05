@@ -388,15 +388,18 @@ function shadeCell(
   x: number,
   y: number,
   bright: number,
+  dither = true,
+  floor = 0,
+  ambient = 0.22,
 ): RGBA {
   const ramp = (shiny && mat.shiny) || mat.ramp;
   const top = ramp.length - 1;
   if (mat.flat) return ramp[top];
   const lambert = Math.max(0, n[0] * LIGHT[0] + n[1] * LIGHT[1] + n[2] * LIGHT[2]);
-  const v = Math.min(1, (0.22 + 0.9 * lambert) * bright) * top;
+  const v = Math.min(1, (ambient + 0.9 * lambert) * bright) * top;
   const lo = Math.floor(v);
-  const threshold = 0.5 + (BAYER[(y & 3) * 4 + (x & 3)] - 0.5) * 0.45;
-  let c = ramp[Math.min(top, v - lo > threshold ? lo + 1 : lo)];
+  const threshold = dither ? 0.5 + (BAYER[(y & 3) * 4 + (x & 3)] - 0.5) * 0.45 : 0.5;
+  let c = ramp[Math.min(top, Math.max(Math.min(floor, top - 1), v - lo > threshold ? lo + 1 : lo))];
   // Warm bounce light on undersides.
   if (n[1] > 0.35) c = mix(c, ramp[Math.max(0, top - 1)], 0.25 * Math.min(1, (n[1] - 0.35) / 0.5));
   if (mat.gloss) {
@@ -409,20 +412,44 @@ function shadeCell(
 
 // ─── Render ─────────────────────────────────────────────────────────────────
 
-export function renderRig(rig: RigDef, pose: Pose, opts: RenderOptions = {}): Framebuffer {
+/**
+ * What the rasterizer knows about each pixel before any lighting: which part
+ * owns it, its material and its surface normal. Resolving a raster (light,
+ * inner lines, rim, outline) is the style pipeline; keeping the two apart
+ * lets the mini status sprite shrink the raster and light it at its own
+ * size instead of averaging finished pixels (statussprite.ts).
+ */
+export interface RigRaster {
+  width: number;
+  height: number;
+  /** Index into `placed` per pixel, -1 = empty. */
+  owner: Int16Array;
+  /** Material key per pixel ("" = empty). */
+  key: string[];
+  nx: Float64Array;
+  ny: Float64Array;
+  nz: Float64Array;
+  /** The owning part's brightness (`PartDef.shade`). */
+  bright: Float64Array;
+  placed: Placed[];
+}
+
+/** Rasterize a posed rig: ownership, materials and normals, no color yet. */
+export function rasterRig(rig: RigDef, pose: Pose): RigRaster {
   const W = rig.width;
   const H = rig.height;
-  const fb = new Framebuffer(W, H);
-  const owner = new Int16Array(W * H).fill(-1);
-  const color: RGBA[] = new Array(W * H);
-  const flatBuf = new Uint8Array(W * H);
-  const alphaBuf = new Float32Array(W * H).fill(1);
-  const shimmer = pose.alpha ?? 1;
-  const nxBuf = new Float32Array(W * H);
-  const placed = place(rig, pose);
-  const groups = placed.map((p) => p.part.group ?? p.part.name);
-
-  placed.forEach((pl, idx) => {
+  const r: RigRaster = {
+    width: W,
+    height: H,
+    owner: new Int16Array(W * H).fill(-1),
+    key: new Array<string>(W * H).fill(""),
+    nx: new Float64Array(W * H),
+    ny: new Float64Array(W * H),
+    nz: new Float64Array(W * H),
+    bright: new Float64Array(W * H),
+    placed: place(rig, pose),
+  };
+  r.placed.forEach((pl, idx) => {
     const m = shapeMask(pl.shape);
     const inv = invert(pl.world);
     const corners = [apply(pl.world, 0, 0), apply(pl.world, m.w, 0), apply(pl.world, 0, m.h), apply(pl.world, m.w, m.h)];
@@ -440,21 +467,55 @@ export function renderRig(rig: RigDef, pose: Pose, opts: RenderOptions = {}): Fr
         if (sx < 0 || sy < 0 || sx >= m.w || sy >= m.h) continue;
         const i = sy * m.w + sx;
         const k = m.key[i];
-        if (!k) continue;
-        const mat = rig.materials[k];
-        if (!mat) continue;
+        if (!k || !rig.materials[k]) continue;
         // Normals rotate with the part; the light stays put.
-        const nx = m.nx[i] * ca - m.ny[i] * sa;
-        const ny = m.nx[i] * sa + m.ny[i] * ca;
         const o = y * W + x;
-        color[o] = shadeCell(mat, !!opts.shiny, [nx, ny, m.nz[i]], x, y, pl.part.shade ?? 1);
-        owner[o] = idx;
-        nxBuf[o] = mat.flat ? 0 : nx;
-        flatBuf[o] = mat.flat ? 1 : 0;
-        alphaBuf[o] = mat.alpha === undefined ? 1 : Math.max(0, Math.min(1, mat.alpha * shimmer));
+        r.owner[o] = idx;
+        r.key[o] = k;
+        r.nx[o] = m.nx[i] * ca - m.ny[i] * sa;
+        r.ny[o] = m.nx[i] * sa + m.ny[i] * ca;
+        r.nz[o] = m.nz[i];
+        r.bright[o] = pl.part.shade ?? 1;
       }
     }
   });
+  return r;
+}
+
+export interface ResolveOptions extends RenderOptions {
+  /** Ordered dither between ramp steps (off for tiny sprites, where it's noise). */
+  dither?: boolean;
+  /** How far inner lines darken toward the outline (0.55; tiny sprites want less). */
+  innerLine?: number;
+  /** Lowest lighting-ramp step used: 1 keeps the darkest step for the
+   *  outline, so a tiny sprite's shadows don't read as holes. */
+  rampFloor?: number;
+  /** Ambient light (0.22): tiny sprites read better a little brighter. */
+  ambient?: number;
+}
+
+/** Light and line a raster into pixels: the shared style pipeline. */
+export function resolveRig(rig: RigDef, r: RigRaster, pose: Pose, opts: ResolveOptions = {}): Framebuffer {
+  const W = r.width;
+  const H = r.height;
+  const fb = new Framebuffer(W, H);
+  const { owner, placed } = r;
+  const color: RGBA[] = new Array(W * H);
+  const flatBuf = new Uint8Array(W * H);
+  const alphaBuf = new Float32Array(W * H).fill(1);
+  const shimmer = pose.alpha ?? 1;
+  const nxBuf = new Float32Array(W * H);
+  const groups = placed.map((p) => p.part.group ?? p.part.name);
+  const dither = opts.dither ?? true;
+
+  for (let o = 0; o < W * H; o++) {
+    if (owner[o] < 0) continue;
+    const mat = rig.materials[r.key[o]];
+    color[o] = shadeCell(mat, !!opts.shiny, [r.nx[o], r.ny[o], r.nz[o]], o % W, Math.floor(o / W), r.bright[o], dither, opts.rampFloor ?? 0, opts.ambient ?? 0.22);
+    nxBuf[o] = mat.flat ? 0 : r.nx[o];
+    flatBuf[o] = mat.flat ? 1 : 0;
+    alphaBuf[o] = mat.alpha === undefined ? 1 : Math.max(0, Math.min(1, mat.alpha * shimmer));
+  }
 
   // Inner lines: where a part overlaps one behind it (different group),
   // darken its edge so limbs and heads read as separate masses.
@@ -474,7 +535,7 @@ export function renderRig(rig: RigDef, pose: Pose, opts: RenderOptions = {}): Fr
           if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
           const other = owner[yy * W + xx];
           if (other >= 0 && other < me && groups[other] !== groups[me]) {
-            c = mix(c, outline, 0.55);
+            c = mix(c, outline, opts.innerLine ?? 0.55);
             break;
           }
         }
@@ -549,6 +610,11 @@ export function renderRig(rig: RigDef, pose: Pose, opts: RenderOptions = {}): Fr
   return opts.flip ? mirror(fb) : fb;
 }
 
+/** Render one posed frame at the rig's own size. */
+export function renderRig(rig: RigDef, pose: Pose, opts: RenderOptions = {}): Framebuffer {
+  return resolveRig(rig, rasterRig(rig, pose), pose, opts);
+}
+
 function mirror(fb: Framebuffer): Framebuffer {
   const out = new Framebuffer(fb.width, fb.height);
   for (let y = 0; y < fb.height; y++) for (let x = 0; x < fb.width; x++) out.set(fb.width - 1 - x, y, fb.get(x, y));
@@ -557,3 +623,194 @@ function mirror(fb: Framebuffer): Framebuffer {
 
 /** Shorthand for authoring ramps. */
 export const ramp = (...colors: string[]): RGBA[] => colors.map(hex);
+
+// ─── Mini (status-line) sprites ────────────────────────────────────────────
+
+/** How strongly a role claims a shrunken pixel it shares with others: the
+ *  face wins over fur, so a snout or an ear tip survives the shrink. */
+const ROLE_WEIGHT: Partial<Record<Role, number>> = { eye: 1.5, mouth: 1.2, snout: 1.3, horn: 1.4, ear: 1.2 };
+
+/** Roles whose lone top pixels are trimmed (round masses, not tips). */
+const MASS = new Set<Role>(["body", "head", "belly"]);
+
+/** Eyes smaller than this many mini pixels are drawn as a designed dot. */
+const EYE_DOT = 2.5;
+
+/**
+ * Shrink a posed raster by `f` (any real factor ≥ 1) into a `w`×`h` window
+ * whose top-left sits at source pixel (`ox`, `oy`), ready to be resolved
+ * (lit, lined, outlined) at its own size.
+ *
+ * Each output pixel samples a 4×4 grid: it's solid when enough samples land
+ * on the buddy, owned by the part with the heaviest vote, and keeps that
+ * part's dominant material and averaged normal — flat ramp colors, never an
+ * average of finished pixels. Eyes too small to survive that are redrawn the
+ * way a pixel artist would: a 1×2 ink dot that drops to one pixel when the
+ * eye closes, centered where the eye was.
+ */
+export function shrinkRig(rig: RigDef, r: RigRaster, pose: Pose, f: number, ox: number, oy: number, w: number, h: number, cover = 0.45): RigRaster {
+  const n = w * h;
+  const out: RigRaster = {
+    width: w,
+    height: h,
+    owner: new Int16Array(n).fill(-1),
+    key: new Array<string>(n).fill(""),
+    nx: new Float64Array(n),
+    ny: new Float64Array(n),
+    nz: new Float64Array(n),
+    bright: new Float64Array(n),
+    placed: r.placed,
+  };
+
+  // Eye extents at full size (to pick dots over shrinking).
+  const eyes = new Map<number, { x0: number; y0: number; x1: number; y1: number; sx: number; n: number; ink: string }>();
+  for (let o = 0; o < r.width * r.height; o++) {
+    const own = r.owner[o];
+    if (own < 0 || r.placed[own].part.role !== "eye") continue;
+    const x = o % r.width;
+    const y = Math.floor(o / r.width);
+    const e = eyes.get(own) ?? { x0: x, y0: y, x1: x, y1: y, sx: 0, n: 0, ink: r.key[o] };
+    e.x0 = Math.min(e.x0, x);
+    e.y0 = Math.min(e.y0, y);
+    e.x1 = Math.max(e.x1, x);
+    e.y1 = Math.max(e.y1, y);
+    e.sx += x;
+    e.n++;
+    if (luma(rig, r.key[o]) < luma(rig, e.ink)) e.ink = r.key[o];
+    eyes.set(own, e);
+  }
+  const dots = new Set<number>();
+  for (const [own, e] of eyes) if ((e.x1 - e.x0 + 1) / f < EYE_DOT && (e.y1 - e.y0 + 1) / f < EYE_DOT) dots.add(own);
+
+  const S = 4;
+  const votes = new Map<number, number>();
+  const sample = (x: number, y: number, i: number, j: number): number => {
+    const sx = Math.floor(ox + (x + (i + 0.5) / S) * f);
+    const sy = Math.floor(oy + (y + (j + 0.5) / S) * f);
+    return sx < 0 || sy < 0 || sx >= r.width || sy >= r.height ? -1 : sy * r.width + sx;
+  };
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      votes.clear();
+      let filled = 0;
+      let dotted = -1;
+      for (let j = 0; j < S; j++) {
+        for (let i = 0; i < S; i++) {
+          const o = sample(x, y, i, j);
+          if (o < 0 || r.owner[o] < 0) continue;
+          filled++;
+          const own = r.owner[o];
+          // A dotted eye's pixels count as the head under it (redrawn below).
+          if (dots.has(own)) dotted = own;
+          else votes.set(own, (votes.get(own) ?? 0) + (ROLE_WEIGHT[r.placed[own].part.role] ?? 1));
+        }
+      }
+      if (filled < cover * S * S) continue;
+      let best = -1;
+      let bestV = 0;
+      for (const [own, v] of votes) if (v > bestV || (v === bestV && own > best)) [best, bestV] = [own, v];
+      if (best < 0) best = parentOf(r.placed, dotted);
+      // The winner's dominant material and mean normal.
+      const keys = new Map<string, number>();
+      let ax = 0, ay = 0, az = 0, br = 1, cnt = 0;
+      for (let j = 0; j < S; j++) {
+        for (let i = 0; i < S; i++) {
+          const o = sample(x, y, i, j);
+          if (o < 0 || r.owner[o] !== best) continue;
+          keys.set(r.key[o], (keys.get(r.key[o]) ?? 0) + 1);
+          ax += r.nx[o];
+          ay += r.ny[o];
+          az += r.nz[o];
+          br = r.bright[o];
+          cnt++;
+        }
+      }
+      let key = "";
+      let kc = 0;
+      for (const [k, c] of keys) if (c > kc) [key, kc] = [k, c];
+      if (!cnt) {
+        // Only dotted eye under this pixel: borrow the head's material.
+        key = firstKey(rig, r.placed[best]) ?? "";
+        az = 1;
+      }
+      const l = Math.hypot(ax, ay, az) || 1;
+      const o = y * w + x;
+      out.owner[o] = best;
+      out.key[o] = key;
+      out.nx[o] = ax / l;
+      out.ny[o] = ay / l;
+      out.nz[o] = az / l;
+      out.bright[o] = br;
+    }
+  }
+
+  // Silhouette cleanup: a lone pixel poking up from a body or head (the
+  // crown of a shrunk ellipse) is a nub, not a feature. Ears, horns and
+  // antennas keep their tips.
+  const solid = (x: number, y: number) => x >= 0 && y >= 0 && x < w && y < h && out.owner[y * w + x] >= 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const o = y * w + x;
+      if (out.owner[o] < 0 || !MASS.has(r.placed[out.owner[o]].part.role)) continue;
+      if (solid(x, y + 1) && !solid(x, y - 1) && !solid(x - 1, y) && !solid(x + 1, y)) out.owner[o] = -1;
+    }
+  }
+
+  // Dot columns, left to right; two eyes of one face keep a pixel between them.
+  const cols = new Map<number, number>();
+  const order = [...dots].sort((a, b) => eyes.get(a)!.sx / eyes.get(a)!.n - eyes.get(b)!.sx / eyes.get(b)!.n);
+  order.forEach((own, i) => {
+    const e = eyes.get(own)!;
+    let x = Math.floor((e.sx / e.n + 0.5 - ox) / f);
+    const prev = order[i - 1];
+    if (prev !== undefined && x - cols.get(prev)! < 2) {
+      // Push the pair apart, away from the face's middle.
+      const px = cols.get(prev)!;
+      if (px - 1 >= 0) cols.set(prev, px - 1);
+      x = Math.max(x, cols.get(prev)! + 2);
+    }
+    cols.set(own, x);
+  });
+
+  // The dots: a column over the eye's ink rows (two at most), one pixel
+  // when the eye is a lid line (closed, half, happy).
+  for (const own of dots) {
+    const e = eyes.get(own)!;
+    const variant = pose.parts[r.placed[own].part.name]?.variant ?? "open";
+    const x = cols.get(own)!;
+    const yb = Math.floor((e.y1 + 0.5 - oy) / f);
+    const yt = Math.floor((e.y0 + 0.5 - oy) / f);
+    const rows = variant === "happy" ? [yt] : variant === "closed" || variant === "half" ? [yb] : yt < yb ? [yb - 1, yb] : [yb];
+    for (const y of rows) {
+      if (x < 0 || y < 0 || x >= w || y >= h) continue;
+      const o = y * w + x;
+      out.owner[o] = own;
+      out.key[o] = e.ink;
+      out.nx[o] = 0;
+      out.ny[o] = 0;
+      out.nz[o] = 1;
+      out.bright[o] = 1;
+    }
+  }
+  return out;
+}
+
+function luma(rig: RigDef, key: string): number {
+  const mat = rig.materials[key];
+  if (!mat) return Infinity;
+  const c = mat.ramp[mat.ramp.length - 1];
+  return c[0] * 0.3 + c[1] * 0.55 + c[2] * 0.15;
+}
+
+function parentOf(placed: readonly Placed[], idx: number): number {
+  const name = placed[idx]?.part.parent;
+  const p = placed.findIndex((pl) => pl.part.name === name);
+  return p >= 0 ? p : idx;
+}
+
+function firstKey(rig: RigDef, pl: Placed): string | undefined {
+  const s = pl.shape;
+  if (s.kind !== "grid") return s.mat;
+  for (const row of s.rows) for (const ch of row) if (ch !== "." && ch !== " " && rig.materials[ch]) return ch;
+  return undefined;
+}

@@ -16,14 +16,20 @@ import { downscale } from "./diorama.ts";
 import { encodeHalfblock } from "./encode/halfblock.ts";
 import { Framebuffer } from "./framebuffer.ts";
 import { blinkAt } from "./blob.ts";
-import { ANIM_INFO, hasHd, renderHd, type Anim } from "./hd.ts";
+import { ANIM_INFO, hasHd, rasterHd, renderHd, type Anim, type HdRaster } from "./hd.ts";
 import type { HdGear } from "./gear.ts";
+import { resolveRig, shrinkRig, type RigRaster } from "./rig.ts";
 
 export const STATUS_SPRITES = ["off", "mini", "full"] as const;
 export type StatusSprite = (typeof STATUS_SPRITES)[number];
 
 /** Target sprite height in pixels (two per row): mini ≈ 6 rows, full ≈ 12. */
 const TARGET_PX: Record<Exclude<StatusSprite, "off">, number> = { mini: 12, full: 24 };
+
+/** Mini: the buddy's tallest pose spans this many pixels, plus a 1-px outline on top. */
+const MINI_BODY_PX = TARGET_PX.mini - 1;
+/** Mini: widest sprite in cells, outline included. */
+const MINI_MAX_W = 16;
 
 /** Moods the status line already tracks (server/state.ts `Emotion`). */
 export type SpriteMood = "neutral" | "happy" | "angry" | "bored" | "surprised";
@@ -122,6 +128,7 @@ function crop(fb: Framebuffer, x0: number, y0: number, w: number, h: number): Fr
  */
 export function bakeStatusSprite(look: SpriteLook, size: StatusSprite, mood: SpriteMood = "neutral", still = false): BakedSprite | null {
   if (size === "off" || !hasHd(look.species)) return null;
+  if (size === "mini") return bakeMini(look, mood, still);
   const render = (p: Pose, gear: HdGear | null = look.gear ?? null) => renderHd(look.species, p.anim, p.t, { rarity: look.rarity, shiny: look.shiny, seed: look.seed, gear: gear ?? undefined })!;
   const key = still ? { poses: [idleAt(0, 4)], sequence: [0] } : keyPoses(mood, look.seed);
   const celebPoses = still ? [victoryAt(0, 4)] : [0, 1, 2, 3].map((k) => victoryAt(k, 4));
@@ -151,4 +158,107 @@ export function bakeStatusSprite(look: SpriteLook, size: StatusSprite, mood: Spr
     width: (x1 - x0) / f,
     rows: (y1 - y0) / f / 2,
   };
+}
+
+// ─── Mini: drawn at its own size ───────────────────────────────────────────
+
+/**
+ * At 12 px tall, shrinking a finished 64×56 frame averages the outline, the
+ * eyes and the shading into mush. Mini instead shrinks the *raster* (which
+ * part and material each pixel is, and its normal; rig.ts `shrinkRig`) and
+ * runs the style pipeline at the small size: flat ramp colors lit a little
+ * brighter and without dither, a crisp 1-px sel-out outline, no inner lines,
+ * and eyes redrawn as designed dots. No rarity rim (it would cover half the
+ * pixels); the status line already colors the name by rarity.
+ * docs/game-feel/hd-overhaul/mini-sprite.md
+ */
+function bakeMini(look: SpriteLook, mood: SpriteMood, still: boolean): BakedSprite {
+  const key = still ? { poses: [idleAt(0, 4)], sequence: [0] } : keyPoses(mood, look.seed);
+  const celebPoses = still ? [victoryAt(0, 4)] : [0, 1, 2, 3].map((k) => victoryAt(k, 4));
+  const all = [...key.poses, ...celebPoses];
+  const opts = { rarity: look.rarity, shiny: look.shiny, seed: look.seed };
+  const src = all.map((p) => rasterHd(look.species, p.anim, p.t, { ...opts, gear: look.gear })!);
+
+  // The scale comes from the bare buddy's tallest single pose, so a hat adds
+  // rows instead of shrinking it, and a hop costs no resolution: hops are
+  // clamped into the headroom instead (a 1–2 px hop still reads at 1 Hz).
+  const bareSrc = look.gear ? all.map((p) => rasterHd(look.species, p.anim, p.t, opts)!) : src;
+  const tallest = Math.max(...bareSrc.map((s) => { const b = rasterBox([s], false)!; return b[3] - b[1]; }));
+  const boxes = src.map((s) => rasterBox([s], true)!);
+  const bx0 = Math.min(...boxes.map((b) => b[0]));
+  const bx1 = Math.max(...boxes.map((b) => b[2]));
+  // Long buddies (a dragon's wings, a cat's tail) give up a little height
+  // to stay within the mini footprint.
+  const f = Math.max(tallest / MINI_BODY_PX, (bx1 - bx0) / (MINI_MAX_W - 2));
+  // The ground: where the feet are when nothing hops.
+  const by1 = Math.max(...boxes.map((b) => b[3]));
+  // An even row count with one row of headroom for the outline; the feet sit
+  // on the bottom row (no outline under them: they stand on the line).
+  const h = Math.ceil((Math.max(...boxes.map((b) => b[3] - b[1])) / f + 1) / 2) * 2;
+  const w = Math.ceil((bx1 - bx0) / f) + 2;
+  const ox = bx0 - f;
+
+  const frame = (s: HdRaster, i: number): string => {
+    // Lower a pose that would rise past the headroom (the hop's peak).
+    const oy = Math.min(by1 - h * f, boxes[i][1] - f);
+    const out = new Framebuffer(w, h);
+    if (s.under) out.draw(shrinkPixels(s.under, f, ox, oy - s.dy, w, h), 0, 0);
+    const mini = shrinkRig(s.rig, s.raster, s.pose, f, ox, oy, w, h);
+    out.draw(resolveRig(s.rig, mini, s.pose, { shiny: look.shiny, noShadow: true, dither: false, innerLine: 0, rampFloor: 1, ambient: 0.34 }), 0, 0);
+    if (s.over) out.draw(shrinkPixels(s.over, f, ox, oy - s.dy, w, h), 0, 0);
+    return encodeHalfblock(out, { color: "truecolor" }).join("\n");
+  };
+  const frames = src.map(frame);
+  return {
+    frames: frames.slice(0, key.poses.length),
+    sequence: key.sequence,
+    celebFrames: frames.slice(key.poses.length),
+    celebSequence: celebPoses.map((_, i) => i),
+    width: w,
+    rows: h / 2,
+  };
+}
+
+/** Union bounding box of rasters (and, with `layers`, their gear layers). */
+function rasterBox(src: readonly HdRaster[], layers: boolean): [number, number, number, number] | null {
+  let x0 = Infinity, y0 = Infinity, x1 = -1, y1 = -1;
+  const hit = (x: number, y: number) => {
+    x0 = Math.min(x0, x);
+    y0 = Math.min(y0, y);
+    x1 = Math.max(x1, x + 1);
+    y1 = Math.max(y1, y + 1);
+  };
+  for (const s of src) {
+    const r: RigRaster = s.raster;
+    for (let o = 0; o < r.width * r.height; o++) if (r.owner[o] >= 0) hit(o % r.width, Math.floor(o / r.width));
+    if (!layers) continue;
+    for (const l of [s.under, s.over]) {
+      if (!l) continue;
+      for (let y = 0; y < l.height; y++) for (let x = 0; x < l.width; x++) if (l.get(x, y)[3] >= SOLID) hit(x, y + s.dy);
+    }
+  }
+  return x1 < 0 ? null : [x0, y0, x1, y1];
+}
+
+/** Shrink a pixel layer (gear drawn as pixels) on the same grid as shrinkRig. */
+function shrinkPixels(src: Framebuffer, f: number, ox: number, oy: number, w: number, h: number): Framebuffer {
+  const out = new Framebuffer(w, h);
+  const S = 4;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let r = 0, g = 0, b = 0, n = 0;
+      for (let j = 0; j < S; j++) {
+        for (let i = 0; i < S; i++) {
+          const c = src.get(Math.floor(ox + (x + (i + 0.5) / S) * f), Math.floor(oy + (y + (j + 0.5) / S) * f));
+          if (c[3] < SOLID) continue;
+          r += c[0];
+          g += c[1];
+          b += c[2];
+          n++;
+        }
+      }
+      if (n >= 0.45 * S * S) out.set(x, y, [Math.round(r / n), Math.round(g / n), Math.round(b / n), 255]);
+    }
+  }
+  return out;
 }

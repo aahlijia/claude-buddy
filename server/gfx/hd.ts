@@ -8,11 +8,11 @@
  */
 
 import type { Rarity, Species } from "../engine.ts";
-import { BLOB_H, BLOB_W, RIM_BLOB, SPARK, backdrop, blobBody, blobPalette, glow, motes, renderBlob } from "./blob.ts";
+import { BLOB_H, BLOB_W, RIM_BLOB, SPARK, backdrop, blobBody, blobPalette, blobRaster, glow, motes, renderBlob } from "./blob.ts";
 import { HD_HEADROOM, drawBlobGear, drawTrinket, equipRig, gearPose, needsHeadroom, type HdGear } from "./gear.ts";
 import { Framebuffer } from "./framebuffer.ts";
 import { ANIM_INFO, poseRig, type Anim } from "./motion.ts";
-import { anchorOf, renderRig, type RigDef } from "./rig.ts";
+import { anchorOf, rasterRig, renderRig, type Pose, type RigDef, type RigRaster } from "./rig.ts";
 import { CAT } from "./species/cat.ts";
 import { DRAGON } from "./species/dragon.ts";
 import { DUCK } from "./species/duck.ts";
@@ -132,6 +132,52 @@ export function renderHd(species: Species, anim: Anim, t: number, opts: HdOption
   fb.draw(renderRig(rig, pose, { rarity, shiny: opts.shiny, flip: opts.flip }), 0, 0);
   if (moteCount) motes(fb, t, seed, moteCount, SPARK[rarity], true);
   return fb;
+}
+
+/**
+ * An HD buddy before lighting (rig.ts `RigRaster`), for renderers that
+ * resolve at their own size (the mini status sprite). Gear renderHd draws
+ * as pixels rather than rig parts comes along as layers: `under` (the
+ * trinket) and `over` (the blob's hat and weapon), each `dy` rows above the
+ * raster (a hat's headroom). Null for species without HD art.
+ */
+export interface HdRaster {
+  rig: RigDef;
+  pose: Pose;
+  raster: RigRaster;
+  under: Framebuffer | null;
+  over: Framebuffer | null;
+  /** Raster row of the layers' top row (≤ 0). */
+  dy: number;
+}
+
+export function rasterHd(species: Species, anim: Anim, t: number, opts: HdOptions = {}): HdRaster | null {
+  const gear = opts.gear;
+  if (species === "blob") {
+    const bo = { rarity: opts.rarity, shiny: opts.shiny, seed: opts.seed ?? 1, anim, palette: opts.hue ? blobPalette(opts.hue) : undefined };
+    const { rig, pose, raster } = blobRaster(t, bo);
+    if (!gear) return { rig, pose, raster, under: null, over: null, dy: 0 };
+    const pad = needsHeadroom(gear) ? HD_HEADROOM : 0;
+    const body = blobBody(t, bo);
+    let under: Framebuffer | null = null;
+    if (gear.trinket) {
+      under = new Framebuffer(rig.width, rig.height + pad);
+      drawTrinket(under, gear.trinket, restLeft("blob"), BLOB_GROUND + pad);
+    }
+    const over = new Framebuffer(rig.width, rig.height + pad);
+    drawBlobGear(over, gear, { ...body, cy: body.cy + pad }, t);
+    return { rig, pose, raster, under, over, dy: -pad };
+  }
+  const base = RIGS[species];
+  if (!base) return null;
+  const rig = equipRig(base, gear);
+  const pose = gearPose(poseRig(rig, anim, t, opts.seed ?? 1), gear, t);
+  let under: Framebuffer | null = null;
+  if (gear?.trinket) {
+    under = new Framebuffer(rig.width, rig.height);
+    drawTrinket(under, gear.trinket, restLeft(species), rig.ground);
+  }
+  return { rig, pose, raster: rasterRig(rig, pose), under, over: null, dy: 0 };
 }
 
 const BLOB_GROUND = 51;

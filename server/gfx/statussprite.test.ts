@@ -1,10 +1,40 @@
 import { describe, expect, test } from "bun:test";
 
 import { crc32 } from "./encode/png.ts";
+import { HD_SPECIES, rasterHd } from "./hd.ts";
+import { shrinkRig } from "./rig.ts";
 import { STATUS_SPRITES, bakeStatusSprite, keyPoses, type SpriteLook } from "./statussprite.ts";
 
 const LOOK: SpriteLook = { species: "cat", rarity: "rare", shiny: false, seed: 7 };
 const plain = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+type RGB = [number, number, number];
+const luma = (c: RGB) => c[0] * 0.3 + c[1] * 0.55 + c[2] * 0.15;
+
+/** Half-block frame → pixel rows (null = transparent). */
+function decode(frame: string): (RGB | null)[][] {
+  const out: (RGB | null)[][] = [];
+  for (const line of frame.split("\n")) {
+    const top: (RGB | null)[] = [];
+    const bot: (RGB | null)[] = [];
+    let fg: RGB | null = null;
+    let bg: RGB | null = null;
+    for (const m of line.matchAll(/\x1b\[([0-9;]*)m|([^\x1b])/g)) {
+      if (m[1] !== undefined) {
+        const c = m[1].split(";").map(Number);
+        fg = bg = null;
+        for (let k = 0; k < c.length; k++) {
+          if (c[k] === 38) (fg = [c[k + 2], c[k + 3], c[k + 4]]), (k += 4);
+          else if (c[k] === 48) (bg = [c[k + 2], c[k + 3], c[k + 4]]), (k += 4);
+        }
+        continue;
+      }
+      top.push(m[2] === "▀" || m[2] === "█" ? fg : null);
+      bot.push(m[2] === "▄" || m[2] === "█" ? fg : m[2] === "▀" ? bg : null);
+    }
+    out.push(top, bot);
+  }
+  return out;
+}
 
 describe("status-line sprite", () => {
   test("deterministic", () => {
@@ -34,7 +64,7 @@ describe("status-line sprite", () => {
 
   test("mini fits ~6 rows, full ~12; every frame is the same box", () => {
     for (const species of ["blob", "cat", "dragon"] as const) {
-      for (const [size, maxRows, maxW] of [["mini", 6, 14], ["full", 12, 28]] as const) {
+      for (const [size, maxRows, maxW] of [["mini", 6, 16], ["full", 12, 28]] as const) {
         const s = bakeStatusSprite({ ...LOOK, species }, size)!;
         expect(s.rows).toBeLessThanOrEqual(maxRows);
         expect(s.width).toBeLessThanOrEqual(maxW);
@@ -49,6 +79,52 @@ describe("status-line sprite", () => {
         }
       }
     }
+  });
+
+  test("mini: every species fills the 6-row budget, within 16 cells, feet on the bottom row", () => {
+    for (const species of HD_SPECIES) {
+      const s = bakeStatusSprite({ ...LOOK, species }, "mini")!;
+      expect(s.rows).toBe(6);
+      expect(s.width).toBeLessThanOrEqual(16);
+      // The bottom row carries the feet in every idle frame.
+      for (const f of s.frames) expect(plain(f).split("\n").at(-1)!.trim().length).toBeGreaterThan(0);
+    }
+  });
+
+  test("mini: drawn at its own size, with a crisp outline and real eyes", () => {
+    // The sel-out outline: each row's leftmost pixel is darker than the one
+    // inside it (a box-filtered thumbnail has no such edge).
+    for (const species of ["cat", "duck", "blob", "capybara"] as const) {
+      const px = decode(bakeStatusSprite({ ...LOOK, species }, "mini")!.frames[0]);
+      let rows = 0;
+      let edged = 0;
+      for (const row of px) {
+        const x = row.findIndex(Boolean);
+        if (x < 0 || !row[x + 1]) continue;
+        rows++;
+        if (luma(row[x]!) < luma(row[x + 1]!)) edged++;
+      }
+      expect(edged / rows).toBeGreaterThanOrEqual(0.75);
+    }
+    // The eyes are ink dots: the cat's eye ink is in the open pose.
+    expect(bakeStatusSprite(LOOK, "mini")!.frames[0]).toContain("30;24;48"); // #1e1830
+  });
+
+  test("shrinkRig: eyes become 1×2 dots, one pixel when closed, never touching", () => {
+    const dots = (t: number) => {
+      const r = rasterHd("cat", "idle", t, { seed: 7 })!;
+      const m = shrinkRig(r.rig, r.raster, r.pose, 4, 0, 0, 16, 14);
+      const px: [number, number][] = [];
+      for (let o = 0; o < m.width * m.height; o++) if (m.owner[o] >= 0 && m.placed[m.owner[o]].part.role === "eye") px.push([o % m.width, Math.floor(o / m.width)]);
+      return px;
+    };
+    const open = dots(0);
+    expect(open.length).toBe(4);
+    const xs = [...new Set(open.map((p) => p[0]))].sort((a, b) => a - b);
+    expect(xs.length).toBe(2);
+    expect(xs[1] - xs[0]).toBeGreaterThanOrEqual(2);
+    const shut = keyPoses("neutral", 7).poses.at(-1)!.t;
+    expect(dots(shut).length).toBe(2);
   });
 
   test("sequences index real frames; poses differ; a blink is in the idle loop", () => {
@@ -91,10 +167,10 @@ describe("status-line sprite", () => {
 });
 
 const GOLDEN: Record<string, number> = {
-  "blob/mini": 396944532,
+  "blob/mini": 1721162281,
   "blob/full": 1925503854,
-  "cat/mini": 1939859777,
+  "cat/mini": 3504845216,
   "cat/full": 3212951862,
-  "dragon/mini": 1940913160,
+  "dragon/mini": 893375421,
   "dragon/full": 138707025,
 };

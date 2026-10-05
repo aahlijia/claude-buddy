@@ -15,6 +15,7 @@
 import { mulberry32, type Rarity } from "../engine.ts";
 import { easeInCubic, easeInOutCubic, easeOutCubic, lerp, span, springDecay } from "./ease.ts";
 import { Framebuffer, blit, hex, mix, sprite, type RGBA, type Sprite } from "./framebuffer.ts";
+import type { Pose, RigDef, RigRaster } from "./rig.ts";
 
 export const BLOB_W = 64;
 export const BLOB_H = 56;
@@ -493,4 +494,96 @@ export function renderBlob(t: number, opts: BlobOptions = {}): Framebuffer {
     }
   }
   return fb;
+}
+
+// ─── As a rig raster (the mini status sprite) ──────────────────────────────
+
+/**
+ * The blob in rig terms (rig.ts `RigRaster`): the jelly dome, two eyes and a
+ * mouth as parts with materials and normals, so the mini status sprite can
+ * shrink and light it like every rigged species. Same geometry, gaze and
+ * expressions as `renderBlob`; no blush, aura or motes (they're sub-pixel
+ * at that size).
+ */
+export function blobRaster(t: number, opts: BlobOptions = {}): { rig: RigDef; pose: Pose; raster: RigRaster } {
+  const pal = opts.palette ?? (opts.shiny ? SHINY : MINT);
+  const pose = blobPose(t, opts);
+  const body = blobBody(t, opts);
+  const W = BLOB_W;
+  const H = BLOB_H;
+  const ink: Record<string, string> = { "#": "k", o: "w", p: "p", r: "r" };
+  const rig: RigDef = {
+    id: "blob",
+    width: W,
+    height: H,
+    ground: GROUND,
+    shadowRx: 19,
+    outline: pal.outline,
+    materials: {
+      b: { ramp: pal.ramp, gloss: 1 },
+      k: { ramp: [FACE_INK["#"]], flat: true },
+      w: { ramp: [FACE_INK.o], flat: true },
+      p: { ramp: [FACE_INK.p], flat: true },
+      r: { ramp: [FACE_INK.r], flat: true },
+    },
+    parts: [
+      { name: "body", role: "body", at: [0, 0], pivot: [0, 0], z: 0, shape: { kind: "ellipse", rx: 1, ry: 1, mat: "b" } },
+      { name: "eyeF", role: "eye", parent: "body", at: [0, 0], pivot: [0, 0], z: 1, group: "body", shape: { kind: "grid", rows: EYE.open.rows } },
+      { name: "eyeN", role: "eye", parent: "body", at: [0, 0], pivot: [0, 0], z: 1, group: "body", shape: { kind: "grid", rows: EYE.open.rows } },
+      { name: "mouth", role: "mouth", parent: "body", at: [0, 0], pivot: [0, 0], z: 1, group: "body", shape: { kind: "grid", rows: MOUTH.smile.rows } },
+    ],
+  };
+  const raster: RigRaster = {
+    width: W,
+    height: H,
+    owner: new Int16Array(W * H).fill(-1),
+    key: new Array<string>(W * H).fill(""),
+    nx: new Float64Array(W * H),
+    ny: new Float64Array(W * H),
+    nz: new Float64Array(W * H),
+    bright: new Float64Array(W * H).fill(1),
+    placed: rig.parts.map((part) => ({ part, shape: part.shape, world: [1, 0, 0, 1, 0, 0], angle: 0 })),
+  };
+  const { cx, cy, rx, ry } = body;
+  for (let y = Math.max(0, Math.floor(cy - ry - 1)); y <= Math.min(H - 1, Math.ceil(cy + ry + 1)); y++) {
+    for (let x = Math.max(0, Math.floor(cx - rx - 1)); x <= Math.min(W - 1, Math.ceil(cx + rx + 1)); x++) {
+      const dx = (x + 0.5 - cx) / rx;
+      const dy = (y + 0.5 - cy) / ry;
+      const p = dy > 0 ? 2.7 : 2;
+      if (Math.pow(Math.pow(Math.abs(dx), p) + Math.pow(Math.abs(dy), p), 1 / p) > 1) continue;
+      const n = norm([dx, dy * 0.9, Math.sqrt(Math.max(0, 1 - Math.min(1, dx * dx + dy * dy))) + 0.15]);
+      const o = y * W + x;
+      raster.owner[o] = 0;
+      raster.key[o] = "b";
+      [raster.nx[o], raster.ny[o], raster.nz[o]] = n;
+    }
+  }
+  const stamp = (s: Sprite, part: number, x0: number, y0: number) => {
+    for (let j = 0; j < s.height; j++) {
+      for (let i = 0; i < s.width; i++) {
+        const k = ink[s.rows[j][i]];
+        const x = Math.round(x0) + i;
+        const y = Math.round(y0) + j;
+        if (!k || x < 0 || y < 0 || x >= W || y >= H) continue;
+        const o = y * W + x;
+        raster.owner[o] = part;
+        raster.key[o] = k;
+        raster.nx[o] = raster.ny[o] = 0;
+        raster.nz[o] = 1;
+      }
+    }
+  };
+  // Face placement mirrors renderBlob.
+  const gaze = Math.round(pose.look * 1.6);
+  const eyeY = Math.round(cy - ry * 0.12);
+  const eyeDX = Math.round(rx * 0.36);
+  stamp(EYE[pose.eye], 1, cx - eyeDX - 3 + gaze, eyeY - 4);
+  stamp(EYE[pose.eye], 2, cx + eyeDX - 3 + gaze, eyeY - 4);
+  const m = MOUTH[pose.mouth];
+  stamp(m, 3, cx - Math.floor(m.width / 2) + Math.round(pose.look), eyeY + 3);
+  return {
+    rig,
+    pose: { parts: { eyeF: { variant: pose.eye }, eyeN: { variant: pose.eye }, mouth: { variant: pose.mouth } }, lift: pose.lift, flash: pose.flash, ko: pose.ko },
+    raster,
+  };
 }

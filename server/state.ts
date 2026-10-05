@@ -867,7 +867,7 @@ export interface StatusState {
 
 /** Cache of baked HD status sprites, keyed by everything that changes them. */
 const HD_SPRITE_CACHE = "hd-sprite.json";
-const HD_SPRITE_VERSION = 2;
+const HD_SPRITE_VERSION = 3;
 
 /**
  * Bake (or reuse) the HD status-line sprite. Baking renders a dozen HD frames

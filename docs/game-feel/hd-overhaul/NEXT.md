@@ -18,6 +18,7 @@ _A fresh session starts here. Last updated after H6, which completes the roadmap
 | H5: the status line in T1 | done | [h5-statusline.md](h5-statusline.md) |
 | H6: the roster and the cinematics | done | [h6-roster.md](h6-roster.md) |
 | Hats and gear on the HD rigs | done | [hd-gear.md](hd-gear.md) |
+| The mini status sprite, drawn at its own size | done | [mini-sprite.md](mini-sprite.md) |
 | **Polish (no fixed phase)** | **next** | the loose ends below |
 
 ## Read first (in this order)
@@ -54,6 +55,8 @@ The roadmap (H0–H6) is done. Pick from the loose ends; good candidates:
   sixel; the same diorama in the TUI's home screen.
 - From H5: an HD fight scene in the status line (fights keep the ASCII
   two-sprite scene); a 256-color sprite variant.
+- From the mini sprite: `full` through the same raster pipeline; a light
+  edge for dark species on dark terminals; an opt-in sextant tier.
 
 ## How to see your work
 
@@ -68,6 +71,8 @@ The roadmap (H0–H6) is done. Pick from the loose ends; good candidates:
 - `bun run diorama-demo` shows the H4 panel alone (keys cycle biome, hour,
   weather, species and fire reactions); `bun run scripts/h4-sheet.ts`
   re-renders its contact sheet (`--rows 3-7 --scale 2` to review a slice).
+- `bun run scripts/mini-sheet.ts` renders every species' baked status-line
+  frames, decoded from the strings bash prints (`--size full`, `--light`).
 - `/buddy sprite full` (or `statusSprite` in config.json) switches the status
   line's HD sprite; `bakeStatusSprite` in `server/gfx/statussprite.ts`
   renders the frames, so a quick Bun script can print them all side by side.
