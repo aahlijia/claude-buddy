@@ -20,8 +20,9 @@ describe("dashboard buddy card", () => {
     else expect(card("dragon")).not.toContain("▀");
   });
 
-  test("other species keep their ASCII art", () => {
-    expect(card("duck")).not.toContain("▀");
+  test("every species gets a portrait (H6)", () => {
+    if (pixels) expect(card("duck")).toContain("▀");
+    else expect(card("duck")).not.toContain("▀");
     expect(card("duck")).toContain("Pip");
   });
 });

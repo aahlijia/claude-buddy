@@ -209,8 +209,9 @@ describe("portraits", () => {
   });
 
   test("species without HD art return null", () => {
-    expect(portrait("duck")).toBeNull();
-    expect(portraitPixels("robot")).toBeNull();
+    expect(portrait("nope" as never)).toBeNull();
+    expect(portraitPixels("nope" as never)).toBeNull();
+    expect(portraitPixels("robot")).not.toBeNull();
   });
 
   test("deterministic, and the idle clock moves it", () => {
@@ -258,8 +259,8 @@ describe("rich game screens", () => {
     const s = fresh();
     expect(execute(s, CTX, ";me", T0, P).out).toContain("▀");
     expect(execute(s, CTX, ";", T0, P).out).toContain("▀");
-    // No portrait for a species without HD art: the ASCII sprite stays.
-    expect(execute(s, { ...CTX, species: "duck" }, ";", T0, P).out).not.toContain("▀");
+    // H6: every species has a portrait now.
+    expect(execute(s, { ...CTX, species: "duck" }, ";", T0, P).out).toContain("▀");
   });
 
   test("events open as a dialogue box with typed-out text", () => {

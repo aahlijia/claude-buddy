@@ -123,6 +123,8 @@ export interface FightResults {
   /** Loot lines (gear, coffee), as shown in the log. */
   drops: string[];
   boss: boolean;
+  /** The gear that dropped (the HD loot reveal opens a chest for it). */
+  loot?: { name: string; rarity: GearItem["rarity"]; slot: GearItem["slot"] };
 }
 
 export interface AnimFrame {
@@ -1200,6 +1202,7 @@ function conclude(
     const g = rollGear(rng, L, s.nextUid++, { luck, floor: floorRarity });
     lines.push(addToBag(s, g, p));
     results.drops.push(gearName(p, g));
+    results.loot = { name: g.name, rarity: g.rarity, slot: g.slot };
     if (g.rarity === "epic" || g.rarity === "legendary") journal(s, `Found ${g.name} (${g.rarity})`);
   }
   if (rng() < 0.12) {

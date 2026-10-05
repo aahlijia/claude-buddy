@@ -129,7 +129,9 @@ export type Beat = { line: number; hp: [number, number] } & (
   | { t: "secondwind" }
   | { t: "grow"; amount: number }
   | { t: "sprout"; heads: number }
-  | { t: "speech" }
+  | { t: "speech"; phase?: boolean }
+  /** A skill is used (HD: the special-move cut-in). Never narrated. */
+  | { t: "special"; id: SkillId; name: string }
   | { t: "flee"; ok: boolean }
   | { t: "ko"; who: Side }
 );
@@ -597,6 +599,7 @@ export function act(prev: Battle, a: Action): Battle {
       const s = SKILLS[a.id];
       const cool = hero.uniques?.includes("overclock") ? Math.max(1, s.cooldown - 1) : s.cooldown;
       hero.cd[a.id] = cool + 1; // +1: ticks down at end of this turn
+      beat(b, log, { t: "special", id: a.id, name: s.name }, false);
       switch (a.id) {
         case "strike":
           heroHit(b, rng, { mult: 1.7, style: "heavy" }, log);
@@ -660,7 +663,7 @@ export function act(prev: Battle, a: Action): Battle {
   if (foe.boss && !foe.phased && foe.hp < foe.maxHp / 2) {
     foe.phased = true;
     log.push(`${foe.name}: ${BOSS_LINES[foe.boss].phase}`);
-    beat(b, log, { t: "speech" });
+    beat(b, log, { t: "speech", phase: true });
   }
 
   // ── Foe action ──

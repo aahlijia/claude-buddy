@@ -1,14 +1,15 @@
 import { describe, expect, test } from "bun:test";
 
+import { SPECIES } from "../engine.ts";
 import { crc32 } from "./encode/png.ts";
 import type { Framebuffer } from "./framebuffer.ts";
-import { ANIMS, ANIM_INFO, HD_SPECIES, animDone, hasHd, renderHd, type Anim } from "./hd.ts";
+import { ANIMS, ANIM_INFO, HD_SPECIES, RIGS as HD_RIGS, animDone, hasHd, renderHd, type Anim } from "./hd.ts";
 import { poseRig } from "./motion.ts";
 import { place, renderRig, shapeMask, type RigDef } from "./rig.ts";
 import { CAT } from "./species/cat.ts";
 import { DRAGON } from "./species/dragon.ts";
 
-const RIGS: RigDef[] = [CAT, DRAGON];
+const RIGS = Object.values(HD_RIGS) as RigDef[];
 
 /** Every variant name the motion library asks a rig for. */
 const EYE_VARIANTS = ["half", "closed", "happy", "x", "angry"];
@@ -129,10 +130,10 @@ describe("motion library", () => {
 
 describe("HD species", () => {
   test("registry", () => {
-    expect([...HD_SPECIES].sort()).toEqual(["blob", "cat", "dragon"]);
-    expect(hasHd("cat")).toBe(true);
-    expect(hasHd("sparkit")).toBe(false);
-    expect(renderHd("sparkit", "idle", 0)).toBeNull();
+    // H6: the whole roster is in HD.
+    expect([...HD_SPECIES].sort()).toEqual([...SPECIES].sort());
+    for (const sp of SPECIES) expect(hasHd(sp)).toBe(true);
+    expect(renderHd("nope" as never, "idle", 0)).toBeNull();
   });
 
   for (const species of HD_SPECIES) {
@@ -156,7 +157,8 @@ describe("HD species", () => {
 
       test("hit flashes white; KO drains the color", () => {
         const idle = solid(renderHd(species, "idle", 0)!);
-        expect(solid(renderHd(species, "hit", 0.01)!).luma).toBeGreaterThan(idle.luma + 40);
+        // (Near-white buddies like the rabbit have little headroom left.)
+        expect(solid(renderHd(species, "hit", 0.01)!).luma).toBeGreaterThan(Math.min(idle.luma + 40, 215));
         expect(solid(renderHd(species, "ko", 1.1)!).sat).toBeLessThan(idle.sat * 0.8);
       });
     });
@@ -188,6 +190,108 @@ const GOLDEN: Record<string, number> = {
   "dragon/hit": 2687937462,
   "dragon/ko": 1300912158,
   "dragon/victory": 2432267434,
+  "octopus/idle": 3539353416,
+  "octopus/walk": 3687188528,
+  "octopus/attack": 2948530442,
+  "octopus/hit": 3691879926,
+  "octopus/ko": 4195302088,
+  "octopus/victory": 3535160197,
+  "ghost/idle": 447125545,
+  "ghost/walk": 1038181,
+  "ghost/attack": 2733154958,
+  "ghost/hit": 2471830704,
+  "ghost/ko": 1581612021,
+  "ghost/victory": 1620620189,
+  "robot/idle": 2134091714,
+  "robot/walk": 1434842195,
+  "robot/attack": 551734704,
+  "robot/hit": 1893214690,
+  "robot/ko": 2477324785,
+  "robot/victory": 4204874439,
+  "duck/idle": 1799854764,
+  "duck/walk": 3063146346,
+  "duck/attack": 2882859876,
+  "duck/hit": 3980710965,
+  "duck/ko": 3979877501,
+  "duck/victory": 3654243569,
+  "goose/idle": 3763054215,
+  "goose/walk": 2113543643,
+  "goose/attack": 2967186822,
+  "goose/hit": 61099340,
+  "goose/ko": 283098234,
+  "goose/victory": 3802061768,
+  "penguin/idle": 4111844983,
+  "penguin/walk": 2262229409,
+  "penguin/attack": 2536447876,
+  "penguin/hit": 4213743697,
+  "penguin/ko": 2746114696,
+  "penguin/victory": 15380528,
+  "owl/idle": 1645081098,
+  "owl/walk": 2801518784,
+  "owl/attack": 2995028937,
+  "owl/hit": 1277071519,
+  "owl/ko": 2851117516,
+  "owl/victory": 3414741309,
+  "cactus/idle": 2996476387,
+  "cactus/walk": 3777242467,
+  "cactus/attack": 2781119538,
+  "cactus/hit": 354092849,
+  "cactus/ko": 276731027,
+  "cactus/victory": 1693815847,
+  "mushroom/idle": 769548305,
+  "mushroom/walk": 831913696,
+  "mushroom/attack": 526704289,
+  "mushroom/hit": 1508991504,
+  "mushroom/ko": 1529252771,
+  "mushroom/victory": 2731222997,
+  "rabbit/idle": 359399226,
+  "rabbit/walk": 1983880345,
+  "rabbit/attack": 3082819017,
+  "rabbit/hit": 1922170640,
+  "rabbit/ko": 865926924,
+  "rabbit/victory": 2396879212,
+  "chonk/idle": 4277298466,
+  "chonk/walk": 4161152387,
+  "chonk/attack": 4162381481,
+  "chonk/hit": 824699129,
+  "chonk/ko": 2076690605,
+  "chonk/victory": 605342145,
+  "wyvern/idle": 2916203863,
+  "wyvern/walk": 2904282668,
+  "wyvern/attack": 912236319,
+  "wyvern/hit": 1242251719,
+  "wyvern/ko": 1140912847,
+  "wyvern/victory": 268306561,
+  "sparkit/idle": 3149330736,
+  "sparkit/walk": 3407714838,
+  "sparkit/attack": 2701212164,
+  "sparkit/hit": 3655663062,
+  "sparkit/ko": 1394554962,
+  "sparkit/victory": 3261424488,
+  "turtle/idle": 3255980698,
+  "turtle/walk": 251227320,
+  "turtle/attack": 1839498655,
+  "turtle/hit": 568255122,
+  "turtle/ko": 3730975470,
+  "turtle/victory": 195790446,
+  "snail/idle": 2523927019,
+  "snail/walk": 848768039,
+  "snail/attack": 3845532182,
+  "snail/hit": 785809863,
+  "snail/ko": 3984190619,
+  "snail/victory": 1082472078,
+  "axolotl/idle": 254667106,
+  "axolotl/walk": 1849490923,
+  "axolotl/attack": 1414222111,
+  "axolotl/hit": 3111635946,
+  "axolotl/ko": 860779803,
+  "axolotl/victory": 4281705475,
+  "capybara/idle": 3256538703,
+  "capybara/walk": 1447081151,
+  "capybara/attack": 883154290,
+  "capybara/hit": 1989155833,
+  "capybara/ko": 2307321258,
+  "capybara/victory": 2658934527,
 };
 
 describe("golden frames", () => {

@@ -141,11 +141,11 @@ describe("writeStatusState bakes the sprite", () => {
     expect(cached).toBe(true);
   });
 
-  test("full is bigger; off, gameFeel off and species without HD art bake nothing", () => {
+  test("full is bigger; off and gameFeel off bake nothing; every species bakes", () => {
     expect(write("cat", { statusSprite: "full" }).status.hdWidth as number).toBeGreaterThan(14);
     expect(write("cat", { statusSprite: "off" }).status.hdFrames).toBeUndefined();
     expect(write("cat", { gameFeel: "off" }).status.hdFrames).toBeUndefined();
-    expect(write("duck", {}).status.hdFrames).toBeUndefined();
+    expect(write("duck", {}).status.hdFrames).toBeDefined();
   });
 
   test("reduceMotion bakes one still pose", () => {

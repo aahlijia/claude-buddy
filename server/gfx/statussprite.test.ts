@@ -12,7 +12,9 @@ describe("status-line sprite", () => {
   });
 
   test("no sprite for species without HD art, or when off", () => {
-    expect(bakeStatusSprite({ ...LOOK, species: "duck" }, "mini")).toBeNull();
+    expect(bakeStatusSprite({ ...LOOK, species: "nope" as never }, "mini")).toBeNull();
+    // H6: every real species now has one.
+    expect(bakeStatusSprite({ ...LOOK, species: "duck" }, "mini")).not.toBeNull();
     expect(bakeStatusSprite(LOOK, "off")).toBeNull();
     expect(STATUS_SPRITES).toEqual(["off", "mini", "full"]);
   });

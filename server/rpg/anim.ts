@@ -33,6 +33,8 @@ type Poses = Partial<Record<Side, ActorState>>;
 
 class Reel {
   readonly cues: Cue[] = [];
+  /** HD-only hints for the next cue (cut-ins, boss phases). */
+  private hint: NonNullable<StageState["hd"]> = {};
   constructor(
     public hp: [number, number],
     public marks: Marks,
@@ -40,12 +42,21 @@ class Reel {
   ) {}
 
   push(ms: number, poses: Poses = {}, motes: Mote[] = [], shake = 0, extra: Partial<StageState> = {}): void {
+    if (this.hint.cutin || this.hint.phase) {
+      extra = { ...extra, hd: { ...this.hint, ...extra.hd } };
+      this.hint = {};
+    }
     this.cues.push({
       stage: { hero: poses.hero, foe: poses.foe, motes, shake, marks: { ...this.marks }, ...extra },
       hp: [this.hp[0], this.hp[1]],
       lines: this.lines,
       ms,
     });
+  }
+
+  /** Hang an HD-only hint on the next cue; the cell stage never sees it. */
+  hintNext(h: NonNullable<StageState["hd"]>): void {
+    this.hint = { ...this.hint, ...h };
   }
 
   reveal(b: Beat): void {
@@ -309,7 +320,8 @@ function sprout(r: Reel, b: Extract<Beat, { t: "sprout" }>): void {
   r.push(80, { foe: { tint: "magic" } }, [pop("foe", `${b.heads} HEADS`, "magenta", true)], -1);
 }
 
-function speech(r: Reel, b: Beat): void {
+function speech(r: Reel, b: Extract<Beat, { t: "speech" }>): void {
+  if (b.phase) r.hintNext({ phase: true });
   r.reveal(b);
   r.push(120, { foe: { eye: EYES.attack, x: -1 } }, [{ at: "foe", y: 1, text: "◣", ink: "white" }]);
   r.push(380, { foe: { eye: EYES.attack } }, [{ at: "foe", y: 1, text: "◣", ink: "white" }]);
@@ -426,6 +438,8 @@ export function direct(prev: Battle, next: Battle, g: Geometry): Cue[] {
         return sprout(r, b);
       case "speech":
         return speech(r, b);
+      case "special":
+        return r.hintNext({ cutin: { name: b.name, by: "hero" } });
       case "flee":
         return flee(r, b);
       case "ko":

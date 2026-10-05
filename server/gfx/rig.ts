@@ -30,6 +30,8 @@ export interface Material {
   flat?: boolean;
   /** Specular strength (0 = matte). */
   gloss?: number;
+  /** Opacity, 0..1 (ghosts). Translucent materials shimmer with `Pose.alpha`. */
+  alpha?: number;
 }
 
 export type Shape =
@@ -79,6 +81,8 @@ export interface PartDef {
   seg?: number;
   /** Brightness multiplier (far-side limbs sit in shade). */
   shade?: number;
+  /** Phase offset (radians) for chains that sway together: tentacles. */
+  phase?: number;
 }
 
 export interface RigDef {
@@ -93,6 +97,26 @@ export interface RigDef {
   outline: RGBA;
   /** Contact-shadow half width at rest. */
   shadowRx: number;
+  /** Per-species motion flavor (motion.ts); omitted = the plain library. */
+  feel?: Feel;
+}
+
+/**
+ * Species flavor as a handful of numbers instead of new frames
+ * (brainstorm §1.1): the ghost floats, the robot moves in servo steps,
+ * snails and turtles take their time, ducks waddle, rabbits hop.
+ */
+export interface Feel {
+  /** Hover height in px; the buddy bobs there and sinks on KO. */
+  float?: number;
+  /** Servo steps per second: idle, walk and victory snap between poses. */
+  servo?: number;
+  /** Time scale for idle and walk (< 1 is slower). */
+  tempo?: number;
+  /** Body roll (radians) while walking. */
+  waddle?: number;
+  /** Walk as hops this many px high. */
+  hop?: number;
 }
 
 export interface PartPose {
@@ -113,6 +137,8 @@ export interface Pose {
   flash?: number;
   /** Desaturate (knocked out). */
   ko?: boolean;
+  /** Opacity multiplier for translucent materials (ghost shimmer). */
+  alpha?: number;
 }
 
 export interface RenderOptions {
@@ -376,6 +402,8 @@ export function renderRig(rig: RigDef, pose: Pose, opts: RenderOptions = {}): Fr
   const owner = new Int16Array(W * H).fill(-1);
   const color: RGBA[] = new Array(W * H);
   const flatBuf = new Uint8Array(W * H);
+  const alphaBuf = new Float32Array(W * H).fill(1);
+  const shimmer = pose.alpha ?? 1;
   const nxBuf = new Float32Array(W * H);
   const placed = place(rig, pose);
   const groups = placed.map((p) => p.part.group ?? p.part.name);
@@ -409,6 +437,7 @@ export function renderRig(rig: RigDef, pose: Pose, opts: RenderOptions = {}): Fr
         owner[o] = idx;
         nxBuf[o] = mat.flat ? 0 : nx;
         flatBuf[o] = mat.flat ? 1 : 0;
+        alphaBuf[o] = mat.alpha === undefined ? 1 : Math.max(0, Math.min(1, mat.alpha * shimmer));
       }
     }
   });
@@ -484,7 +513,9 @@ export function renderRig(rig: RigDef, pose: Pose, opts: RenderOptions = {}): Fr
       if (y < H - 1 && final[o + W]) nb.push(final[o + W]!);
       if (!nb.length) continue;
       const avg = [0, 1, 2].map((k) => Math.round(nb.reduce((s, c) => s + c[k], 0) / nb.length));
-      fb.set(x, y, mix([avg[0], avg[1], avg[2], 255], outline, 0.72));
+      const a = Math.max(...[o - 1, o + 1, o - W, o + W].map((j) => (j >= 0 && j < W * H && final[j] ? alphaBuf[j] : 0)));
+      if (a >= 1) fb.set(x, y, mix([avg[0], avg[1], avg[2], 255], outline, 0.72));
+      else fb.blend(x, y, mix([avg[0], avg[1], avg[2], 255], outline, 0.72), a);
     }
   }
 
@@ -497,7 +528,8 @@ export function renderRig(rig: RigDef, pose: Pose, opts: RenderOptions = {}): Fr
       c = mix(c, [g, g, g, 255], 0.45);
     }
     if (flash) c = mix(c, WHITE, flash * 0.85);
-    fb.set(o % W, Math.floor(o / W), c);
+    if (alphaBuf[o] < 1) fb.blend(o % W, Math.floor(o / W), c, alphaBuf[o]);
+    else fb.set(o % W, Math.floor(o / W), c);
   }
 
   return opts.flip ? mirror(fb) : fb;

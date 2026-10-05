@@ -195,8 +195,15 @@ export interface StageState {
   /** Ambient tick, rotates the stun stars / pulses the charge. */
   tick?: number;
   /** HD hints the cell stage ignores: the contact moment of a blow, which
-   *  the HD stage hangs hit-stop, sparks, shake and the camera on. */
-  hd?: { impact?: Impact };
+   *  the HD stage hangs hit-stop, sparks, shake and the camera on; a
+   *  special-move cut-in or a boss phase change played before this cue. */
+  hd?: { impact?: Impact; cutin?: CutinHint; phase?: boolean };
+}
+
+export interface CutinHint {
+  /** The move's name, in big type on the panel. */
+  name: string;
+  by: Side;
 }
 
 export interface Impact {

@@ -14,13 +14,51 @@ import { ANIM_INFO, poseRig, type Anim } from "./motion.ts";
 import { anchorOf, renderRig, type RigDef } from "./rig.ts";
 import { CAT } from "./species/cat.ts";
 import { DRAGON } from "./species/dragon.ts";
+import { DUCK } from "./species/duck.ts";
+import { GOOSE } from "./species/goose.ts";
+import { PENGUIN } from "./species/penguin.ts";
+import { OWL } from "./species/owl.ts";
+import { CACTUS } from "./species/cactus.ts";
+import { MUSHROOM } from "./species/mushroom.ts";
+import { RABBIT } from "./species/rabbit.ts";
+import { CHONK } from "./species/chonk.ts";
+import { WYVERN } from "./species/wyvern.ts";
+import { SPARKIT } from "./species/sparkit.ts";
+import { TURTLE } from "./species/turtle.ts";
+import { SNAIL } from "./species/snail.ts";
+import { AXOLOTL } from "./species/axolotl.ts";
+import { CAPYBARA } from "./species/capybara.ts";
+import { GHOST } from "./species/ghost.ts";
+import { OCTOPUS } from "./species/octopus.ts";
+import { ROBOT } from "./species/robot.ts";
 
 export const HD_W = BLOB_W;
 export const HD_H = BLOB_H;
 
-const RIGS: Partial<Record<Species, RigDef>> = { cat: CAT, dragon: DRAGON };
+/** Every rigged species (the blob has its own jelly renderer). */
+export const RIGS: Partial<Record<Species, RigDef>> = {
+  cat: CAT,
+  dragon: DRAGON,
+  octopus: OCTOPUS,
+  ghost: GHOST,
+  robot: ROBOT,
+  duck: DUCK,
+  goose: GOOSE,
+  penguin: PENGUIN,
+  owl: OWL,
+  cactus: CACTUS,
+  mushroom: MUSHROOM,
+  rabbit: RABBIT,
+  chonk: CHONK,
+  wyvern: WYVERN,
+  sparkit: SPARKIT,
+  turtle: TURTLE,
+  snail: SNAIL,
+  axolotl: AXOLOTL,
+  capybara: CAPYBARA,
+};
 
-export const HD_SPECIES: readonly Species[] = ["blob", "cat", "dragon"];
+export const HD_SPECIES: readonly Species[] = ["blob", ...(Object.keys(RIGS) as Species[])];
 
 export function hasHd(species: Species): boolean {
   return HD_SPECIES.includes(species);
@@ -81,4 +119,19 @@ export function headAt(species: Species): [number, number] | null {
   const rig = RIGS[species];
   if (!rig) return null;
   return anchorOf(rig, poseRig(rig, "idle", 0, 1), "head");
+}
+
+const topMemo = new Map<Species, number | null>();
+
+/** Topmost opaque row of the rest pose (rig pixels): the tip of the ears,
+ *  horns or antenna. Stages hang marks and pops above it. */
+export function topAt(species: Species): number | null {
+  if (topMemo.has(species)) return topMemo.get(species)!;
+  const fb = renderHd(species, "idle", 0);
+  let top: number | null = null;
+  if (fb) {
+    for (let y = 0; y < fb.height && top === null; y++) for (let x = 0; x < fb.width; x++) if (fb.get(x, y)[3] >= 200) { top = y; break; }
+  }
+  topMemo.set(species, top);
+  return top;
 }

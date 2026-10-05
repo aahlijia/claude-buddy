@@ -6,7 +6,7 @@
  * kitty graphics → iTerm2 inline images → truecolor half-blocks → ASCII.
  *
  *   bun run gfx-demo                       auto-detect tier, interactive
- *   bun run gfx-demo --species cat         blob | cat | dragon
+ *   bun run gfx-demo --species octopus     any of the 20 species (c cycles)
  *   bun run gfx-demo --tier halfblock      force a tier (kitty|iterm|halfblock|ascii)
  *   bun run gfx-demo --rarity legendary --shiny --bg
  *   bun run gfx-demo --snapshot --anim hit --t 0.1   print one frame and exit

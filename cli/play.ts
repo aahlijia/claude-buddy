@@ -47,6 +47,9 @@ import { portrait } from "../server/ui/portrait.ts";
 import { legend, type KeyItem } from "../server/ui/keys.ts";
 import { bannerFrames as kitBannerFrames, banner as kitBanner } from "../server/ui/banner.ts";
 import { menuOpenFrames, menuScreen, moveCursor, selectable, type Menu } from "../server/ui/menu.ts";
+import { LOOT_MS, renderLoot } from "../server/gfx/cinema.ts";
+import type { FightResults } from "../server/rpg/game.ts";
+import { CINE_COLS, CINE_ROWS, cineSetup, clearCinematic, playCinematic, type CinePlayback, type CineSetup } from "./cinema.ts";
 
 if (!process.stdin.isTTY) {
   console.error("Buddy Quest needs an interactive terminal. In Claude Code, type ;help instead.");
@@ -144,6 +147,8 @@ let menu: { m: Menu; cursor: number } | null = null;
 let toast = "";
 
 /** A playing animation: frames are full screens. */
+/** The loot reveal, while it plays. */
+let cinePlay: CinePlayback | null = null;
 let reel: { frames: Timed[]; i: number; timer: ReturnType<typeof setTimeout> | null; done: () => void } | null = null;
 /** The idle loop for the current screen (HD frames are built on demand). */
 let loop: { frames: Lazy[]; ms: number; i: number; timer: ReturnType<typeof setTimeout> | null } | null = null;
@@ -392,6 +397,9 @@ function exec(cmd: string): void {
   // 1 · the turn / intro choreography
   const frames: Timed[] = scaleFrames(res.anim, speed).map((f) => frame(f));
 
+  // (the loot reveal plays here, between the fight and its rewards)
+  const split = frames.length;
+
   // 2 · reward lines land one at a time after a fight resolves
   const last = res.anim[res.anim.length - 1]?.text;
   if (speed !== "off" && last && res.out.startsWith(last) && res.out.length > last.length) {
@@ -418,7 +426,31 @@ function exec(cmd: string): void {
     draw();
     if (res.loop) startLoop(res.loop.frames, res.loop.ms);
   };
+  const loot = res.results?.loot;
+  const setup = loot && speed !== "off" ? cineSetup() : null;
+  if (loot && setup) {
+    return play(frames.slice(0, split), () => lootReveal(setup, loot, () => play(frames.slice(split), land)));
+  }
   play(frames, land);
+}
+
+/** The H6 loot reveal: a chest opens center screen (any key skips). */
+function lootReveal(setup: CineSetup, loot: NonNullable<FightResults["loot"]>, next: () => void): void {
+  clearImage();
+  out(`${ESC}H${ESC}2J`);
+  painted = [];
+  const at = { row: Math.max(1, Math.floor((rows() - CINE_ROWS) / 2)), col: Math.max(1, Math.floor((cols() - CINE_COLS) / 2) + 1) };
+  const look = { ...loot, seed: loot.name.length };
+  cinePlay = playCinematic(setup, (ms) => renderLoot(look, ms, setup.feel), LOOT_MS, at);
+  cinePlay.done.then(() =>
+    setTimeout(() => {
+      cinePlay = null;
+      clearCinematic(setup);
+      out(`${ESC}H${ESC}2J`);
+      painted = [];
+      next();
+    }, 450),
+  );
 }
 
 /** A result message shown over the screen that follows it. */
@@ -610,6 +642,7 @@ function onKey(key: Key): void {
   }
   lastInput = Date.now();
   if (key === "\u0003") return quit(); // Ctrl+C
+  if (cinePlay) return cinePlay.skip();
 
   // Skip a playing animation; space/enter/esc only skip, anything else
   // then also counts as input (mash `a` to keep attacking).

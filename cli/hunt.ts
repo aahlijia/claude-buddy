@@ -16,6 +16,9 @@ import {
   slugify, unusedName, listCompanionSlots,
 } from "../server/state.ts";
 import { createInterface } from "readline";
+import { HATCH_MS, renderHatch } from "../server/gfx/cinema.ts";
+import { hasHd } from "../server/gfx/hd.ts";
+import { cineSetup, playCinematic } from "./cinema.ts";
 
 const CYAN  = "\x1b[36m";
 const GREEN = "\x1b[32m";
@@ -122,6 +125,13 @@ ${CYAN}╚═══════════════════════�
   }
 
   const chosen = top[pickIdx];
+  // H6: the hatch cinematic on HD terminals; the ASCII card either way.
+  const setup = hasHd(chosen.bones.species) ? cineSetup() : null;
+  if (setup) {
+    const look = { species: chosen.bones.species, rarity: chosen.bones.rarity, shiny: chosen.bones.shiny, seed: 7 };
+    console.log("");
+    await playCinematic(setup, (ms) => renderHatch(look, ms, setup.feel), HATCH_MS).done;
+  }
   console.log(`\n${renderBuddy(chosen.bones)}\n`);
 
   // ─── Ask for a name ────────────────────────────────────────────────────────

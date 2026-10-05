@@ -22,7 +22,7 @@ import { deriveHero } from "../server/rpg/hero.ts";
 import { stageGeometry, type Look } from "../server/rpg/render.ts";
 
 const STATS: BuddyStats = { DEBUGGING: 30, PATIENCE: 30, CHAOS: 30, WISDOM: 30, SNARK: 30 };
-const FULL = { shake: true, flash: true, camera: true };
+const FULL = { shake: true, flash: true, camera: true, cutin: true };
 
 function battle(look: Look, foe: FoeSide, seed: number, kind: Battle["kind"] = "explore"): Battle {
   const h = deriveHero(1, 0, STATS, {}, [], look.species);

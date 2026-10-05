@@ -12,7 +12,7 @@
 
 import { blinkAt } from "./blob.ts";
 import { easeInCubic, easeInOutCubic, easeOutBack, easeOutCubic, lerp, span, springDecay } from "./ease.ts";
-import type { PartDef, PartPose, Pose, RigDef } from "./rig.ts";
+import type { Feel, PartDef, PartPose, Pose, RigDef } from "./rig.ts";
 
 export const ANIMS = ["idle", "walk", "attack", "hit", "ko", "victory"] as const;
 export type Anim = (typeof ANIMS)[number];
@@ -44,6 +44,7 @@ class Builder {
   lift = 0;
   flash = 0;
   ko = false;
+  alpha?: number;
   constructor(readonly rig: RigDef) {}
 
   each(role: PartDef["role"], fn: (p: PartDef) => PartPose): void {
@@ -71,7 +72,8 @@ class Builder {
   }
 
   build(): Pose {
-    return { parts: this.parts, lift: this.lift, flash: this.flash, ko: this.ko };
+    const pose: Pose = { parts: this.parts, lift: this.lift, flash: this.flash, ko: this.ko };
+    return this.alpha === undefined ? pose : { ...pose, alpha: this.alpha };
   }
 }
 
@@ -85,7 +87,7 @@ function rnd(seed: number, slot: number): number {
 
 /** Tail and wing follow-through: each segment lags its parent. */
 function sway(b: Builder, t: number, amp: number, period: number, lag = 0.6): void {
-  b.each("tail", (p) => ({ rot: amp * Math.sin((TAU * t) / period - (p.seg ?? 0) * lag) }));
+  b.each("tail", (p) => ({ rot: amp * Math.sin((TAU * t) / period - (p.seg ?? 0) * lag + (p.phase ?? 0)) }));
 }
 
 /** Occasional quick ear twitch (seeded slots, ~0.12 s each). */
@@ -224,21 +226,25 @@ function victory(b: Builder, t: number): void {
   b.each("head", () => ({ rot: -0.08 * easeOutBack(Math.min(1, lift / 8)) }));
   b.each("ear", (p) => ({ rot: 0.12 * (p.side ?? 1) }));
   b.each("wing", () => ({ rot: -0.7 * Math.abs(Math.sin((TAU * u) / 0.55)) }));
-  b.each("tail", (p) => ({ rot: 0.35 * Math.sin((TAU * u) / 0.3 - (p.seg ?? 0) * 0.5) }));
+  b.each("tail", (p) => ({ rot: 0.35 * Math.sin((TAU * u) / 0.3 - (p.seg ?? 0) * 0.5 + (p.phase ?? 0)) }));
   b.face("happy", "open");
 }
 
 /** The pose of `rig` playing `anim` at `t` seconds. */
 export function poseRig(rig: RigDef, anim: Anim, t: number, seed = 1): Pose {
   const info = ANIM_INFO[anim];
-  const tt = info.loop ? t : Math.min(Math.max(0, t), info.duration);
+  let tt = info.loop ? t : Math.min(Math.max(0, t), info.duration);
+  const feel = rig.feel;
+  if (feel?.tempo && (anim === "idle" || anim === "walk")) tt *= feel.tempo;
+  if (feel?.servo && info.loop) tt = Math.floor(tt * feel.servo) / feel.servo;
   const b = new Builder(rig);
   switch (anim) {
     case "idle":
       idle(b, tt, seed);
       break;
     case "walk":
-      walk(b, tt, seed);
+      if (feel?.hop) hopWalk(b, tt, seed, feel.hop);
+      else walk(b, tt, seed);
       break;
     case "attack":
       attack(b, tt);
@@ -253,5 +259,38 @@ export function poseRig(rig: RigDef, anim: Anim, t: number, seed = 1): Pose {
       victory(b, tt);
       break;
   }
+  if (feel) flavor(b, feel, anim, tt);
   return b.build();
+}
+
+/** Walk as a run of hops (rabbits): tuck in the air, squash on landing. */
+function hopWalk(b: Builder, t: number, seed: number, height: number): void {
+  const u = (t % ANIM_INFO.walk.duration) / ANIM_INFO.walk.duration;
+  const air = Math.sin(Math.PI * u);
+  b.lift = height * air;
+  const land = u < 0.12 ? 1 - u / 0.12 : u > 0.9 ? (u - 0.9) / 0.1 : 0;
+  b.body({ dy: -height * air, rot: -0.12 * Math.cos(Math.PI * u), sx: 1 + 0.08 * land - 0.04 * air, sy: 1 - 0.1 * land + 0.06 * air });
+  b.each("legF", () => ({ rot: -0.5 * air }));
+  b.each("legB", () => ({ rot: 0.6 * air }));
+  b.each("ear", () => ({ rot: 0.25 * air - 0.1 }));
+  b.each("head", () => ({ rot: -0.05 * air }));
+  sway(b, t, 0.2, 0.7, 0.7);
+  b.face(blinkAt(t, seed), "smile");
+}
+
+/** Layer a species' flavor on top of the shared animation. */
+function flavor(b: Builder, feel: Feel, anim: Anim, t: number): void {
+  if (feel.waddle && anim === "walk") {
+    b.body({ rot: feel.waddle * Math.sin((TAU * t) / ANIM_INFO.walk.duration) });
+  }
+  if (feel.float) {
+    // Hover with a slow bob; the KO sinks to the floor.
+    const sink = anim === "ko" ? easeInCubic(span(t, 0.15, 0.8)) : 0;
+    const bob = 1.2 * Math.sin((TAU * t) / 2.4);
+    const hover = (feel.float + (anim === "ko" ? 0 : bob)) * (1 - sink);
+    b.lift += hover;
+    b.body({ dy: -hover });
+    // Translucent shimmer.
+    b.alpha = anim === "ko" ? 1 - 0.12 * span(t, 0.6, 1.1) : 0.97 + 0.03 * Math.sin((TAU * t) / 1.3);
+  }
 }

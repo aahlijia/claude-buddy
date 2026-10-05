@@ -26,6 +26,9 @@ import {
 } from "../server/engine.ts";
 import { renderCompanionCard } from "../server/art.ts";
 import { randomBytes } from "crypto";
+import { HATCH_MS, renderHatch } from "../server/gfx/cinema.ts";
+import { hasHd } from "../server/gfx/hd.ts";
+import { CINE_COLS, CINE_ROWS, cineSetup, clearCinematic, playCinematic, type CinePlayback } from "./cinema.ts";
 
 // ─── ANSI ─────────────────────────────────────────────────────────────────────
 
@@ -399,6 +402,32 @@ async function runSearch(s: State): Promise<void> {
   drawScreen(s);
 }
 
+// ─── Hatch cinematic ──────────────────────────────────────────────────────────
+
+/** The hatch playing over the picker (any key skips it), or null. */
+let cine: CinePlayback | null = null;
+
+/** Play the H6 hatch for a picked buddy, centered on screen; the naming
+ *  pane follows. Skipped on the ASCII path (gameFeel off, plain terminal). */
+function hatch(s: State, bones: BuddyBones): void {
+  const setup = cineSetup();
+  if (!setup || !hasHd(bones.species)) return;
+  const cols = process.stdout.columns || 80;
+  const rows = process.stdout.rows || 24;
+  process.stdout.write("\x1b[2J");
+  const look = { species: bones.species, rarity: bones.rarity, shiny: bones.shiny, seed: 7 };
+  const at = { row: Math.max(1, Math.floor((rows - CINE_ROWS) / 2)), col: Math.max(1, Math.floor((cols - CINE_COLS) / 2) + 1) };
+  cine = playCinematic(setup, (ms) => renderHatch(look, ms, setup.feel), HATCH_MS, at);
+  cine.done.then(() => {
+    // Hold the reveal a beat, then hand back to the picker.
+    setTimeout(() => {
+      cine = null;
+      clearCinematic(setup);
+      drawScreen(s);
+    }, 400);
+  });
+}
+
 // ─── Key handlers ─────────────────────────────────────────────────────────────
 
 function clamp(v: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, v)); }
@@ -503,6 +532,7 @@ function onKey(key: string, s: State): boolean {
           s.pendingResult = r;
           s.nameInput    = "";  // empty — user types name or presses Enter for auto
           s.mode         = "naming";
+          hatch(s, r.bones);
         }
       }
       break;
@@ -538,7 +568,13 @@ async function main(): Promise<void> {
 
   await new Promise<void>((resolve) => {
     process.stdin.on("data", (key: string) => {
+      // Any key skips the hatch (Ctrl+C still quits).
+      if (cine && key !== "\x03") {
+        cine.skip();
+        return;
+      }
       const quit = onKey(key, s);
+      if (cine && !quit) return;
       drawScreen(s);
       if (quit) {
         cleanup();

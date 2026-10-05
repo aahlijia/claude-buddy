@@ -11,7 +11,9 @@ import { act, makeBoss, makeMonster, startBattle, type Battle } from "./battle";
 import { ZONES } from "./data";
 import { execute, type BuddyCtx } from "./game";
 import {
+  CUTIN_MS,
   FLASH_GAP_MS,
+  PHASE_MS,
   HITSTOP_MAX,
   HITSTOP_MIN,
   SCENE_H,
@@ -47,7 +49,7 @@ import { freshState } from "./store";
 const STATS: BuddyStats = { DEBUGGING: 30, PATIENCE: 30, CHAOS: 30, WISDOM: 30, SNARK: 30 };
 const LOOK: Look = { name: "Pip", species: "cat", eye: "·", hat: "none", rarity: "rare" };
 const CTX: BuddyCtx = { ...LOOK, level: 1, prestige: 0, stats: STATS };
-const FULL: HdFeel = { shake: true, flash: true, camera: true };
+const FULL: HdFeel = { shake: true, flash: true, camera: true, cutin: true };
 const HALF: HdPaint = { tier: "halfblock", color: "truecolor", tmux: false, feel: FULL };
 const T0 = Date.UTC(2026, 9, 5, 12);
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
@@ -83,8 +85,9 @@ const impactIndex = (tl: Timeline, by: "hero" | "foe") => tl.cues.findIndex((c) 
 describe("fallback selection", () => {
   const b = fight();
   test("a hero without HD art keeps the ASCII stage", () => {
-    expect(hdCast(b, { species: "duck" })).toBeNull();
-    expect(hdCast(b, { species: "robot" })).toBeNull();
+    // H6 put every species in HD; only an unknown one falls back.
+    expect(hdCast(b, { species: "nope" as never })).toBeNull();
+    expect(hdCast(b, { species: "robot" })).not.toBeNull();
   });
 
   test("HD foes are drawn as themselves", () => {
@@ -97,10 +100,13 @@ describe("fallback selection", () => {
   });
 
   test("foes without a rig get a recolored blob stand-in", () => {
-    const cast = hdCast(b, LOOK)!; // Indent Snail
+    // H6: the Indent Snail is a real snail now.
+    const cast = hdCast(b, LOOK)!;
     expect(b.foe.species).toBe("snail");
-    expect(cast.foe.species).toBe("blob");
-    expect(cast.foe.hue).toBe(standInHue("snail"));
+    expect(cast.foe).toMatchObject({ species: "snail", hue: undefined });
+    const odd = hdCast({ ...b, foe: { ...b.foe, species: "nope" as never } }, LOOK)!;
+    expect(odd.foe.species).toBe("blob");
+    expect(odd.foe.hue).toBe(standInHue("nope" as never));
     // Stable per species, away from the hero blob's mint.
     expect(standInHue("snail")).toBe(standInHue("snail"));
     expect(standInHue("snail")).not.toBe(standInHue("owl"));
@@ -109,9 +115,9 @@ describe("fallback selection", () => {
 
   test("gameFeel and reduceMotion gate the juice", () => {
     expect(hdFeel("off")).toBeNull();
-    expect(hdFeel("subtle")).toEqual({ shake: false, flash: false, camera: true });
+    expect(hdFeel("subtle")).toEqual({ shake: false, flash: false, camera: true, cutin: false });
     expect(hdFeel("full")).toEqual(FULL);
-    expect(hdFeel("full", true)).toEqual({ shake: false, flash: false, camera: false });
+    expect(hdFeel("full", true)).toEqual({ shake: false, flash: false, camera: false, cutin: false });
   });
 
   test("subtle and reduce-motion timelines carry no shake or flash", () => {
@@ -507,6 +513,78 @@ describe("performance", () => {
   });
 });
 
+// ─── H6: special-move cut-ins and boss phase changes ────────────────────────
+
+describe("cut-ins and phase changes", () => {
+  const SUBTLE = hdFeel("subtle")!;
+  const skillTurn = (): [Battle, Battle] => {
+    const b0 = fight();
+    return [b0, act(b0, { type: "skill", id: "strike" })];
+  };
+  const noHd = (cues: readonly Cue[]) => cues.map((c) => ({ ...c, stage: { ...c.stage, hd: c.stage.hd?.impact ? { impact: c.stage.hd.impact } : undefined } }));
+
+  test("a skill is a special beat; the cell stage never sees the cut-in", () => {
+    const [b0, b1] = skillTurn();
+    expect(b1.beats![0]).toMatchObject({ t: "special", id: "strike", name: "Power Strike", line: -1 });
+    const g = stageGeometry(b1, LOOK);
+    const cues = direct(b0, b1, g);
+    expect(cues.some((c) => c.stage.hd?.cutin?.name === "Power Strike")).toBe(true);
+    // Without the beat, the choreography is the same cue for cue.
+    const plain = { ...b1, beats: b1.beats!.filter((x) => x.t !== "special") };
+    expect(noHd(cues)).toEqual(noHd(direct(b0, plain, g)));
+  });
+
+  test("full plays a skippable-length cut-in that freezes the fight; subtle doesn't", () => {
+    const [b0, b1] = skillTurn();
+    const full = timeline(b0, b1);
+    const subtle = timeline(b0, b1, SUBTLE);
+    expect(full.holds).toHaveLength(1);
+    expect(subtle.holds).toHaveLength(0);
+    const h = full.holds[0];
+    expect(h).toMatchObject({ kind: "cutin", ms: CUTIN_MS, name: "Power Strike" });
+    expect(full.cueMs - subtle.cueMs).toBe(CUTIN_MS);
+    expect(motionTime(full, h.at + 500)).toBe(motionTime(full, h.at));
+    const mid = sceneAt(full, h.at + 300);
+    expect(mid.cutin).toMatchObject({ name: "Power Strike", by: "hero" });
+    expect(hash(composeFrame(full.cast, mid, false))).not.toBe(hash(composeFrame(full.cast, { ...mid, cutin: undefined }, false)));
+    expect(sceneAt(full, h.at + CUTIN_MS + 1).cutin).toBeUndefined();
+    // Playback frames tile the whole timeline, holds included.
+    const f = frameTimes(full);
+    for (let i = 1; i < f.length; i++) expect(f[i][0]).toBe(f[i - 1][0] + f[i - 1][1]);
+    expect(f.at(-1)![0] + f.at(-1)![1]).toBe(full.total);
+  });
+
+  test("a boss crossing half HP gets the phase change: dim, glow, roar (shake gated)", () => {
+    let pair: [Battle, Battle] | undefined;
+    for (let seed = 1; seed < 400 && !pair; seed++) {
+      const b0 = fight(makeBoss("segfault", 4), seed);
+      b0.foe.hp = Math.floor(b0.foe.maxHp / 2) + 1;
+      const b1 = act(b0, { type: "attack" });
+      if ((b1.beats ?? []).some((x) => x.t === "speech" && x.phase) && !b1.over) pair = [b0, b1];
+    }
+    const [b0, b1] = pair!;
+    const full = timeline(b0, b1);
+    const h = full.holds.find((x) => x.kind === "phase")!;
+    expect(h.ms).toBe(PHASE_MS);
+    const s = sceneAt(full, h.at + PHASE_MS / 2);
+    expect(s.phase).toBeGreaterThan(0.4);
+    expect(full.traumas.some((t) => t.at > h.at && t.at < h.at + h.ms)).toBe(true);
+    const subtle = timeline(b0, b1, SUBTLE);
+    expect(subtle.holds.some((x) => x.kind === "phase")).toBe(true);
+    expect(subtle.traumas).toHaveLength(0);
+    // The dim darkens the stage around the boss.
+    const lum = (fb: Framebuffer) => {
+      let n = 0;
+      for (let i = 0; i < fb.data.length; i += 4) n += fb.data[i] + fb.data[i + 1] + fb.data[i + 2];
+      return n;
+    };
+    const dimmed = composeFrame(full.cast, { ...s, shake: [0, 0] }, false);
+    const plain = composeFrame(full.cast, { ...s, shake: [0, 0], phase: undefined }, false);
+    expect(dimmed.get(5, 5)[0] + dimmed.get(5, 5)[1]).toBeLessThan(plain.get(5, 5)[0] + plain.get(5, 5)[1]);
+    expect(lum(dimmed)).not.toBe(lum(plain));
+  });
+});
+
 // ─── Golden frames ──────────────────────────────────────────────────────────
 
 /**
@@ -515,11 +593,11 @@ describe("performance", () => {
  * and paste the printed table here.
  */
 const GOLDEN: Record<string, number> = {
-  rest: 2199912173,
-  "rest/half": 1178822152,
-  impact: 4275623917,
-  "impact+120": 1386439841,
-  end: 1146747686,
+  rest: 2116264231,
+  "rest/half": 2922357116,
+  impact: 1043342693,
+  "impact+120": 3761444489,
+  end: 2180359525,
 };
 
 describe("golden frames", () => {

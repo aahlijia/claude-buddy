@@ -25,7 +25,7 @@ import { encodeIterm } from "../gfx/encode/iterm.ts";
 import { encodeKitty } from "../gfx/encode/kitty.ts";
 import { drawText, textWidth } from "../gfx/font.ts";
 import { Framebuffer, hex, mix, type RGBA } from "../gfx/framebuffer.ts";
-import { ANIM_INFO, hasHd, renderHd, type Anim } from "../gfx/hd.ts";
+import { ANIM_INFO, hasHd, headAt, renderHd, topAt, type Anim } from "../gfx/hd.ts";
 import { drawParticles, particleLife, particlesAt, type Emitter } from "../gfx/particles.ts";
 import { tmuxWrap } from "../gfx/detect.ts";
 import type { Cue } from "./anim";
@@ -49,8 +49,10 @@ export const GROUND_Y = 55;
 const HOME: Record<Side, number> = { hero: 0, foe: 56 };
 /** Body center (x) of each side at rest, in scene pixels. */
 const CENTER: Record<Side, number> = { hero: 30, foe: 89 };
-/** Rough top of the head per species (scene y at rest), for marks and pops. */
+/** Rough top of the head per species (scene y at rest), for marks and pops.
+ *  The H1 pilots keep their hand-tuned values; the rest are measured. */
 const HEAD_Y: Partial<Record<Species, number>> = { blob: 22, cat: 19, dragon: 15 };
+const headTop = (species: Species): number => HEAD_Y[species] ?? Math.max(10, (topAt(species) ?? 18) + ACTOR_TOP);
 /** Body middle (scene y), where blows land. */
 const BODY_Y = 38;
 /** One stage cell of director offset, in scene pixels. */
@@ -79,18 +81,21 @@ export interface HdFeel {
   shake: boolean;
   flash: boolean;
   camera: boolean;
+  /** Special-move cut-ins (full only: they interrupt the fight ~700 ms). */
+  cutin: boolean;
 }
 
 /**
  * gameFeel `off` → no HD at all (ASCII, as before); `subtle` → HD with the
- * camera but no shake and no flashes; `full` → everything. `reduceMotion`
- * keeps the HD art but drops shake, flashes and camera moves.
+ * camera but no shake, no flashes and no cut-ins; `full` → everything.
+ * `reduceMotion` keeps the HD art but drops shake, flashes, camera moves and
+ * cut-ins.
  */
 export function hdFeel(gameFeel: string | undefined, reduceMotion = false): HdFeel | null {
   if (gameFeel === "off") return null;
-  if (reduceMotion) return { shake: false, flash: false, camera: false };
-  if (gameFeel === "full") return { shake: true, flash: true, camera: true };
-  return { shake: false, flash: false, camera: true };
+  if (reduceMotion) return { shake: false, flash: false, camera: false, cutin: false };
+  if (gameFeel === "full") return { shake: true, flash: true, camera: true, cutin: true };
+  return { shake: false, flash: false, camera: true, cutin: false };
 }
 
 /** Hue for a stand-in foe: stable per species, never the hero's mint. */
@@ -171,6 +176,10 @@ export interface HdScene {
   wipe?: number;
   /** Ambient clock (seconds) for orbiting stars and pulses. */
   clock: number;
+  /** A special-move cut-in playing: progress 0..1 (undefined = none). */
+  cutin?: { name: string; by: Side; k: number };
+  /** A boss phase change playing: progress 0..1 (undefined = none). */
+  phase?: number;
 }
 
 const REST_CAM = { zoom: 1, cx: SCENE_W / 2, cy: SCENE_H / 2 };
@@ -288,7 +297,7 @@ function drawActor(fb: Framebuffer, cast: HdCast, side: Side, a: HdActor): void 
 }
 
 function headY(cast: HdCast, side: Side): number {
-  return HEAD_Y[cast[side].species] ?? 22;
+  return headTop(cast[side].species);
 }
 
 /** Persistent conditions, drawn in pixels: shields, stars, auras. */
@@ -379,12 +388,28 @@ export function renderScene(cast: HdCast, s: HdScene): Framebuffer {
   drawMarks(fb, s, cast, false);
   // The attacker draws over the defender while it's in the defender's space.
   const heroFront = s.hero.x > 0 || s.hero.anim === "attack";
-  const order: Side[] = heroFront && s.foe.anim !== "attack" ? ["foe", "hero"] : ["hero", "foe"];
-  for (const side of order) drawActor(fb, cast, side, s[side]);
+  // Boss phase change: everything but the boss sinks into shadow, and a
+  // pulsing glow swells behind it.
+  const order: Side[] = s.phase === undefined && heroFront && s.foe.anim !== "attack" ? ["foe", "hero"] : ["hero", "foe"];
+  for (const side of order) {
+    if (s.phase !== undefined && side === "foe") phaseBackdrop(fb, s);
+    drawActor(fb, cast, side, s[side]);
+  }
   drawMarks(fb, s, cast, true);
   for (const p of s.projectiles) drawProjectile(fb, p);
   drawParticles(fb, s.emitters, s.pt);
   return fb;
+}
+
+/** Phase-change dim (0 → 0.6 → 0) and the boss's swelling red glow. */
+function phaseBackdrop(fb: Framebuffer, s: HdScene): void {
+  const k = s.phase!;
+  const dim = 0.72 * Math.min(easeOutCubic(span(k, 0, 0.25)), 1 - easeInOutCubic(span(k, 0.8, 1)));
+  const shade = hex("#05030a");
+  for (let y = 0; y < fb.height; y++) for (let x = 0; x < fb.width; x++) fb.blend(x, y, shade, dim);
+  const swell = easeOutCubic(span(k, 0.15, 0.55)) * (1 - easeInOutCubic(span(k, 0.85, 1)));
+  const pulse = 0.8 + 0.2 * Math.sin(k * 40);
+  glow(fb, CENTER.foe + s.foe.x, BODY_Y - 8 + s.foe.y, 22 + 18 * swell, hex("#ff3050"), 0.9 * swell * pulse);
 }
 
 /** Camera + shake: resample around (cx, cy). Identity is a no-op. */
@@ -463,11 +488,136 @@ export function composeFrame(cast: HdCast, s: HdScene, half: boolean): Framebuff
     drawText(fb, p.text, Math.round(x), Math.round(y), p.color, { scale, outline: hex("#140c1e") });
   }
   if (s.wipe !== undefined) drawWipe(fb, s.wipe, cast.boss);
+  if (s.cutin) drawCutin(fb, cast, s.cutin, half);
+  if (s.phase !== undefined) drawPhaseTitle(fb, s.phase, half);
   if (s.flash > 0) {
     const white = hex("#ffffff");
     for (let y = 0; y < fb.height; y++) for (let x = 0; x < fb.width; x++) fb.blend(x, y, white, s.flash);
   }
   return fb;
+}
+
+/**
+ * The special-move cut-in (brainstorm §3.4): a diagonal panel slams in from
+ * the attacker's side with the buddy's close-up, speed lines streak across
+ * it, the move name lands in big type, and the panel exits the far side.
+ * Drawn at output resolution over the frozen fight.
+ */
+function drawCutin(fb: Framebuffer, cast: HdCast, c: NonNullable<HdScene["cutin"]>, half: boolean): void {
+  const W = fb.width;
+  const H = fb.height;
+  const u = W / SCENE_W; // 1 at full res, 0.5 at half
+  const k = c.k;
+  const enter = easeOutCubic(span(k, 0, 0.16));
+  const leave = easeInOutCubic(span(k, 0.84, 1));
+  const shift = (1 - enter) * -W * 1.2 + leave * W * 1.2;
+  // The fight behind darkens while the panel is up.
+  const dim = 0.5 * Math.min(enter, 1 - leave);
+  const shade = hex("#05030a");
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) fb.blend(x, y, shade, dim);
+
+  const f = cast[c.by];
+  const accent = hex(RIM_HEX[f.rarity]);
+  const top = Math.round(H * 0.2);
+  const bot = Math.round(H * 0.8);
+  const slant = Math.round(14 * u);
+  const edge = (y: number) => slant * (1 - (y - top) / Math.max(1, bot - top)); // left edge leans
+  const ink = hex("#120c22");
+  const band = hex("#2a1c4a");
+  for (let y = top; y < bot; y++) {
+    const x0 = Math.round(edge(y) + shift);
+    const x1 = Math.round(W - slant + edge(y) + shift);
+    for (let x = Math.max(0, x0); x < Math.min(W, x1); x++) {
+      const stripe = (x + y * 2) % Math.round(10 * u + 2) < 2;
+      fb.set(x, y, y === top || y === bot - 1 ? accent : stripe ? mix(band, ink, 0.4) : mix(band, ink, (y - top) / (bot - top)));
+    }
+  }
+  // Speed lines: fast streaks racing across the band.
+  for (let i = 0; i < 12; i++) {
+    const y = top + 2 + Math.floor(((i * 37) % 97) / 97 * (bot - top - 4));
+    const len = Math.round((10 + ((i * 13) % 20)) * u);
+    const x = Math.round(((i * 53 + k * 900 * u * (1 + (i % 3))) % (W + len)) - len + shift);
+    for (let j = 0; j < len; j++) fb.blend(x + j, y, hex("#ffffff"), 0.25 + 0.5 * (j / len));
+  }
+  // The close-up: the buddy's bust, drifting forward a little.
+  const bust = portraitFor(f, half);
+  const px = Math.round(W * 0.06 + shift + k * 4 * u);
+  if (bust) {
+    const py = Math.round(bot - bust.height);
+    fb.draw(bust, c.by === "hero" ? px : W - px - bust.width, py);
+  }
+  // The move name, sliding in a beat after the panel, right of the bust:
+  // big type, wrapped onto two lines when it doesn't fit on one.
+  const name = c.name.toUpperCase();
+  const left = Math.round(W * 0.06 + (bust?.width ?? 0) + 4 * u);
+  const room = W - left - 3;
+  const scale = half ? 1 : 2;
+  const lines = textWidth(name, scale) <= room ? [name] : wrapWords(name, (w) => textWidth(w, scale) <= room);
+  const lh = 6 * scale + 1;
+  const land = easeOutBack(span(k, 0.12, 0.34));
+  const tw = Math.max(...lines.map((l) => textWidth(l, scale)));
+  const tx = Math.round(Math.min(W - tw - 2, left) + (1 - land) * W * 0.5 + leave * W * 1.2);
+  const ty = Math.round(H / 2 - (lines.length * lh) / 2 + 3 * u);
+  lines.forEach((l, i) => {
+    drawText(fb, l, tx + scale, ty + i * lh + scale, ink, { scale });
+    drawText(fb, l, tx, ty + i * lh, hex("#fff6c8"), { scale, outline: ink });
+  });
+  drawText(fb, "SPECIAL", tx, ty - 8, accent, { scale: 1, outline: ink, opacity: Math.min(1, land) });
+}
+
+/** Greedy word wrap: as many words per line as `fits` allows. */
+function wrapWords(text: string, fits: (line: string) => boolean): string[] {
+  const out: string[] = [];
+  for (const w of text.split(" ")) {
+    const last = out[out.length - 1];
+    if (last !== undefined && fits(`${last} ${w}`)) out[out.length - 1] = `${last} ${w}`;
+    else out.push(w);
+  }
+  return out;
+}
+
+const RIM_HEX: Record<Rarity, string> = { common: "#c8c4d8", uncommon: "#7ee69a", rare: "#b1b9f9", epic: "#c8a0ff", legendary: "#ffd25a" };
+
+const bustCache = new Map<string, Framebuffer | null>();
+
+/** The fighter's head and shoulders, cut from its idle pose. */
+function portraitFor(f: HdFighter, half: boolean): Framebuffer | null {
+  const key = `${f.species}|${f.rarity}|${f.shiny}|${f.hue ?? ""}|${half}`;
+  if (bustCache.has(key)) return bustCache.get(key)!;
+  const full = renderHd(f.species, "idle", 0, { rarity: f.rarity, shiny: f.shiny, hue: f.hue });
+  let out: Framebuffer | null = null;
+  if (full) {
+    // Crop the top of the sprite: the head and shoulders.
+    let top = full.height;
+    let x0 = full.width;
+    let x1 = 0;
+    for (let y = 0; y < full.height; y++) for (let x = 0; x < full.width; x++) if (full.get(x, y)[3] >= 200) { top = Math.min(top, y); x0 = Math.min(x0, x); x1 = Math.max(x1, x); }
+    // Center on the head (rigs pivot it at the neck, under the face).
+    const W = 34;
+    const H = 34;
+    const head = headAt(f.species);
+    const cx = Math.round(head ? head[0] + 3 : (x0 + x1) / 2);
+    out = new Framebuffer(W, H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const c = full.get(cx - W / 2 + x, top - 1 + y);
+      if (c[3]) out.set(x, y, c);
+    }
+    if (half) out = downsample2(out);
+  }
+  bustCache.set(key, out);
+  return out;
+}
+
+/** "PHASE 2" lands over the dimmed stage while the boss powers up. */
+function drawPhaseTitle(fb: Framebuffer, k: number, half: boolean): void {
+  const show = Math.min(easeOutBack(span(k, 0.3, 0.5)), 1 - easeInOutCubic(span(k, 0.85, 1)));
+  if (show <= 0) return;
+  const scale = half ? 1 : 2;
+  const text = "PHASE 2";
+  const w = textWidth(text, scale);
+  const x = Math.round((fb.width - w) / 2);
+  const y = Math.round(fb.height * 0.12 - (1 - show) * 6 * scale);
+  drawText(fb, text, x, y, hex("#ff5a6a"), { scale, outline: hex("#14040a"), opacity: Math.min(1, show) });
 }
 
 function drawWipe(fb: Framebuffer, w: number, boss: boolean): void {
@@ -548,6 +698,20 @@ interface Freeze {
   ms: number;
 }
 
+/** A cinematic beat inserted before a cue: real time passes, motion stops. */
+export interface Hold {
+  at: number;
+  ms: number;
+  kind: "cutin" | "phase";
+  name?: string;
+  by?: Side;
+}
+
+/** Special-move cut-in length (ms): slide in, hold the name, slide out. */
+export const CUTIN_MS = 700;
+/** Boss phase change: the stage dims, the boss glows, then it roars. */
+export const PHASE_MS = 1100;
+
 interface CamEvent {
   at: number;
   until: number;
@@ -571,6 +735,8 @@ export interface Timeline {
   /** Cue length plus a settle tail that lets one-shot animations finish. */
   total: number;
   freezes: Freeze[];
+  /** Cut-ins and boss phase changes (each also a freeze). */
+  holds: Hold[];
   segments: Record<Side, Segment[]>;
   emitters: Emitter[];
   cams: CamEvent[];
@@ -605,8 +771,18 @@ export function hdTimeline(
   opts: { maxHp: [number, number]; cell: { width: number; height: number } },
 ): Timeline {
   const starts: number[] = [];
+  const holds: Hold[] = [];
   let acc = 0;
   for (const c of cues) {
+    const hd = c.stage.hd;
+    if (hd?.phase && cast.boss) {
+      holds.push({ at: acc, ms: PHASE_MS, kind: "phase" });
+      acc += PHASE_MS;
+    }
+    if (hd?.cutin && feel.cutin) {
+      holds.push({ at: acc, ms: CUTIN_MS, kind: "cutin", name: hd.cutin.name, by: hd.cutin.by });
+      acc += CUTIN_MS;
+    }
     starts.push(acc);
     acc += c.ms;
   }
@@ -617,8 +793,8 @@ export function hdTimeline(
     for (const side of ["hero", "foe"] as const) actors[side].push({ ...restPose(side, mk), ...c.stage[side] });
   }
 
-  // Hit-stop freezes and impacts.
-  const freezes: Freeze[] = [];
+  // Hit-stop freezes and impacts; cinematic holds freeze the fight too.
+  const freezes: Freeze[] = holds.map((h) => ({ at: h.at, ms: h.ms }));
   const emitters: Emitter[] = [];
   const cams: CamEvent[] = [];
   const traumas: Trauma[] = [];
@@ -702,6 +878,14 @@ export function hdTimeline(
     // The encounter wipe ends in a flash.
     if (c.stage.wipe === undefined && i > 0 && cues[i - 1].stage.wipe !== undefined) flashCandidates.push(T);
   });
+
+  // Boss phase change: push in on the boss, then the roar shakes the stage.
+  for (const h of holds) {
+    if (h.kind !== "phase") continue;
+    cams.push({ at: h.at, until: h.at + h.ms - 200, zoom: 1.12, cx: CENTER.foe, cy: BODY_Y - 8 });
+    traumas.push({ at: h.at + Math.round(h.ms * 0.55), amount: 1 });
+    emitters.push({ kind: "dust", x: CENTER.foe, y: GROUND_Y - 1, t0: motion(h.at + Math.round(h.ms * 0.55)) / 1000, seed: seedOf(cast.seed, 0, 9), count: 12 });
+  }
 
   // Flashes: capped at 3 per second.
   const flashes: number[] = [];
@@ -791,6 +975,7 @@ export function hdTimeline(
     total,
     // Hit-stop is timing, not motion: it stays even under reduce-motion.
     freezes,
+    holds,
     segments,
     emitters,
     cams: feel.camera ? cams : [],
@@ -855,7 +1040,7 @@ function motePx(tl: Timeline, m: Mote, hero: HdActor, foe: HdActor): { x: number
   const x = anchor + (m.dx ?? 0) * kx;
   const row = m.y < 0 ? tl.cell.height + m.y : m.y;
   const side = m.at === "foe" ? "foe" : "hero";
-  const top = HEAD_Y[tl.cast[side].species] ?? 22;
+  const top = headTop(tl.cast[side].species);
   // Rows 0–1 are the headroom over the heads; lower rows map onto bodies.
   const y = row <= 1 ? top - 16 + row * 6 : top + ((row - 2) / Math.max(1, tl.cell.height - 2)) * (GROUND_Y - top);
   return { x, y };
@@ -940,7 +1125,11 @@ export function sceneAt(tl: Timeline, T: number): HdScene {
   const pt = M / 1000;
   const emitters = tl.emitters.filter((e) => pt >= e.t0 && pt <= e.t0 + particleLife(e.kind) + 0.5);
   const wipe = cue.stage.wipe !== undefined ? Math.min(1, cue.stage.wipe / (tl.cell.width + 2 * tl.cell.height + 9)) : undefined;
-  return { hero, foe, marks: mk, pt, emitters, pops, projectiles, cam, shake, flash, wipe, clock: T / 1000 };
+  const hold = tl.holds.find((h) => T >= h.at && T < h.at + h.ms);
+  const scene: HdScene = { hero, foe, marks: mk, pt, emitters, pops, projectiles, cam, shake, flash, wipe, clock: T / 1000 };
+  if (hold?.kind === "cutin") return { ...scene, pops: [], cutin: { name: hold.name ?? "", by: hold.by ?? "hero", k: (T - hold.at) / hold.ms } };
+  if (hold?.kind === "phase") return { ...scene, pops: [], phase: (T - hold.at) / hold.ms };
+  return scene;
 }
 
 /** Sub-frame times for playback: every cue is split into ≤ STEP_MS slices,
@@ -952,6 +1141,8 @@ export function frameTimes(tl: Timeline): [number, number][] {
     if (c.ms <= 0) return;
     for (let t = 0; t < c.ms; t += STEP_MS) out.push([s + t, Math.min(STEP_MS, c.ms - t)]);
   });
+  for (const h of tl.holds) for (let t = 0; t < h.ms; t += STEP_MS) out.push([h.at + t, Math.min(STEP_MS, h.ms - t)]);
+  out.sort((a, b) => a[0] - b[0]);
   for (let t = tl.cueMs; t < tl.total; t += STEP_MS) out.push([t, Math.min(STEP_MS, tl.total - t)]);
   return out;
 }
@@ -997,7 +1188,7 @@ function drain(from: number, to: number, at: number, T: number): number {
  *  this turn's damage totals. KO'd sides lie in their final pose. */
 export function restScene(b: Battle, motes: readonly Mote[], cell: { width: number; height: number }, cast: HdCast, clock = 0): HdScene {
   const marks = marksOf(b);
-  const tl = hdTimeline([{ stage: { marks, motes: [...motes] }, hp: [b.hero.hp, b.foe.hp], lines: b.log.length, ms: 1 }], cast, { shake: false, flash: false, camera: false }, {
+  const tl = hdTimeline([{ stage: { marks, motes: [...motes] }, hp: [b.hero.hp, b.foe.hp], lines: b.log.length, ms: 1 }], cast, { shake: false, flash: false, camera: false, cutin: false }, {
     maxHp: [b.hero.maxHp, b.foe.maxHp],
     cell,
   });

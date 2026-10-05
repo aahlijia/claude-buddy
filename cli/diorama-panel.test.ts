@@ -43,7 +43,8 @@ describe("gates", () => {
     expect(dioramaEnabled("halfblock", { ...STATUS, gameFeel: undefined }, { gameFeel: "off" }, LAYOUT)).toBe(false);
   });
   test("species without HD art, text-only terminals and tiny panels keep the ASCII panel", () => {
-    expect(dioramaEnabled("halfblock", { ...STATUS, species: "duck" }, cfg, LAYOUT)).toBe(false);
+    expect(dioramaEnabled("halfblock", { ...STATUS, species: "nope" }, cfg, LAYOUT)).toBe(false);
+    expect(dioramaEnabled("halfblock", { ...STATUS, species: "duck" }, cfg, LAYOUT)).toBe(true);
     expect(dioramaEnabled("ascii", STATUS, cfg, LAYOUT)).toBe(false);
     expect(dioramaEnabled("halfblock", STATUS, cfg, { cols: 120, rows: 24, code: 19 })).toBe(false);
     expect(dioramaEnabled("kitty", STATUS, cfg, { cols: 120, rows: 24, code: 19 })).toBe(true);
