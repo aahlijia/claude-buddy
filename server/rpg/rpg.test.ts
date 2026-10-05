@@ -787,6 +787,13 @@ describe("presentation", () => {
     expect(displayWidth(out[0])).toBe(displayWidth(out[out.length - 1]));
   });
 
+  test("long log lines wrap instead of stretching the panel", () => {
+    const b = fight();
+    b.log = ["word ".repeat(40).trim()];
+    const widest = Math.max(...battleScreen(P, b, CTX, [], {}).split("\n").slice(0, -1).map(displayWidth));
+    expect(widest).toBeLessThanOrEqual(62);
+  });
+
   test("battle screens show damage numbers over the sprites", () => {
     let b = fight(makeMonster(ZONES[0].monsters[2], 3), 9);
     b.foe.spd = 0;

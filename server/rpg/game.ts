@@ -48,6 +48,7 @@ import { gearScore, rollGear, sellValue, statLine, type GearItem } from "./gear"
 import { deriveHero, trainCost, trainError, type HeroStats } from "./hero";
 import {
   C,
+  wrap,
   animScenes,
   battleScreen,
   buddySprite,
@@ -619,18 +620,6 @@ function bless(s: RpgState, b: Battle): void {
 
 // ─── Events ─────────────────────────────────────────────────────────────────
 
-function wrap(text: string, width: number): string[] {
-  const out: string[] = [];
-  let line = "";
-  for (const w of text.split(" ")) {
-    if (line && line.length + w.length + 1 > width) {
-      out.push(line);
-      line = w;
-    } else line = line ? `${line} ${w}` : w;
-  }
-  if (line) out.push(line);
-  return out;
-}
 
 export function eventScreen(s: RpgState, p: Paint): string {
   const ev = s.event;

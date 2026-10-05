@@ -99,6 +99,20 @@ export function panel(p: Paint, title: string, right: string, body: string[], fo
   return out.join("\n");
 }
 
+/** Greedy word wrap on display width (keeps panels from stretching). */
+export function wrap(text: string, width: number): string[] {
+  const out: string[] = [];
+  let line = "";
+  for (const w of text.split(" ")) {
+    if (line && displayWidth(line) + displayWidth(w) + 1 > width) {
+      out.push(line);
+      line = w;
+    } else line = line ? `${line} ${w}` : w;
+  }
+  if (line) out.push(line);
+  return out;
+}
+
 // ─── Sprites ────────────────────────────────────────────────────────────────
 
 /** The buddy alone (town screen): hat applied, blank top rows trimmed. */
@@ -242,7 +256,9 @@ export function battleScreen(
   if (b.hero.fx.buff) status.push(`↑ATK ${b.hero.fx.buff}`);
   if (status.length) body.push(paint(p, C.magenta, status.join("  ")));
   body.push("");
-  for (const l of b.log) body.push(paint(p, C.dim, "» ") + l);
+  for (const l of b.log) {
+    wrap(l, PANEL_W - 4).forEach((part, i) => body.push((i ? "  " : paint(p, C.dim, "» ")) + part));
+  }
   const out = panel(p, battleTitle(b), `Turn ${b.turn}`, body);
   return b.over ? out : `${out}\n${actionHints(p, b, skills, items)}`;
 }
