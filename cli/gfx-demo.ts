@@ -14,6 +14,7 @@
  *
  * Keys: 1–6 idle/walk/attack/hit/ko/victory · space victory hop · c species
  *       h hatch · l loot reveal (H6 cinematics, current species and rarity)
+ *       e gear (cycles hats, weapons and the rubber duck)
  *       r rarity · s shiny · g backdrop · t tier · q quit
  */
 
@@ -31,7 +32,8 @@ import { encodeIterm } from "../server/gfx/encode/iterm.ts";
 import { encodeKitty, kittyDelete } from "../server/gfx/encode/kitty.ts";
 import { encodePng } from "../server/gfx/encode/png.ts";
 import { HATCH_MS, LOOT_MS, cineFeel, renderHatch, renderLoot, type LootSlot } from "../server/gfx/cinema.ts";
-import type { Framebuffer } from "../server/gfx/framebuffer.ts";
+import { Framebuffer } from "../server/gfx/framebuffer.ts";
+import { HD_HEADROOM, type HdGear } from "../server/gfx/gear.ts";
 
 // ─── Args ───────────────────────────────────────────────────────────────────
 
@@ -76,6 +78,8 @@ const state = {
   animStart: 0,
   /** An H6 cinematic playing over the buddy (h / l), or null. */
   cine: null as { kind: "hatch" | "loot"; start: number } | null,
+  /** Gear preset (e cycles; 0 = none). */
+  gear: 0,
   /** Loot reveals cycle the item slot (each press, the next one). */
   slot: -1,
 };
@@ -101,6 +105,25 @@ function cineFrame(t: number): Framebuffer | null {
 const fps = Math.max(1, Math.min(60, Number(opt("fps") ?? 30)));
 const seed = Number(opt("seed") ?? 7);
 
+/** Gear presets for `e`: every hat, then weapons and the trinket. */
+const GEAR: readonly (HdGear | undefined)[] = [
+  undefined,
+  ...(["crown", "tophat", "propeller", "halo", "wizard", "beanie", "tinyduck"] as const).map((hat) => ({ hat })),
+  { weapon: "wand", trinket: "duck" },
+  { weapon: "sword", hat: "beanie" },
+  { weapon: "blade", weaponRarity: "legendary", hat: "crown" },
+];
+const gearName = (g?: HdGear) => (g ? [g.hat, g.weapon, g.trinket].filter(Boolean).join("+") : "none");
+
+/** Every frame on one canvas, bottom-aligned (hats make frames taller). */
+const FRAME_H = BLOB_H + HD_HEADROOM;
+function padded(fb: Framebuffer): Framebuffer {
+  if (fb.height === FRAME_H) return fb;
+  const out = new Framebuffer(fb.width, FRAME_H);
+  out.draw(fb, 0, FRAME_H - fb.height);
+  return out;
+}
+
 /** Render the current animation at demo time `t`. One-shot animations hold
  *  their last pose briefly, then hand back to idle (KO stays down). */
 function render(t: number) {
@@ -111,12 +134,15 @@ function render(t: number) {
     state.anim = "idle";
     local = t;
   }
-  return renderHd(state.species, state.anim, local, {
-    rarity: state.rarity,
-    shiny: state.shiny,
-    backdrop: state.backdrop,
-    seed,
-  })!;
+  return padded(
+    renderHd(state.species, state.anim, local, {
+      rarity: state.rarity,
+      shiny: state.shiny,
+      backdrop: state.backdrop,
+      seed,
+      gear: GEAR[state.gear],
+    })!,
+  );
 }
 
 // ─── Non-interactive modes ──────────────────────────────────────────────────
@@ -130,7 +156,7 @@ if (pngDir) {
     const file = join(pngDir, `${state.species}-${state.anim}-${String(i).padStart(4, "0")}.png`);
     await Bun.write(file, encodePng(render(i / fps).upscale(scale)));
   }
-  console.log(`Wrote ${frames} frames (${BLOB_W * scale}×${BLOB_H * scale}) to ${pngDir}`);
+  console.log(`Wrote ${frames} frames (${BLOB_W * scale}×${FRAME_H * scale}) to ${pngDir}`);
   process.exit(0);
 }
 
@@ -149,8 +175,8 @@ const LEFT = 3;
 const KITTY_ID = 4242;
 /** Cells the pixel tiers occupy: square pixels at a ~1:2 cell aspect. */
 const PIX_COLS = 48;
-const PIX_ROWS = Math.round((PIX_COLS * BLOB_H) / BLOB_W / 2);
-const ROWS = (tier: Tier) => (tier === "kitty" || tier === "iterm" ? PIX_ROWS : tier === "ascii" ? 5 : Math.ceil(BLOB_H / 2));
+const PIX_ROWS = Math.round((PIX_COLS * FRAME_H) / BLOB_W / 2);
+const ROWS = (tier: Tier) => (tier === "kitty" || tier === "iterm" ? PIX_ROWS : tier === "ascii" ? 5 : Math.ceil(FRAME_H / 2));
 
 const graphics = (seq: string) => (detected.tmux ? tmuxWrap(seq) : seq);
 let prevLines: string[] = [];
@@ -172,9 +198,9 @@ function hud(): void {
   const key = (k: string, label: string) => `\x1b[1;97;48;2;60;56;90m ${k} \x1b[0m ${dim(label)}`;
   const tierNote = state.tier === detected.tier ? `auto: ${detected.reason}` : "manual";
   const lines = [
-    `\x1b[1mclaude-buddy · HD\x1b[0m  \x1b[1;93m${state.species}\x1b[0m ${dim(state.anim)}  ${dim("tier")} \x1b[1;96m${state.tier}\x1b[0m ${dim(`(${tierNote})`)}  ${dim("fps")} ${measured}  ${dim("rarity")} ${getRarityColor(state.rarity)}${state.rarity}\x1b[0m${state.shiny ? "  \x1b[1;95m✦ shiny\x1b[0m" : ""}`,
+    `\x1b[1mclaude-buddy · HD\x1b[0m  \x1b[1;93m${state.species}\x1b[0m ${dim(state.anim)}  ${dim("tier")} \x1b[1;96m${state.tier}\x1b[0m ${dim(`(${tierNote})`)}  ${dim("fps")} ${measured}  ${dim("rarity")} ${getRarityColor(state.rarity)}${state.rarity}\x1b[0m${state.shiny ? "  \x1b[1;95m✦ shiny\x1b[0m" : ""}  ${dim("gear")} ${gearName(GEAR[state.gear])}`,
     "",
-    [key("1-6", "idle walk attack hit ko victory"), key("h", "hatch"), key("l", "loot"), key("c", "species"), key("r", "rarity"), key("s", "shiny"), key("g", "backdrop"), key("t", "tier"), key("q", "quit")].join("  "),
+    [key("1-6", "idle walk attack hit ko victory"), key("h", "hatch"), key("l", "loot"), key("e", "gear"), key("c", "species"), key("r", "rarity"), key("s", "shiny"), key("g", "backdrop"), key("t", "tier"), key("q", "quit")].join("  "),
   ];
   out.write(`${ESC}1;1H${ESC}2K${lines[0]}`);
   out.write(`${ESC}${TOP + rows + 1};1H${ESC}2K${lines[1]}${ESC}${TOP + rows + 2};1H${ESC}2K${lines[2]}`);
@@ -279,6 +305,10 @@ process.stdin.on("data", (key: string) => {
     clearAll();
   } else if (key === "r") state.rarity = RARITIES[(RARITIES.indexOf(state.rarity) + 1) % RARITIES.length];
   else if (key === "s") state.shiny = !state.shiny;
+  else if (key === "e") {
+    state.gear = (state.gear + 1) % GEAR.length;
+    clearAll();
+  }
   else if (key === "g") state.backdrop = !state.backdrop;
   else if (key === "t") {
     clearAll();

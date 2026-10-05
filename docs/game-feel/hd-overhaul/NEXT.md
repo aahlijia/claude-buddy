@@ -17,18 +17,21 @@ _A fresh session starts here. Last updated after H6, which completes the roadmap
 | H4: the buddy-shell diorama | done | [h4-diorama.md](h4-diorama.md) |
 | H5: the status line in T1 | done | [h5-statusline.md](h5-statusline.md) |
 | H6: the roster and the cinematics | done | [h6-roster.md](h6-roster.md) |
+| Hats and gear on the HD rigs | done | [hd-gear.md](hd-gear.md) |
 | **Polish (no fixed phase)** | **next** | the loose ends below |
 
 ## Read first (in this order)
 
-1. **[h6-roster.md](h6-roster.md):** the 20 rigs, species `feel`, and how
+1. **[hd-gear.md](hd-gear.md):** gear is rig parts; HD frames with a hat are
+   taller, so align them by the ground (`groundOf`), never the top.
+2. **[h6-roster.md](h6-roster.md):** the 20 rigs, species `feel`, and how
    the hatch, loot reveal, cut-ins and boss phase change plug in.
-2. **[h1-rigs.md](h1-rigs.md)**, especially "Adding a species": the rig
+3. **[h1-rigs.md](h1-rigs.md)**, especially "Adding a species": the rig
    format, the validator, golden hashes.
-3. **[h2-quest-player.md](h2-quest-player.md):** the fight stage
+4. **[h2-quest-player.md](h2-quest-player.md):** the fight stage
    (`server/rpg/hdstage.ts`); H6 added holds (cut-ins, phase changes) to its
    timeline.
-4. **[brainstorm.md](brainstorm.md):** the ideas the roadmap didn't cover
+5. **[brainstorm.md](brainstorm.md):** the ideas the roadmap didn't cover
    yet (§1.3 idle-long / react poses, §3.1 boot title, §3.8 the merchant,
    §4 toasts).
 
@@ -36,29 +39,29 @@ _A fresh session starts here. Last updated after H6, which completes the roadmap
 
 The roadmap (H0–H6) is done. Pick from the loose ends; good candidates:
 
-- **Hats and gear on HD rigs.** Anchors on the rigs, as brainstorm §1.1
-  describes; they would show in every surface at once.
 - **Kitty native animation** for the diorama and fight stage.
 - **The idle-long and react animations** (brainstorm §1.3: yawn → sleep,
   flinch, cheer, think) for the diorama and status line.
 
 ## Loose ends
 
-- From H2: hats and gear on HD rigs; kitty native animation for the fight
-  stage; a smaller HD stage for terminals under 66 × 34.
+- From H2: kitty native animation for the fight stage; a smaller HD stage
+  for terminals under 66 × 34.
 - From H3: skills, feats and the bounty board as menus; kitty/iTerm
   portraits; a pixel-type title logo.
 - From H4: kitty native animation for the diorama buddy's idle loop (it
   swaps frames today, ~1.3 KB/s); living-world ground props as pixel art;
   sixel; the same diorama in the TUI's home screen.
 - From H5: an HD fight scene in the status line (fights keep the ASCII
-  two-sprite scene); hats on the HD sprite; a 256-color sprite variant.
+  two-sprite scene); a 256-color sprite variant.
 
 ## How to see your work
 
 - `bun run gfx-demo --species dragon --bg` shows the rigs live; `1`–`6`
-  play the animations, `c` cycles all 20 species, `h` plays the hatch and
-  `l` the loot reveal.
+  play the animations, `c` cycles all 20 species, `h` plays the hatch,
+  `l` the loot reveal and `e` cycles the gear.
+- `bun run scripts/gear-sheet.ts` renders every species in every hat and
+  weapon (`--species a,b` for a slice).
 - `bun run scripts/h6-sheet.ts` renders the roster contact sheet (`--species
   a,b --scale 3` for a closer look) and `bun run scripts/h6-cinema.ts` the
   cinematics sheet.

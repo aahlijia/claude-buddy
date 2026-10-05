@@ -35,6 +35,8 @@ export const CAPYBARA: RigDef = {
   ground: 51,
   shadowRx: 18,
   outline: hex("#1e140c"),
+  // A hat takes the yuzu's place.
+  anchors: { hat: { part: "head", hides: ["yuzu"] } },
   feel: { tempo: 0.8 },
   materials: {
     f: {

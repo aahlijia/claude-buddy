@@ -40,6 +40,8 @@ export const CACTUS: RigDef = {
   ground: 51,
   shadowRx: 12,
   outline: hex("#10200f"),
+  // A hat replaces the flower and sits on the trunk.
+  anchors: { hat: { part: "body", hides: ["head"] } },
   feel: { waddle: 0.07 },
   materials: {
     g: {

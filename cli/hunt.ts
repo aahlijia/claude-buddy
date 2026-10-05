@@ -128,7 +128,7 @@ ${CYAN}╚═══════════════════════�
   // H6: the hatch cinematic on HD terminals; the ASCII card either way.
   const setup = hasHd(chosen.bones.species) ? cineSetup() : null;
   if (setup) {
-    const look = { species: chosen.bones.species, rarity: chosen.bones.rarity, shiny: chosen.bones.shiny, seed: 7 };
+    const look = { species: chosen.bones.species, rarity: chosen.bones.rarity, shiny: chosen.bones.shiny, seed: 7, hat: chosen.bones.hat };
     console.log("");
     await playCinematic(setup, (ms) => renderHatch(look, ms, setup.feel), HATCH_MS).done;
   }

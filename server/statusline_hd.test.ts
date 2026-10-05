@@ -109,14 +109,14 @@ describe("status line: HD sprite", () => {
 });
 
 describe("writeStatusState bakes the sprite", () => {
-  function write(species: string, cfg: Record<string, unknown>): { status: Record<string, unknown>; cached: boolean } {
+  function write(species: string, cfg: Record<string, unknown>, hat = "none"): { status: Record<string, unknown>; cached: boolean } {
     const dir = mkdtempSync(join(tmpdir(), "buddy-hd-write-"));
     try {
       const script = `
         const { saveConfig, saveCompanion, loadCompanion, writeStatusState } = await import("./server/state.ts");
         saveConfig(${JSON.stringify(cfg)});
         saveCompanion({ name: "Pip", personality: "", hatchedAt: 0, userId: "u",
-          bones: { species: ${JSON.stringify(species)}, rarity: "rare", eye: "\\u00b7", hat: "none", shiny: false,
+          bones: { species: ${JSON.stringify(species)}, rarity: "rare", eye: "\\u00b7", hat: ${JSON.stringify(hat)}, shiny: false,
             peak: "SNARK", dump: "WISDOM", stats: { DEBUGGING: 10, PATIENCE: 10, CHAOS: 10, WISDOM: 10, SNARK: 10 } } });
         writeStatusState(loadCompanion(), {});
       `;
@@ -146,6 +146,16 @@ describe("writeStatusState bakes the sprite", () => {
     expect(write("cat", { statusSprite: "off" }).status.hdFrames).toBeUndefined();
     expect(write("cat", { gameFeel: "off" }).status.hdFrames).toBeUndefined();
     expect(write("duck", {}).status.hdFrames).toBeDefined();
+  });
+
+  test("the sprite wears the buddy's hat (status.json carries the HD gear)", () => {
+    const bare = write("cat", {}).status;
+    const hatted = write("cat", {}, "wizard").status;
+    expect(bare.hdGear).toBeUndefined();
+    expect(hatted.hdGear).toEqual({ hat: "wizard" });
+    expect(hatted.hdFrames).not.toEqual(bare.hdFrames);
+    // Same scale: the hat adds rows on top, it doesn't shrink the buddy.
+    expect(hatted.hdWidth as number).toBeGreaterThanOrEqual((bare.hdWidth as number) - 1);
   });
 
   test("reduceMotion bakes one still pose", () => {

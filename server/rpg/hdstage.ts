@@ -25,7 +25,8 @@ import { encodeIterm } from "../gfx/encode/iterm.ts";
 import { encodeKitty } from "../gfx/encode/kitty.ts";
 import { drawText, textWidth } from "../gfx/font.ts";
 import { Framebuffer, hex, mix, type RGBA } from "../gfx/framebuffer.ts";
-import { ANIM_INFO, hasHd, headAt, renderHd, topAt, type Anim } from "../gfx/hd.ts";
+import { ANIM_INFO, HD_H, hasHd, headAt, renderHd, topAt, type Anim } from "../gfx/hd.ts";
+import { gearKey, type HdGear } from "../gfx/gear.ts";
 import { drawParticles, particleLife, particlesAt, type Emitter } from "../gfx/particles.ts";
 import { tmuxWrap } from "../gfx/detect.ts";
 import type { Cue } from "./anim";
@@ -66,6 +67,8 @@ export interface HdFighter {
   shiny: boolean;
   /** A stand-in: the HD blob recolored by this hue (foes without a rig). */
   hue?: number;
+  /** Hat, weapon and trinket (the hero's; foes have none). */
+  gear?: HdGear;
 }
 
 export interface HdCast {
@@ -111,11 +114,11 @@ export function standInHue(species: Species): number {
  * blob — a "bug slime" — so one scene never mixes pixels and ASCII.
  * Returns null when the fight stays on the ASCII stage.
  */
-export function hdCast(b: Battle, look: { species: Species; rarity?: Rarity; shiny?: boolean }): HdCast | null {
+export function hdCast(b: Battle, look: { species: Species; rarity?: Rarity; shiny?: boolean; gear?: HdGear }): HdCast | null {
   if (!hasHd(look.species)) return null;
   const real = hasHd(b.foe.species);
   return {
-    hero: { species: look.species, rarity: look.rarity ?? "common", shiny: !!look.shiny },
+    hero: { species: look.species, rarity: look.rarity ?? "common", shiny: !!look.shiny, ...(look.gear ? { gear: look.gear } : {}) },
     foe: {
       species: real ? b.foe.species : "blob",
       rarity: b.foe.boss ? "epic" : "common",
@@ -229,14 +232,14 @@ const CACHE_MAX = 600;
 /** One actor frame. `t` is quantized to 1/60 s so renders are cacheable. */
 export function actorFrame(f: HdFighter, anim: Anim, t: number, flip: boolean, seed: number): Framebuffer {
   const q = Math.max(0, Math.round(t * FPS));
-  const key = `${f.species}|${f.rarity}|${f.shiny ? 1 : 0}|${f.hue ?? ""}|${anim}|${q}|${flip ? 1 : 0}|${seed}`;
+  const key = `${f.species}|${f.rarity}|${f.shiny ? 1 : 0}|${f.hue ?? ""}|${gearKey(f.gear)}|${anim}|${q}|${flip ? 1 : 0}|${seed}`;
   const hit = cache.get(key);
   if (hit) {
     cache.delete(key);
     cache.set(key, hit);
     return hit;
   }
-  const fb = renderHd(f.species, anim, q / FPS, { rarity: f.rarity, shiny: f.shiny, seed, flip, hue: f.hue }) ?? new Framebuffer(64, 56);
+  const fb = renderHd(f.species, anim, q / FPS, { rarity: f.rarity, shiny: f.shiny, seed, flip, hue: f.hue, gear: f.gear }) ?? new Framebuffer(64, 56);
   cache.set(key, fb);
   if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value!);
   return fb;
@@ -293,7 +296,8 @@ function drawActor(fb: Framebuffer, cast: HdCast, side: Side, a: HdActor): void 
   const f = cast[side];
   let frame = actorFrame(f, a.anim, a.t, side === "foe", cast.seed ^ (side === "foe" ? 0x5f3 : 0));
   if (a.tint) frame = tinted(frame, a.tint);
-  fb.draw(frame, HOME[side] + Math.round(a.x), ACTOR_TOP + Math.round(a.y));
+  // Bottom-aligned: a hatted frame is taller (its headroom pokes above).
+  fb.draw(frame, HOME[side] + Math.round(a.x), ACTOR_TOP + HD_H - frame.height + Math.round(a.y));
 }
 
 function headY(cast: HdCast, side: Side): number {
@@ -595,9 +599,11 @@ const bustCache = new Map<string, Framebuffer | null>();
 
 /** The fighter's head and shoulders, cut from its idle pose. */
 function portraitFor(f: HdFighter, half: boolean): Framebuffer | null {
-  const key = `${f.species}|${f.rarity}|${f.shiny}|${f.hue ?? ""}|${half}`;
+  const key = `${f.species}|${f.rarity}|${f.shiny}|${f.hue ?? ""}|${gearKey(f.gear)}|${half}`;
   if (bustCache.has(key)) return bustCache.get(key)!;
-  const full = renderHd(f.species, "idle", 0, { rarity: f.rarity, shiny: f.shiny, hue: f.hue });
+  // The close-up wears the hat (not the weapon: it's a face shot).
+  const hat = f.gear?.hat ? { hat: f.gear.hat } : undefined;
+  const full = renderHd(f.species, "idle", 0, { rarity: f.rarity, shiny: f.shiny, hue: f.hue, gear: hat });
   let out: Framebuffer | null = null;
   if (full) {
     // Crop the top of the sprite: the head and shoulders.

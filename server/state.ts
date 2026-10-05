@@ -858,6 +858,8 @@ export interface StatusState {
   hdWidth?: number;
   hdCelebFrames?: string[];
   hdCelebSequence?: number[];
+  /** The HD look's gear (hat, weapon, trinket), for the diorama panel. */
+  hdGear?: import("./gfx/gear.ts").HdGear;
   /** Buddy Quest one-line HUD (`Z2 3/5 ♥40/55 ↯7 ◎120g`), patched in by
    *  `rpg/cli.ts` and carried forward by every status write. */
   rpgHud?: string;
@@ -865,7 +867,7 @@ export interface StatusState {
 
 /** Cache of baked HD status sprites, keyed by everything that changes them. */
 const HD_SPRITE_CACHE = "hd-sprite.json";
-const HD_SPRITE_VERSION = 1;
+const HD_SPRITE_VERSION = 2;
 
 /**
  * Bake (or reuse) the HD status-line sprite. Baking renders a dozen HD frames
@@ -877,9 +879,11 @@ function hdStatusSprite(
   size: "mini" | "full",
   mood: Emotion,
   still: boolean,
+  gear?: import("./gfx/gear.ts").HdGear,
 ): import("./gfx/statussprite.ts").BakedSprite | null {
   const b = companion.bones;
-  const key = [HD_SPRITE_VERSION, b.species, b.rarity, b.shiny ? 1 : 0, size, mood, still ? 1 : 0, companion.name].join("|");
+  const { gearKey } = require("./gfx/gear.ts") as typeof import("./gfx/gear.ts");
+  const key = [HD_SPRITE_VERSION, b.species, b.rarity, b.shiny ? 1 : 0, size, mood, still ? 1 : 0, companion.name, gearKey(gear)].join("|");
   const file = join(STATE_DIR, HD_SPRITE_CACHE);
   let cache: Record<string, import("./gfx/statussprite.ts").BakedSprite> = {};
   try {
@@ -891,7 +895,7 @@ function hdStatusSprite(
   const { bakeStatusSprite } = require("./gfx/statussprite.ts") as typeof import("./gfx/statussprite.ts");
   let seed = 0x811c9dc5;
   for (const ch of companion.name) seed = Math.imul(seed ^ ch.charCodeAt(0), 0x01000193) >>> 0;
-  const baked = bakeStatusSprite({ species: b.species, rarity: b.rarity, shiny: !!b.shiny, seed }, size, mood, still);
+  const baked = bakeStatusSprite({ species: b.species, rarity: b.rarity, shiny: !!b.shiny, seed, gear }, size, mood, still);
   if (!baked) return null;
   // Keep the newest few: moods come and go, the look rarely changes.
   const keys = Object.keys(cache).filter((k) => k !== key).slice(-5);
@@ -1748,10 +1752,19 @@ export function writeStatusState(
   // second), so it rides the plain clamped `gate`, and it follows the same
   // emotion the ASCII emote row does. reduceMotion bakes one still pose.
   let hd: import("./gfx/statussprite.ts").BakedSprite | null = null;
+  // The HD look wears the same gear the ASCII frames show (the diorama
+  // reads it from status.json too).
+  let hdGear: import("./gfx/gear.ts").HdGear | undefined;
+  try {
+    const { hdGearOf } = require("./gfx/gear.ts") as typeof import("./gfx/gear.ts");
+    hdGear = hdGearOf({ hat: displayBones.hat, weaponArt: gearArt?.weapon, trinketArt: gearArt?.trinket });
+  } catch {
+    // Best-effort, like the sprite itself.
+  }
   if (gate !== "off" && cfg.statusSprite !== "off") {
     try {
       const still = cfg.reduceMotion === true || process.env.BUDDY_REDUCED_MOTION === "1";
-      hd = hdStatusSprite(companion, cfg.statusSprite, emotion, still);
+      hd = hdStatusSprite(companion, cfg.statusSprite, emotion, still, hdGear);
     } catch {
       // Best-effort: the ASCII frames are always there.
     }
@@ -1812,6 +1825,7 @@ export function writeStatusState(
     ...(rpgHud ? { rpgHud } : {}),
     ...(sceneWeather ? { sceneWeather } : {}),
     gameFeel: gate,
+    ...(hdGear ? { hdGear } : {}),
     ...(hd
       ? {
         hdFrames: hd.frames,

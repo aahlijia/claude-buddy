@@ -5,6 +5,7 @@
  */
 
 import type { Eye, Hat, Rarity, Species } from "../engine";
+import type { HdGear } from "../gfx/gear.ts";
 import { applyHat, displayWidth, getArtFrame, rectFrame } from "../art";
 import { afterglow, type Cue } from "./anim";
 import { foeIntent, type Battle } from "./battle";
@@ -118,6 +119,8 @@ export interface Look {
   /** HD art only: rarity lighting and the shiny palette. */
   rarity?: Rarity;
   shiny?: boolean;
+  /** HD art only: the hat, held weapon and trinket (gfx/gear.ts). */
+  gear?: HdGear;
 }
 
 // ─── Frames & panels ────────────────────────────────────────────────────────

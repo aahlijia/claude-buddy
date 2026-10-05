@@ -292,7 +292,7 @@ function initCompanion() {
 async function hatchCinematic(c: { bones: ReturnType<typeof generateBones> }): Promise<void> {
   const setup = hasHd(c.bones.species) ? cineSetup() : null;
   if (!setup) return;
-  const look = { species: c.bones.species, rarity: c.bones.rarity, shiny: c.bones.shiny, seed: 7 };
+  const look = { species: c.bones.species, rarity: c.bones.rarity, shiny: c.bones.shiny, seed: 7, hat: c.bones.hat };
   const play = playCinematic(setup, (ms) => renderHatch(look, ms, setup.feel), HATCH_MS);
   const stdin = process.stdin;
   const raw = stdin.isTTY;

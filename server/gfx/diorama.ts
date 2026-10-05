@@ -21,6 +21,7 @@ import type { Rarity, Species } from "../engine.ts";
 import { biomeScene, type BiomeScene } from "./biomes.ts";
 import { Framebuffer, hex, mix, type RGBA } from "./framebuffer.ts";
 import { ANIM_INFO, HD_H, HD_W, headAt, renderHd, type Anim } from "./hd.ts";
+import type { HdGear } from "./gear.ts";
 import { FIELD_LOOP, drawField, type Field } from "./particles.ts";
 import { FEET, HORIZON, biomeSeed, geo, paintGround, paintSky, paintStrokes, paintStructure, rand, type Geo } from "./scenery.ts";
 import { lightAt, type Light } from "./sky.ts";
@@ -35,6 +36,8 @@ export interface DioramaBuddy {
   species: Species;
   rarity: Rarity;
   shiny: boolean;
+  /** Hat, weapon and trinket (gear.ts). */
+  gear?: HdGear;
 }
 
 export interface DioramaSpec {
@@ -58,6 +61,7 @@ export function dioramaSpec(o: {
   rarity: Rarity;
   species: Species;
   shiny?: boolean;
+  gear?: HdGear;
   w: number;
   h: number;
   hour: number;
@@ -72,7 +76,7 @@ export function dioramaSpec(o: {
     h: o.h,
     hour: o.hour,
     weather: o.weather ?? null,
-    buddy: { species: o.species, rarity: o.rarity, shiny: !!o.shiny },
+    buddy: { species: o.species, rarity: o.rarity, shiny: !!o.shiny, ...(o.gear ? { gear: o.gear } : {}) },
     seed: (o.seed ?? 1) >>> 0,
     flash: !!o.flash,
     particles: o.particles ?? 1,
@@ -387,8 +391,10 @@ export interface BuddySprite {
  * without HD art.
  */
 export function buddySprite(spec: DioramaSpec, beat: Beat, cam: number): BuddySprite | null {
-  const raw = renderHd(spec.buddy.species, beat.anim, beat.t, { rarity: spec.buddy.rarity, shiny: spec.buddy.shiny, seed: spec.seed, flip: beat.flip });
+  const raw = renderHd(spec.buddy.species, beat.anim, beat.t, { rarity: spec.buddy.rarity, shiny: spec.buddy.shiny, seed: spec.seed, flip: beat.flip, gear: spec.buddy.gear });
   if (!raw) return null;
+  // A hatted frame is taller by its headroom: everything sits that much lower.
+  const top = raw.height - HD_H;
   const f = buddyScale(spec.h);
   const u = spec.h / 18;
   // Room above the head for the thought dots.
@@ -396,13 +402,13 @@ export function buddySprite(spec: DioramaSpec, beat: Beat, cam: number): BuddySp
   const body = downscale(raw, f);
   const fb = new Framebuffer(body.width, body.height + pad);
   const gx = HD_CX / f;
-  const gy = pad + HD_GROUND / f;
+  const gy = pad + (HD_GROUND + top) / f;
   fb.ellipse(gx, gy, (HD_W * 0.2) / f + 0.5, Math.max(0.6, (HD_H * 0.035) / f), [0, 0, 0, 255], 0.28);
   fb.draw(body, 0, pad);
   if (beat.think) {
     const head = headAt(spec.buddy.species) ?? [HD_CX, 20];
     const hx = (beat.flip ? HD_W - head[0] : head[0]) / f;
-    const hy = pad + Math.max(0, head[1] - 22) / f;
+    const hy = pad + Math.max(0, head[1] + top - 22) / f;
     const n = Math.floor((beat.thinkT / 0.45) % 4); // 0..3 dots, then reset
     const dot = Math.max(1, Math.round(u * 0.45));
     for (let k = 0; k < n; k++) {

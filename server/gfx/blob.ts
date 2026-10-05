@@ -311,6 +311,14 @@ const smooth = (a: number, b: number, x: number) => {
   return k * k * (3 - 2 * k);
 };
 
+/** Where the jelly body sits at `t` (center and radii), for anchoring gear. */
+export function blobBody(t: number, opts: BlobOptions = {}): { cx: number; cy: number; rx: number; ry: number } {
+  const pose = blobPose(t, opts);
+  const rx = RX * pose.sx;
+  const ry = RY * pose.sy;
+  return { cx: CX + (pose.dx ?? 0), cy: GROUND - pose.lift - ry, rx, ry };
+}
+
 function drawBody(fb: Framebuffer, pose: BlobPose, pal: BodyPalette, rim: RGBA | null): { cx: number; cy: number; rx: number; ry: number } {
   const rx = RX * pose.sx;
   const ry = RY * pose.sy;

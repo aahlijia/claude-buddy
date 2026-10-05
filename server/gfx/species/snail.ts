@@ -66,6 +66,8 @@ export const SNAIL: RigDef = {
   ground: 51,
   shadowRx: 19,
   outline: hex("#24160e"),
+  // Hats sit on top of the shell (between the eye stalks they'd vanish).
+  anchors: { hat: { part: "shell" } },
   feel: { tempo: 0.5 },
   materials: {
     b: {

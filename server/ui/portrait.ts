@@ -11,7 +11,8 @@
 import type { Rarity, Species } from "../engine";
 import { encodeHalfblock, type ColorMode } from "../gfx/encode/halfblock.ts";
 import { Framebuffer, hex, mix } from "../gfx/framebuffer.ts";
-import { headAt, renderHd } from "../gfx/hd.ts";
+import { HD_H, headAt, renderHd } from "../gfx/hd.ts";
+import type { HdGear } from "../gfx/gear.ts";
 import { downsample2 } from "../rpg/hdstage.ts";
 
 export type PortraitSize = "bust" | "face" | "small";
@@ -24,6 +25,8 @@ export interface PortraitOpts {
   /** Idle clock (seconds): breathing and blinks for a living portrait. */
   t?: number;
   seed?: number;
+  /** Gear: portraits wear the hat (weapons and trinkets stay out of frame). */
+  gear?: HdGear;
 }
 
 /** Crop boxes (rig pixels): head and shoulders, or just the face. */
@@ -31,11 +34,15 @@ const BOX: Record<PortraitSize, [number, number]> = { bust: [32, 28], small: [32
 
 /** The portrait as pixels, or null without HD art. */
 export function portraitPixels(species: Species, o: PortraitOpts = {}): Framebuffer | null {
-  const full = renderHd(species, "idle", o.t ?? 0, { rarity: o.rarity, shiny: o.shiny, seed: o.seed ?? 1 });
+  const hat = o.gear?.hat && o.gear.hat !== "none" ? { hat: o.gear.hat } : undefined;
+  const full = renderHd(species, "idle", o.t ?? 0, { rarity: o.rarity, shiny: o.shiny, seed: o.seed ?? 1, gear: hat });
   if (!full) return null;
   const [W, H] = BOX[o.size ?? "bust"];
-  // Center on the head (rigs pivot it at the neck: the face sits above).
-  const [hx, hy] = headAt(species) ?? [full.width / 2, 30];
+  // Center on the head (rigs pivot it at the neck: the face sits above). A
+  // hatted frame is taller by its headroom; nudge up so the hat shows.
+  const pad = full.height - HD_H;
+  const [hx, hy0] = headAt(species) ?? [full.width / 2, 30];
+  const hy = hy0 + pad - (pad ? 4 : 0);
   const x0 = Math.round(Math.max(0, Math.min(full.width - W, hx - W / 2)));
   const y0 = Math.round(Math.max(0, Math.min(full.height - H, hy - H * (o.size === "face" ? 0.8 : 0.74))));
   // A soft vignette frame behind the bust.

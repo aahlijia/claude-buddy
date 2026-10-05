@@ -1386,7 +1386,7 @@ export function BuddyCardPane({ companion, slot, isActive, editablePersonality, 
     return "█".repeat(f) + "░".repeat(10 - f);
   };
   // HD species get a portrait instead of the ASCII frame.
-  const face = UI ? portrait(b.species, { size: "face", rarity: b.rarity, shiny: b.shiny, color: UI.mode }) : null;
+  const face = UI ? portrait(b.species, { size: "face", rarity: b.rarity, shiny: b.shiny, gear: b.hat !== "none" ? { hat: b.hat } : undefined, color: UI.mode }) : null;
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={color} paddingX={2} paddingY={1} width={48}>

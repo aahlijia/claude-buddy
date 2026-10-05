@@ -99,6 +99,20 @@ export interface RigDef {
   shadowRx: number;
   /** Per-species motion flavor (motion.ts); omitted = the plain library. */
   feel?: Feel;
+  /** Gear anchors (gear.ts), when the measured ones don't suit the species:
+   *  `hat` sits on the crown of a part, `hand` holds the weapon. */
+  anchors?: { hat?: GearAnchor; hand?: GearAnchor };
+}
+
+/** A gear attachment point: a part and a point in its shape pixels. */
+export interface GearAnchor {
+  part: string;
+  /** Shape pixels; omitted = measured (the part's crown for a hat). */
+  at?: readonly [number, number];
+  /** Tilt of what hangs there (radians). */
+  rot?: number;
+  /** Parts the gear replaces (a hat instead of the capybara's yuzu). */
+  hides?: readonly string[];
 }
 
 /**

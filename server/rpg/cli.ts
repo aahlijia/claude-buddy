@@ -49,6 +49,8 @@ export function loadBuddyCtx(): BuddyCtx {
     const xp = getXpState();
     if (!c) throw new Error("no companion");
     const look = resolveAppearance(c.bones, xp.equipment, xp.cosmeticFlags, ITEMS, ownedUpgradeEffects(xp));
+    const { hdGearOf } = require("../gfx/gear.ts") as typeof import("../gfx/gear.ts");
+    const gear = hdGearOf(look);
     return {
       name: c.name,
       species: c.bones.species,
@@ -56,6 +58,7 @@ export function loadBuddyCtx(): BuddyCtx {
       hat: look.hat,
       rarity: c.bones.rarity,
       shiny: !!c.bones.shiny,
+      ...(gear ? { gear } : {}),
       level: xp.level,
       prestige: xp.prestigeLevel,
       stats: look.stats,

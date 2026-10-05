@@ -15,12 +15,12 @@
  * motion also drops the wobble and the spin. gameFeel off never plays them.
  */
 
-import type { Rarity, Species } from "../engine.ts";
+import type { Hat, Rarity, Species } from "../engine.ts";
 import { glow } from "./blob.ts";
 import { easeInCubic, easeOutBack, easeOutCubic, span } from "./ease.ts";
 import { drawText, textWidth } from "./font.ts";
 import { Framebuffer, hex, mix, type RGBA } from "./framebuffer.ts";
-import { HD_H, HD_W, renderHd, type Anim } from "./hd.ts";
+import { HD_W, renderHd, type Anim } from "./hd.ts";
 import { renderRig, ramp, type RigDef } from "./rig.ts";
 
 /** Scene size for both cinematics (half-block: 72 columns × 28 rows). */
@@ -159,6 +159,8 @@ export interface HatchLook {
   rarity: Rarity;
   shiny: boolean;
   seed?: number;
+  /** Born with a hat (the innate one): it hatches wearing it. */
+  hat?: Hat;
 }
 
 /** Crack lines, appearing in three stages (egg-local pixels, 24 × 30 egg). */
@@ -260,8 +262,10 @@ export function renderHatch(look: HatchLook, ms: number, feel: CineFeel): Frameb
   // The buddy: a victory hop, then it settles into idle.
   const anim: Anim = t < 1.1 ? "victory" : "idle";
   const at = t < 1.1 ? t : t - 1.1;
-  const buddy = renderHd(look.species, anim, at, { rarity: look.rarity, shiny: look.shiny, seed });
-  if (buddy) fb.draw(buddy, Math.round((CINE_W - HD_W) / 2), GROUND - (HD_H - 5) + 1);
+  const gear = look.hat && look.hat !== "none" ? { hat: look.hat } : undefined;
+  const buddy = renderHd(look.species, anim, at, { rarity: look.rarity, shiny: look.shiny, seed, gear });
+  // Bottom-aligned: a hatted frame is taller.
+  if (buddy) fb.draw(buddy, Math.round((CINE_W - HD_W) / 2), GROUND - (buddy.height - 5) + 1);
 
   // Shell shards fly out and fall.
   drawShards(fb, ex, ey, t, seed, L);

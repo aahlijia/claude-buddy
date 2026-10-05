@@ -224,6 +224,16 @@ export function parse(input: string): { cmd: string; args: string[] } {
 
 // ─── Entry point ────────────────────────────────────────────────────────────
 
+/**
+ * The buddy as the quest draws it: its HD gear, with the quest weapon (a
+ * blade glowing in the drop's rarity) in hand instead of any idle-RPG one.
+ */
+export function withQuestGear(s: RpgState, ctx: BuddyCtx): BuddyCtx {
+  const w = s.equipped?.weapon;
+  if (!w) return ctx;
+  return { ...ctx, gear: { ...ctx.gear, weapon: "blade", weaponRarity: w.rarity } };
+}
+
 export function execute(
   s: RpgState,
   ctx: BuddyCtx,
@@ -231,7 +241,7 @@ export function execute(
   now: number,
   p: Paint,
 ): CommandResult {
-  const r = dispatch(s, ctx, input, now, p);
+  const r = dispatch(s, withQuestGear(s, ctx), input, now, p);
   const feats = checkFeats(s);
   if (feats.length) {
     r.out += `\n${paint(p, C.yellow, feats.join("\n"))}`;
@@ -515,7 +525,7 @@ function sheet(s: RpgState, ctx: BuddyCtx, hero: HeroStats, now: number, p: Pain
   );
   if (p.ui) {
     // Rich: a character card — the portrait beside the headline stats.
-    const face = (p.ui && portrait(ctx.species, { size: "face", rarity: ctx.rarity, shiny: ctx.shiny, color: p.ui.mode })) ?? buddySprite(ctx);
+    const face = (p.ui && portrait(ctx.species, { size: "face", rarity: ctx.rarity, shiny: ctx.shiny, gear: ctx.gear, color: p.ui.mode })) ?? buddySprite(ctx);
     const fw = Math.max(0, ...face.map((l) => displayWidth(l)));
     const top = Math.max(face.length, 4);
     const body: string[] = [];
@@ -539,7 +549,7 @@ const POSE_T = { 0: 0, 1: 1.3, blink: 0.65 } as const;
 
 function townPortrait(p: Paint, ctx: BuddyCtx, pose: 0 | 1 | "blink"): string[] | null {
   if (!p.ui) return null;
-  return portrait(ctx.species, { size: "face", rarity: ctx.rarity, shiny: ctx.shiny, color: p.ui.mode, t: POSE_T[pose] });
+  return portrait(ctx.species, { size: "face", rarity: ctx.rarity, shiny: ctx.shiny, gear: ctx.gear, color: p.ui.mode, t: POSE_T[pose] });
 }
 
 // ─── Rich menus (TUI) ───────────────────────────────────────────────────────
@@ -848,7 +858,7 @@ export function eventScreen(s: RpgState, p: Paint, look?: BuddyCtx, reveal?: num
   if (p.ui && look) {
     // Rich: a dialogue box — the buddy's portrait beside the story text,
     // which the TUI types out (`reveal` characters shown).
-    const face = portrait(look.species, { size: "face", rarity: look.rarity, shiny: look.shiny, color: p.ui.mode }) ?? buddySprite(look);
+    const face = portrait(look.species, { size: "face", rarity: look.rarity, shiny: look.shiny, gear: look.gear, color: p.ui.mode }) ?? buddySprite(look);
     const fw = Math.max(0, ...face.map((l) => displayWidth(l)));
     const text = wrap(def.text, 40);
     let left = reveal ?? Infinity;

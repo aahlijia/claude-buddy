@@ -74,7 +74,7 @@ frames. That's not happening. Instead, give each species a **paper-doll rig**:
 - **Gear and hats snap to anchors.** This is the HD version of today's
   `GEAR_ANCHORS` and derive-on-read: equipment is just more parts on the rig,
   so every hat, weapon and trinket works on every species and every
-  animation for free.
+  animation for free. _Done: [hd-gear.md](hd-gear.md)._
 - **Expressions are eye and mouth part swaps.** The current
   `neutral/happy/angry/bored/surprised` set maps 1:1, and a few more get easy
   to add: smug, sleepy, focused, heart-eyes, dizzy spiral.

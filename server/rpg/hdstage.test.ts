@@ -9,7 +9,7 @@ import { drawParticles, PARTICLE_KINDS, particlesAt, type Emitter } from "../gfx
 import { direct, directIntro, type Cue } from "./anim";
 import { act, makeBoss, makeMonster, startBattle, type Battle } from "./battle";
 import { ZONES } from "./data";
-import { execute, type BuddyCtx } from "./game";
+import { execute, withQuestGear, type BuddyCtx } from "./game";
 import {
   CUTIN_MS,
   FLASH_GAP_MS,
@@ -88,6 +88,23 @@ describe("fallback selection", () => {
     // H6 put every species in HD; only an unknown one falls back.
     expect(hdCast(b, { species: "nope" as never })).toBeNull();
     expect(hdCast(b, { species: "robot" })).not.toBeNull();
+  });
+
+  test("the hero's gear rides into the cast; the quest weapon replaces an idle-RPG one", () => {
+    const cast = hdCast(b, { ...LOOK, gear: { hat: "crown", weapon: "wand" } })!;
+    expect(cast.hero.gear).toEqual({ hat: "crown", weapon: "wand" });
+    expect(cast.foe.gear).toBeUndefined();
+    const s = freshState(T0);
+    const ctx = { ...CTX, gear: { hat: "crown" as const, weapon: "wand" as const } };
+    expect(withQuestGear(s, ctx)).toBe(ctx);
+    s.equipped.weapon = { uid: 1, slot: "weapon", name: "Rusty Blade", rarity: "epic", ilvl: 1, stats: {} };
+    expect(withQuestGear(s, ctx).gear).toEqual({ hat: "crown", weapon: "blade", weaponRarity: "epic" });
+    // A hatted hero still stands on the ground line.
+    const plainCast = hdCast(b, LOOK)!;
+    const scene = restScene(b, [], stageGeometry(b, LOOK), plainCast);
+    const bare = renderScene(plainCast, scene);
+    const worn = renderScene({ ...plainCast, hero: { ...plainCast.hero, gear: { hat: "wizard" } } }, scene);
+    for (let x = 0; x < 50; x++) expect(worn.get(x, 54)).toEqual(bare.get(x, 54));
   });
 
   test("HD foes are drawn as themselves", () => {

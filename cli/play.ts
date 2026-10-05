@@ -542,7 +542,7 @@ function titleScreen(t: TitleState): string {
   lines.push("", dim(center("a turn-based RPG that lives inside Claude Code", w)), "");
   const ui = uiPaint();
   // Rich face: the buddy's HD bust; it breathes with the title loop.
-  const bust = ui ? portrait(ctx.species, { rarity: ctx.rarity, shiny: ctx.shiny, color: ui.mode, t: { 0: 0, 1: 1.3, blink: 0.65 }[t.pose] }) : null;
+  const bust = ui ? portrait(ctx.species, { rarity: ctx.rarity, shiny: ctx.shiny, gear: ctx.gear, color: ui.mode, t: { 0: 0, 1: 1.3, blink: 0.65 }[t.pose] }) : null;
   if (bust) {
     for (const l of bust) lines.push(" ".repeat(Math.max(0, Math.floor((w - 32) / 2))) + l);
   } else {

@@ -5,6 +5,7 @@ import {
   NO_ACTIVITY,
   beatAt,
   buddyScale,
+  buddySprite,
   cameraFor,
   composeDiorama,
   dioramaLight,
@@ -329,3 +330,18 @@ const GOLDEN: Record<string, number> = {
   "matrix/dusk": 264395090,
   "matrix/night": 264395090,
 };
+
+describe("gear in the diorama", () => {
+  test("a hatted buddy wears it and keeps its feet on the same spot", () => {
+    for (const h of [32, 96]) {
+      const bare = spec({ h });
+      const worn = spec({ h, gear: { hat: "wizard", trinket: "duck" } });
+      const beat = beatAt(bare, 1, wanderZone(bare.w, 24));
+      const a = buddySprite(bare, beat, 0)!;
+      const b = buddySprite(worn, beat, 0)!;
+      expect(b.y + b.fb.height).toBe(a.y + a.fb.height);
+      expect(b.fb.height).toBeGreaterThan(a.fb.height);
+      expect(hash(b.fb)).not.toBe(hash(a.fb));
+    }
+  });
+});

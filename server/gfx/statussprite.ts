@@ -17,6 +17,7 @@ import { encodeHalfblock } from "./encode/halfblock.ts";
 import { Framebuffer } from "./framebuffer.ts";
 import { blinkAt } from "./blob.ts";
 import { ANIM_INFO, hasHd, renderHd, type Anim } from "./hd.ts";
+import type { HdGear } from "./gear.ts";
 
 export const STATUS_SPRITES = ["off", "mini", "full"] as const;
 export type StatusSprite = (typeof STATUS_SPRITES)[number];
@@ -33,6 +34,8 @@ export interface SpriteLook {
   shiny: boolean;
   /** Stable per buddy (blinks and motes). */
   seed: number;
+  /** Hat, weapon and trinket (gear.ts). */
+  gear?: HdGear;
 }
 
 export interface BakedSprite {
@@ -119,16 +122,19 @@ function crop(fb: Framebuffer, x0: number, y0: number, w: number, h: number): Fr
  */
 export function bakeStatusSprite(look: SpriteLook, size: StatusSprite, mood: SpriteMood = "neutral", still = false): BakedSprite | null {
   if (size === "off" || !hasHd(look.species)) return null;
-  const render = (p: Pose) => renderHd(look.species, p.anim, p.t, { rarity: look.rarity, shiny: look.shiny, seed: look.seed })!;
+  const render = (p: Pose, gear: HdGear | null = look.gear ?? null) => renderHd(look.species, p.anim, p.t, { rarity: look.rarity, shiny: look.shiny, seed: look.seed, gear: gear ?? undefined })!;
   const key = still ? { poses: [idleAt(0, 4)], sequence: [0] } : keyPoses(mood, look.seed);
   const celebPoses = still ? [victoryAt(0, 4)] : [0, 1, 2, 3].map((k) => victoryAt(k, 4));
-  const raw = key.poses.map(render);
-  const celebRaw = celebPoses.map(render);
+  const raw = key.poses.map((p) => render(p));
+  const celebRaw = celebPoses.map((p) => render(p));
 
   // One crop box for every pose (incl. the hop), snapped to the downscale grid
-  // and to an even pixel height so each half-block row stays whole.
+  // and to an even pixel height so each half-block row stays whole. The
+  // scale comes from the bare buddy, so a hat adds rows instead of shrinking
+  // it (frames are bottom-aligned: a hatted one is taller by its headroom).
   const box = bbox([...raw, ...celebRaw], SOLID)!;
-  const f = Math.max(1, Math.ceil((box[3] - box[1]) / TARGET_PX[size]));
+  const bare = look.gear ? bbox([...key.poses, ...celebPoses].map((p) => render(p, null)), SOLID)! : box;
+  const f = Math.max(1, Math.ceil((bare[3] - bare[1]) / TARGET_PX[size]));
   const step = f * 2;
   const x0 = Math.floor(box[0] / f) * f;
   const x1 = Math.ceil(box[2] / f) * f;

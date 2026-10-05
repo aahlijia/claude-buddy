@@ -19,6 +19,19 @@ describe("status-line sprite", () => {
     expect(STATUS_SPRITES).toEqual(["off", "mini", "full"]);
   });
 
+  test("a hat sits on top at the same scale (rows are added, never the buddy shrunk)", () => {
+    const bare = bakeStatusSprite(LOOK, "mini")!;
+    for (const hat of ["tophat", "wizard", "crown"] as const) {
+      const worn = bakeStatusSprite({ ...LOOK, gear: { hat } }, "mini")!;
+      expect(worn.frames[0]).not.toBe(bare.frames[0]);
+      expect(worn.rows).toBeGreaterThanOrEqual(bare.rows);
+      expect(worn.rows).toBeLessThanOrEqual(bare.rows + 2);
+      expect(worn.width).toBe(bare.width);
+      // The feet are the bare buddy's.
+      expect(plain(worn.frames[0]).split("\n").at(-1)).toBe(plain(bare.frames[0]).split("\n").at(-1));
+    }
+  });
+
   test("mini fits ~6 rows, full ~12; every frame is the same box", () => {
     for (const species of ["blob", "cat", "dragon"] as const) {
       for (const [size, maxRows, maxW] of [["mini", 6, 14], ["full", 12, 28]] as const) {

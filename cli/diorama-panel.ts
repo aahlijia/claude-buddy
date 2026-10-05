@@ -22,6 +22,7 @@
 import type { Rarity, Species } from "../server/engine.ts";
 import { BIOME_SCENES } from "../server/gfx/biomes.ts";
 import { tmuxWrap, type Tier } from "../server/gfx/detect.ts";
+import type { HdGear } from "../server/gfx/gear.ts";
 import {
   PARALLAX,
   REACTION_SECONDS,
@@ -72,6 +73,8 @@ export interface PanelStatus {
   muted?: boolean;
   sceneWeather?: string;
   gameFeel?: string;
+  /** The HD look's hat, weapon and trinket (status.json `hdGear`). */
+  hdGear?: HdGear;
 }
 
 export interface PanelStats {
@@ -385,6 +388,7 @@ export class DioramaPanel {
       rarity: (this.status.rarity ?? "common") as Rarity,
       species: (this.status.species ?? "blob") as Species,
       shiny: this.status.shiny,
+      gear: this.status.hdGear,
       w: this.box.cols * cx,
       h: this.box.rows * cy,
       hour: this.opts.hour ?? hourOf(wallClock, 5),

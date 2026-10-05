@@ -8,7 +8,8 @@
  */
 
 import type { Rarity, Species } from "../engine.ts";
-import { BLOB_H, BLOB_W, RIM_BLOB, SPARK, backdrop, blobPalette, glow, motes, renderBlob } from "./blob.ts";
+import { BLOB_H, BLOB_W, RIM_BLOB, SPARK, backdrop, blobBody, blobPalette, glow, motes, renderBlob } from "./blob.ts";
+import { HD_HEADROOM, drawBlobGear, drawTrinket, equipRig, gearPose, needsHeadroom, type HdGear } from "./gear.ts";
 import { Framebuffer } from "./framebuffer.ts";
 import { ANIM_INFO, poseRig, type Anim } from "./motion.ts";
 import { anchorOf, renderRig, type RigDef } from "./rig.ts";
@@ -74,6 +75,18 @@ export interface HdOptions {
   backdrop?: boolean;
   /** Blob only: recolor the jelly by this many degrees of hue (stand-ins). */
   hue?: number;
+  /** Hat, held weapon and trinket (gear.ts). */
+  gear?: HdGear;
+}
+
+export { HD_HEADROOM, type HdGear } from "./gear.ts";
+
+/** Rows from a frame's ground line to its bottom edge (every HD frame). */
+export const HD_FOOT = BLOB_H - 51;
+
+/** The ground line of an HD frame (hatted frames are taller: align by this). */
+export function groundOf(fb: Framebuffer): number {
+  return fb.height - HD_FOOT;
 }
 
 export { ANIM_INFO, ANIMS, type Anim } from "./motion.ts";
@@ -82,22 +95,68 @@ export { ANIM_INFO, ANIMS, type Anim } from "./motion.ts";
 export function renderHd(species: Species, anim: Anim, t: number, opts: HdOptions = {}): Framebuffer | null {
   const seed = opts.seed ?? 1;
   const rarity = opts.rarity ?? "common";
+  const gear = opts.gear;
   if (species === "blob") {
-    const fb = renderBlob(t, { rarity, shiny: opts.shiny, seed, backdrop: opts.backdrop, anim, palette: opts.hue ? blobPalette(opts.hue) : undefined });
+    const bo = { rarity, shiny: opts.shiny, seed, backdrop: opts.backdrop, anim, palette: opts.hue ? blobPalette(opts.hue) : undefined };
+    let fb = renderBlob(t, bo);
+    if (gear) {
+      // Hats get the taller canvas (see HD_HEADROOM): shift the blob down.
+      const pad = needsHeadroom(gear) ? HD_HEADROOM : 0;
+      if (pad) {
+        const tall = new Framebuffer(fb.width, fb.height + pad);
+        tall.draw(fb, 0, pad);
+        fb = tall;
+      }
+      if (gear.trinket) behind(fb, (l) => drawTrinket(l, gear.trinket!, restLeft("blob"), BLOB_GROUND + pad));
+      const body = blobBody(t, bo);
+      drawBlobGear(fb, gear, { ...body, cy: body.cy + pad }, t);
+    }
     return opts.flip ? flipX(fb) : fb;
   }
-  const rig = RIGS[species];
-  if (!rig) return null;
-  const pose = poseRig(rig, anim, t, seed);
+  const base = RIGS[species];
+  if (!base) return null;
+  const rig = equipRig(base, gear);
+  const pose = gearPose(poseRig(rig, anim, t, seed), gear, t);
   const fb = new Framebuffer(rig.width, rig.height);
   if (opts.backdrop) backdrop(fb, t, seed);
   // Same rarity dressing as the blob: legendary aura, epic+ motes.
   if (rarity === "legendary") glow(fb, rig.width / 2, rig.ground - 14 - (pose.lift ?? 0), 28, RIM_BLOB.legendary!, 0.45 * (0.75 + 0.25 * Math.sin(t * 2.2)));
   const moteCount = rarity === "legendary" ? 8 : rarity === "epic" ? 5 : 0;
   if (moteCount) motes(fb, t, seed, moteCount, SPARK[rarity], false);
+  if (gear?.trinket) {
+    // The trinket rests on the ground behind the buddy (mirrored for foes).
+    const layer = new Framebuffer(rig.width, rig.height);
+    drawTrinket(layer, gear.trinket, restLeft(species), rig.ground);
+    fb.draw(opts.flip ? flipX(layer) : layer, 0, 0);
+  }
   fb.draw(renderRig(rig, pose, { rarity, shiny: opts.shiny, flip: opts.flip }), 0, 0);
   if (moteCount) motes(fb, t, seed, moteCount, SPARK[rarity], true);
   return fb;
+}
+
+const BLOB_GROUND = 51;
+
+/** Draw onto a layer, then under what's already there (the blob's trinket). */
+function behind(fb: Framebuffer, paint: (layer: Framebuffer) => void): void {
+  const layer = new Framebuffer(fb.width, fb.height);
+  paint(layer);
+  layer.draw(fb, 0, 0);
+  fb.data.set(layer.data);
+}
+
+const leftMemo = new Map<Species, number>();
+
+/** The buddy's leftmost opaque column at rest (trinkets sit clear of it). */
+function restLeft(species: Species): number {
+  const hit = leftMemo.get(species);
+  if (hit !== undefined) return hit;
+  const fb = renderHd(species, "idle", 0);
+  let left = 8;
+  if (fb) {
+    outer: for (let x = 0; x < fb.width; x++) for (let y = 0; y < fb.height - 4; y++) if (fb.get(x, y)[3] >= 200) { left = x; break outer; }
+  }
+  leftMemo.set(species, left);
+  return left;
 }
 
 /** Whether a one-shot animation has reached its final pose. */

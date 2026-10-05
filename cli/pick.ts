@@ -415,7 +415,7 @@ function hatch(s: State, bones: BuddyBones): void {
   const cols = process.stdout.columns || 80;
   const rows = process.stdout.rows || 24;
   process.stdout.write("\x1b[2J");
-  const look = { species: bones.species, rarity: bones.rarity, shiny: bones.shiny, seed: 7 };
+  const look = { species: bones.species, rarity: bones.rarity, shiny: bones.shiny, seed: 7, hat: bones.hat };
   const at = { row: Math.max(1, Math.floor((rows - CINE_ROWS) / 2)), col: Math.max(1, Math.floor((cols - CINE_COLS) / 2) + 1) };
   cine = playCinematic(setup, (ms) => renderHatch(look, ms, setup.feel), HATCH_MS, at);
   cine.done.then(() => {
