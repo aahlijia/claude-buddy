@@ -21,6 +21,7 @@ import {
   type SkillId,
 } from "./data";
 import type { GearItem } from "./gear";
+import type { Blessing, PendingEvent } from "./events";
 import type { Training } from "./hero";
 
 export interface RpgState {
@@ -58,6 +59,14 @@ export interface RpgState {
   daily: { day: string; tasks: Bounty[]; bonus: boolean };
   /** Key of the status-line standoff already hunted (one hunt per standoff). */
   hunted: string;
+  /** An exploration event awaiting ;1 / ;2. */
+  event: PendingEvent | null;
+  /** True when the last explore was an event (the next one is always a fight). */
+  lastEvent: boolean;
+  /** Temporary buff from a shrine/duck, counted down per fight. */
+  blessing: Blessing | null;
+  /** Zones whose arrival text has been shown; 0 = prologue shown. */
+  seen: number[];
 }
 
 export interface Bounty {
@@ -93,6 +102,11 @@ export function freshState(now: number): RpgState {
     shop: { day: "", bought: [] },
     daily: { day: "", tasks: [], bonus: false },
     hunted: "",
+    event: null,
+    // A new player's first explore is always a fight.
+    lastEvent: true,
+    blessing: null,
+    seen: [],
   };
 }
 
@@ -143,6 +157,10 @@ export function coerceState(raw: unknown, now: number): RpgState {
         ? { day: r.daily.day, tasks: r.daily.tasks, bonus: r.daily.bonus === true }
         : base.daily,
     hunted: typeof r.hunted === "string" ? r.hunted : "",
+    event: r.event && typeof r.event === "object" && typeof r.event.id === "string" ? r.event : null,
+    lastEvent: r.lastEvent === true,
+    blessing: r.blessing && typeof r.blessing === "object" && num(r.blessing.fights, 0) > 0 ? r.blessing : null,
+    seen: Array.isArray(r.seen) ? r.seen.filter((n): n is number => typeof n === "number") : [],
   };
 }
 

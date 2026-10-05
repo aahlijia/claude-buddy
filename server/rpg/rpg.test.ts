@@ -14,10 +14,15 @@ import {
   type Battle,
 } from "./battle";
 import { ENERGY_MAX, ENERGY_REGEN_MIN, INVENTORY_CAP, RARITY_AFFIXES, ZONES } from "./data";
-import { execute, hudLine, onCommit, parse, shopStock, type BuddyCtx } from "./game";
+import { execute, heroOf, hudLine, onCommit, parse, shopStock, type BuddyCtx } from "./game";
 import { gearScore, rollGear, sellValue } from "./gear";
 import { deriveHero, trainCost, trainError } from "./hero";
-import { coerceState, freshState, settle, type RpgState } from "./store";
+import { coerceState, freshState as newState, settle, type RpgState } from "./store";
+
+/** A started game: prologue already seen (it rides the first command once). */
+function freshState(now: number): RpgState {
+  return { ...newState(now), seen: [0] };
+}
 import { progress, rollBoard, syncDaily } from "./bounty";
 import type { GearItem } from "./gear";
 
@@ -219,7 +224,7 @@ describe("state", () => {
     expect(s.energy).toBe(ENERGY_MAX);
     expect(s.items).toEqual({ bomb: 2 });
     expect(s.bag).toEqual([]);
-    expect(coerceState(null, T0)).toEqual(freshState(T0));
+    expect(coerceState(null, T0)).toEqual(newState(T0));
   });
 });
 
@@ -573,5 +578,132 @@ describe(";hunt", () => {
     expect(execute(s, ctx, ";hunt", T0, P).out).toContain("already squashed");
     // A new standoff (new key) can be hunted again.
     expect(execute(s, { ...ctx, standoff: { ...STANDOFF, key: "x:1" } }, ";hunt", T0, P).out).toContain("Bug Hunt");
+  });
+});
+
+// ─── Story & events ─────────────────────────────────────────────────────────
+
+import { EVENT_IDS, resolveEvent, type PendingEvent } from "./events";
+
+describe("story", () => {
+  test("the prologue opens the very first command, once", () => {
+    const s = newState(T0);
+    expect(execute(s, CTX, ";", T0, P).out).toContain("The build is red");
+    expect(execute(s, CTX, ";", T0, P).out).not.toContain("The build is red");
+  });
+
+  test("zone arrival text shows on the first explore of a zone", () => {
+    const s = freshState(T0);
+    expect(execute(s, CTX, ";x", T0, P).out).toContain("tall grass of tangled brackets");
+    winCurrentFight(s);
+    s.lastEvent = true;
+    expect(execute(s, CTX, ";x", T0, P).out).not.toContain("tall grass");
+  });
+
+  test("bosses taunt, crack at half HP, and die with a line", () => {
+    let b = fight(makeBoss("lich", 10), 2);
+    expect(b.log.join("\n")).toContain("Everything ends in null");
+    b.hero.hp = b.hero.maxHp = 1e6;
+    b.hero.atk = 60;
+    let all = "";
+    while (!b.over) {
+      b = act(b, { type: "attack" });
+      all += b.log.join("\n");
+    }
+    expect(all).toContain("Cannot read properties of undefined");
+    expect(all).toContain("finds it");
+  });
+
+  test("felling the Segfault Dragon rolls the ending", () => {
+    const s = freshState(T0);
+    s.unlocked = 6;
+    s.zone = 6;
+    s.floors["6"] = 5;
+    execute(s, CTX, ";boss", T0, P);
+    s.battle!.foe.hp = 1;
+    s.battle!.foe.spd = 0;
+    const out = winCurrentFight(s);
+    expect(out).toContain("T H E   E N D");
+    expect(s.unlocked).toBe(7);
+  });
+});
+
+describe("events", () => {
+  const ev = (id: PendingEvent["id"]): PendingEvent => ({ id, zone: 1, level: 3, seed: 1 });
+  const rich = { gold: 1000, potions: 3 };
+
+  test("every event resolves both options", () => {
+    for (const id of EVENT_IDS) {
+      for (const o of [1, 2] as const) {
+        const out = resolveEvent(ev(id), o, mulberry32(1), rich);
+        expect(out.text.length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  test("unaffordable options stay open", () => {
+    expect(resolveEvent(ev("shrine"), 2, mulberry32(1), { gold: 0, potions: 0 }).blocked).toBe(true);
+    expect(resolveEvent(ev("intern"), 1, mulberry32(1), { gold: 0, potions: 0 }).blocked).toBe(true);
+  });
+
+  test("chests are sometimes mimics", () => {
+    const outs = Array.from({ length: 60 }, (_, i) => resolveEvent(ev("chest"), 1, mulberry32(i), rich));
+    expect(outs.some((o) => o.mimic)).toBe(true);
+    expect(outs.some((o) => o.gold)).toBe(true);
+  });
+
+  function forceEvent(s: RpgState): string {
+    for (let i = 0; i < 200; i++) {
+      s.lastEvent = false;
+      const out = execute(s, CTX, ";x", T0 + i, P).out;
+      if (s.event) return out;
+      s.battle = null; // drop the fight and roll again
+      s.energy = ENERGY_MAX;
+    }
+    throw new Error("no event rolled");
+  }
+
+  test("an explore can open a free event; the next explore is a fight", () => {
+    const s = freshState(T0);
+    const out = forceEvent(s);
+    expect(out).toContain(";1");
+    const energy = s.energy;
+    expect(execute(s, CTX, ";x", T0, P).out).toContain("Decide first");
+    execute(s, CTX, ";2", T0, P);
+    expect(s.event).toBeNull();
+    expect(s.energy).toBe(energy);
+    execute(s, CTX, ";x", T0, P);
+    expect(s.battle).not.toBeNull();
+  });
+
+  test("a shrine blessing buffs the next fights, then fades", () => {
+    const s = freshState(T0);
+    s.gold = 500;
+    s.event = { id: "shrine", zone: 1, level: 3, seed: 5 };
+    expect(execute(s, CTX, ";2", T0, P).out).toContain("blesses");
+    const base = heroOf(s, CTX).atk;
+    for (let i = 0; i < 3; i++) {
+      s.lastEvent = true;
+      execute(s, CTX, ";x", T0, P);
+      if (i === 0) expect(s.battle!.hero.atk).toBe(Math.round(base * 1.25));
+      winCurrentFight(s);
+    }
+    expect(s.blessing).toBeNull();
+  });
+
+  test("a mimic is a free bonus fight with a guaranteed drop", () => {
+    for (let seed = 0; seed < 200; seed++) {
+      const s = freshState(T0);
+      s.event = { id: "chest", zone: 1, level: 3, seed };
+      execute(s, CTX, ";1", T0, P);
+      if (!s.battle) continue;
+      expect(s.battle.kind).toBe("event");
+      expect(s.energy).toBe(ENERGY_MAX);
+      winCurrentFight(s);
+      expect(s.bag.length).toBe(1);
+      expect(s.floors["1"]).toBeUndefined();
+      return;
+    }
+    throw new Error("no mimic in 200 seeds");
   });
 });

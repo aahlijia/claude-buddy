@@ -19,8 +19,9 @@ import {
   type ZoneDef,
 } from "./data";
 import type { HeroStats } from "./hero";
+import { BOSS_LINES } from "./story";
 
-export type BattleKind = "explore" | "boss" | "tower" | "hunt";
+export type BattleKind = "explore" | "boss" | "tower" | "hunt" | "event";
 
 export interface Effects {
   /** Remaining turns of each timed effect. */
@@ -73,6 +74,8 @@ export interface FoeSide {
   heads?: number;
   /** Leaky Golem's max-HP growth ceiling. */
   growCap?: number;
+  /** Boss has delivered its half-HP line. */
+  phased?: boolean;
 }
 
 export interface Battle {
@@ -178,7 +181,10 @@ export function startBattle(
   const log = [
     foe.boss ? `♛ ${foe.name} blocks your path!` : `A wild ${foe.name} (Lv${foe.level}) appears!`,
   ];
-  if (foe.boss) log.push(BOSSES[foe.boss].intro);
+  if (foe.boss) {
+    log.push(`${foe.name}: ${BOSS_LINES[foe.boss].intro}`);
+    log.push(`TIP: ${BOSSES[foe.boss].intro}`);
+  }
   return {
     kind,
     zone,
@@ -521,10 +527,14 @@ export function act(prev: Battle, a: Action): Battle {
   }
 
   if (foe.hp <= 0) {
-    log.push(`${foe.name} is defeated!`);
+    log.push(foe.boss ? BOSS_LINES[foe.boss].defeat : `${foe.name} is defeated!`);
     b.over = "win";
     b.log = log;
     return b;
+  }
+  if (foe.boss && !foe.phased && foe.hp < foe.maxHp / 2) {
+    foe.phased = true;
+    log.push(`${foe.name}: ${BOSS_LINES[foe.boss].phase}`);
   }
 
   // ── Foe action ──

@@ -57,6 +57,8 @@ import {
 } from "./render";
 import { currentHp, journal, nextEnergyIn, settle, settleEnergy, type RpgState } from "./store";
 import { bountyReward, bountyText, dayKey, progress, syncDaily } from "./bounty";
+import { EVENTS, EVENT_CHANCE, resolveEvent, rollEventId, type EventOutcome } from "./events";
+import { ENDING, PROLOGUE, ZONE_ARRIVAL, fill } from "./story";
 
 /** The bug currently standing off on the status line (idle-RPG pending
  *  encounter), if any — `;hunt` fights its shadow. */
@@ -159,6 +161,7 @@ export function parse(input: string): { cmd: string; args: string[] } {
   // `;s2` → skill 2
   const sk = /^s(\d)$/.exec(head);
   if (sk) return { cmd: "skill", args: [sk[1], ...parts] };
+  if (/^[12]$/.test(head)) return { cmd: "choose", args: [head] };
   head = ALIASES[head] ?? head;
   return { cmd: head, args: parts };
 }
@@ -166,6 +169,23 @@ export function parse(input: string): { cmd: string; args: string[] } {
 // ─── Entry point ────────────────────────────────────────────────────────────
 
 export function execute(
+  s: RpgState,
+  ctx: BuddyCtx,
+  input: string,
+  now: number,
+  p: Paint,
+): CommandResult {
+  const r = dispatch(s, ctx, input, now, p);
+  // First contact: the prologue opens the game, whatever was typed.
+  if (!s.seen.includes(0)) {
+    s.seen.push(0);
+    r.out = `${paint(p, C.dim, fill(PROLOGUE, ctx.name))}\n\n${r.out}`;
+    r.changed = true;
+  }
+  return r;
+}
+
+function dispatch(
   s: RpgState,
   ctx: BuddyCtx,
   input: string,
@@ -191,7 +211,13 @@ export function execute(
       r.changed = false;
       return r;
     case "status":
-      r.out = s.battle ? screen(s, ctx, p) : statusText(s, ctx, hero, now, p);
+      r.out = s.battle ? screen(s, ctx, p) : s.event ? eventScreen(s, p) : statusText(s, ctx, hero, now, p);
+      return r;
+    case "choose":
+      return choose(s, ctx, hero, Number(args[0]) as 1 | 2, now, p, r);
+    case "story":
+      r.out = fill(PROLOGUE, ctx.name);
+      r.changed = false;
       return r;
     case "me":
       r.out = sheet(s, ctx, hero, now, p);
@@ -227,7 +253,7 @@ export function execute(
       r.out = mapText(s, p);
       return r;
     case "travel":
-      return travel(s, args[0], r);
+      return travel(s, args[0], p, r);
     case "bag":
       r.out = bagText(s, p);
       return r;
@@ -273,6 +299,7 @@ export function helpText(p: Paint): string {
     "  ;x           explore (fight next floor)   ;boss    zone boss",
     "  ;tower       endless tower (post-game)    ;map     zones · ;go <n> travel",
     "  ;hunt        fight the bug on your status line   ;daily  bounty board",
+    "  ;1 / ;2      choose at an event (chests, shrines, strangers)   ;story",
     h("In a fight"),
     "  ;a attack  ;d defend  ;s1..;s7 skills  ;i <item>  ;f flee",
     h("Gear & town"),
@@ -440,6 +467,11 @@ function startFight(
     r.out = "You're already in a fight!\n" + screen(s, ctx, p);
     return r;
   }
+  if (s.event) {
+    r.out = `Decide first:\n${eventScreen(s, p)}`;
+    r.changed = false;
+    return r;
+  }
   const hp = currentHp(s, hero.maxHp);
   if (hp <= 0) {
     r.out = "You're knocked out. ;rest or drink coffee (;i potion) first.";
@@ -488,15 +520,145 @@ function startFight(
       battle = startBattle("boss", z.id, FLOORS_PER_ZONE + 1, hero, hp, makeBoss(z.boss, bossLevel(z)), seed);
     } else {
       const floor = Math.min(cleared + 1, FLOORS_PER_ZONE);
+      const arrival = arrive(s, z.id, p);
+      // Some floors open on a room event instead of a monster. Events are
+      // free (no energy) and never twice in a row.
+      if (!s.lastEvent && rng() < EVENT_CHANCE) {
+        s.lastEvent = true;
+        s.event = { id: rollEventId(rng), zone: z.id, level: z.base + floor - 1, seed };
+        r.out = [arrival, eventScreen(s, p)].filter(Boolean).join("\n\n");
+        return r;
+      }
+      s.lastEvent = false;
       const def = z.monsters[Math.floor(rng() * z.monsters.length)];
       battle = startBattle("explore", z.id, floor, hero, hp, makeMonster(def, z.base + floor - 1), seed);
+      if (arrival) battle.log.unshift(arrival);
     }
   }
   s.energy -= cost;
+  bless(s, battle);
   s.battle = battle;
   s.stats.battles++;
   r.out = screen(s, ctx, p);
   return r;
+}
+
+/** Zone arrival text, once per zone. */
+function arrive(s: RpgState, zone: number, p: Paint): string {
+  if (s.seen.includes(zone)) return "";
+  s.seen.push(zone);
+  const t = ZONE_ARRIVAL[zone];
+  return t ? paint(p, C.cyan, `📍 ${t}`) : "";
+}
+
+/** Apply an active blessing to a fresh battle. */
+function bless(s: RpgState, b: Battle): void {
+  const bl = s.blessing;
+  if (!bl) return;
+  if (bl.stat === "atk") b.hero.atk = Math.round(b.hero.atk * (1 + bl.amount / 100));
+  if (bl.stat === "def") b.hero.def = Math.round(b.hero.def * (1 + bl.amount / 100));
+  if (bl.stat === "crit") b.hero.crit = Math.min(75, b.hero.crit + bl.amount);
+  b.log.push(`✨ Blessed: ${bl.name} (${bl.fights} fight${bl.fights === 1 ? "" : "s"} left)`);
+}
+
+// ─── Events ─────────────────────────────────────────────────────────────────
+
+export function eventScreen(s: RpgState, p: Paint): string {
+  const ev = s.event;
+  if (!ev) return "";
+  const def = EVENTS[ev.id];
+  return [
+    paint(p, C.bold, `✦ ${def.title}`),
+    ...def.art.map((l) => paint(p, C.yellow, `  ${l}`)),
+    def.text,
+    paint(p, C.cyan, `;1 ${def.options[0]}    ;2 ${def.options[1]}`),
+  ].join("\n");
+}
+
+function choose(
+  s: RpgState,
+  ctx: BuddyCtx,
+  hero: HeroStats,
+  option: 1 | 2,
+  now: number,
+  p: Paint,
+  r: CommandResult,
+): CommandResult {
+  const ev = s.event;
+  if (!ev) {
+    r.out = "Nothing to choose right now.";
+    r.changed = false;
+    return r;
+  }
+  const rng = mulberry32((ev.seed ^ (option * 0x5bd1e995)) >>> 0);
+  const out = resolveEvent(ev, option, rng, { gold: s.gold, potions: s.items.potion ?? 0 });
+  if (out.blocked) {
+    r.out = `${out.text}\n${eventScreen(s, p)}`;
+    r.changed = false;
+    return r;
+  }
+  s.event = null;
+  const lines = [out.text, ...applyOutcome(s, hero, ev.level, out, now, p, r)];
+  if (out.mimic) {
+    const foe = makeMonster(
+      { id: "mimic", name: "Mimic Chest", species: "robot", hp: 1.3, atk: 1.15, def: 1.1, spd: 0.9, move: "double" },
+      ev.level + 1,
+    );
+    const b = startBattle("event", ev.zone, 0, hero, currentHp(s, hero.maxHp), foe, nextSeed(s, now));
+    bless(s, b);
+    s.battle = b;
+    s.stats.battles++;
+    lines.push(screen(s, ctx, p));
+  } else {
+    lines.push(paint(p, C.dim, ";x to press on"));
+  }
+  r.out = lines.join("\n");
+  return r;
+}
+
+function applyOutcome(
+  s: RpgState,
+  hero: HeroStats,
+  level: number,
+  o: EventOutcome,
+  now: number,
+  p: Paint,
+  r: CommandResult,
+): string[] {
+  const lines: string[] = [];
+  if (o.cost?.gold) s.gold -= o.cost.gold;
+  if (o.cost?.item) s.items[o.cost.item] = Math.max(0, (s.items[o.cost.item] ?? 0) - 1);
+  if (o.gold) {
+    s.gold += o.gold;
+    s.stats.goldEarned += o.gold;
+    lines.push(paint(p, C.yellow, `+${o.gold}g`));
+    lines.push(...progress(s, "gold", o.gold, now));
+  }
+  const hp = currentHp(s, hero.maxHp);
+  if (o.fullHeal) s.hp = null;
+  if (o.hpPct) {
+    const next = Math.max(1, Math.min(hero.maxHp, hp + Math.round(hero.maxHp * o.hpPct)));
+    s.hp = next >= hero.maxHp ? null : next;
+    lines.push(hpBar(p, next, hero.maxHp));
+  }
+  s.hpAt = now;
+  if (o.item) {
+    s.items[o.item] = Math.min(CONSUMABLE_STACK, (s.items[o.item] ?? 0) + 1);
+    lines.push(`${CONSUMABLES[o.item].icon} +1 ${CONSUMABLES[o.item].name}`);
+  }
+  if (o.gear) {
+    const rng = mulberry32(nextSeed(s, now));
+    lines.push(addToBag(s, rollGear(rng, level, s.nextUid++, { luck: o.gear.luck, floor: o.gear.floor }), p));
+  }
+  if (o.blessing) {
+    s.blessing = { ...o.blessing };
+    lines.push(paint(p, C.magenta, `✨ ${o.blessing.name} for your next ${o.blessing.fights} fights`));
+  }
+  if (o.xp) {
+    r.xp += o.xp;
+    lines.push(paint(p, C.dim, `+${o.xp} buddy XP`));
+  }
+  return lines;
 }
 
 function resolveSkill(s: RpgState, arg: string | undefined): SkillId | null {
@@ -608,6 +770,10 @@ function conclude(
   s.hpAt = now;
   const hero = heroOf(s, ctx);
   const lines: string[] = [];
+  if (s.blessing && --s.blessing.fights <= 0) {
+    lines.push(paint(p, C.dim, `Your blessing (${s.blessing.name}) fades.`));
+    s.blessing = null;
+  }
 
   if (b.over === "lose") {
     const lost = Math.floor(s.gold * KO_GOLD_LOSS);
@@ -635,7 +801,7 @@ function conclude(
   const isBoss = !!b.foe.boss;
   const rng = mulberry32(nextSeed(s, now));
   let gold = Math.round((4 + 2 * L) * (0.85 + rng() * 0.3) * (isBoss ? 6 : 1) * (b.kind === "tower" ? 1.5 : 1));
-  gold = Math.round(gold * (1 + hero.gold / 100) * (hero.uniques.includes("midas") ? 1.5 : 1) * (b.kind === "hunt" ? 2 : 1));
+  gold = Math.round(gold * (1 + hero.gold / 100) * (hero.uniques.includes("midas") ? 1.5 : 1) * (b.kind === "hunt" || b.kind === "event" ? 2 : 1));
   s.gold += gold;
   s.stats.goldEarned += gold;
   s.stats.kills++;
@@ -683,8 +849,13 @@ function conclude(
       }
       const nz = zoneById(b.zone + 1);
       lines.push(nz ? `🗺  ${nz.name} unlocked! ;go ${nz.id}` : "🗼 The Endless Tower is open! ;tower");
+      if (!nz) lines.push("", paint(p, C.magenta, fill(ENDING, ctx.name)));
       s.items.potion = Math.min(CONSUMABLE_STACK, (s.items.potion ?? 0) + 2);
     }
+  } else if (b.kind === "event") {
+    dropChance = 1;
+    luck += 0.2;
+    lines.push("The mimic coughs up its hoard.");
   } else if (b.kind === "hunt") {
     if (ctx.standoff) s.hunted = ctx.standoff.key;
     dropChance = 0.6;
@@ -731,7 +902,7 @@ function addToBag(s: RpgState, g: GearItem, p: Paint): string {
 
 // ─── Town ───────────────────────────────────────────────────────────────────
 
-function travel(s: RpgState, arg: string | undefined, r: CommandResult): CommandResult {
+function travel(s: RpgState, arg: string | undefined, p: Paint, r: CommandResult): CommandResult {
   if (s.battle) {
     r.out = "Finish the fight first.";
     r.changed = false;
@@ -749,7 +920,8 @@ function travel(s: RpgState, arg: string | undefined, r: CommandResult): Command
     return r;
   }
   s.zone = n;
-  r.out = n >= TOWER_UNLOCK ? "🗼 You stand before the Endless Tower. ;tower" : `🗺  Travelled to ${zoneById(n)!.name}. ;x to explore`;
+  const arrival = arrive(s, n, p);
+  r.out = (n >= TOWER_UNLOCK ? "🗼 You stand before the Endless Tower. ;tower" : `🗺  Travelled to ${zoneById(n)!.name}. ;x to explore`) + (arrival ? `\n${arrival}` : "");
   return r;
 }
 
