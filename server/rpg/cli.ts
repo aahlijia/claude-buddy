@@ -120,18 +120,28 @@ function hudCommand(input: string): string | null {
   }
 }
 
-export function run(input: string, color: boolean, now: number = Date.now()): string {
+export interface RunResult {
+  out: string;
+  /** Attack-animation screens (only when requested). */
+  anim: string[];
+}
+
+export function runFull(input: string, color: boolean, anim = false, now: number = Date.now()): RunResult {
   const hud = hudCommand(input);
-  if (hud) return hud;
+  if (hud) return { out: hud, anim: [] };
   const ctx = loadBuddyCtx();
   const s = loadRpg(now);
-  const r = execute(s, ctx, input, now, { color });
+  const r = execute(s, ctx, input, now, { color, anim });
   if (r.changed) {
     saveRpg(s);
     refreshHud(s, ctx);
   }
   const fanfare = awardBuddyXp(r.xp, ctx.name);
-  return fanfare ? `${r.out}\n${fanfare}` : r.out;
+  return { out: fanfare ? `${r.out}\n${fanfare}` : r.out, anim: r.anim ?? [] };
+}
+
+export function run(input: string, color: boolean, now: number = Date.now()): string {
+  return runFull(input, color, false, now).out;
 }
 
 async function readStdin(): Promise<string> {

@@ -6,6 +6,7 @@
  */
 
 import { hashString, mulberry32, type BuddyStats, type Species } from "../engine";
+import { displayWidth } from "../art";
 import {
   act,
   actionError,
@@ -46,7 +47,10 @@ import { gearScore, rollGear, sellValue, statLine, type GearItem } from "./gear"
 import { deriveHero, trainCost, trainError, type HeroStats } from "./hero";
 import {
   C,
+  animScenes,
   battleScreen,
+  buddySprite,
+  panel,
   gearLine,
   gearName,
   hpBar,
@@ -87,6 +91,8 @@ export interface CommandResult {
   xp: number;
   /** State was mutated and should be saved. */
   changed: boolean;
+  /** Attack-animation screens to flash before `out` (only with `Paint.anim`). */
+  anim?: string[];
 }
 
 /** Final tier: the Endless Tower unlocks once zone 6's boss falls. */
@@ -212,7 +218,9 @@ function dispatch(
   const inBattle = !!s.battle;
   const battleCmds = new Set(["attack", "defend", "flee", "skill"]);
   if (battleCmds.has(cmd) && !inBattle) {
-    r.out = "Not in a fight. ;x to explore, ;boss for the zone boss, ;help for commands.";
+    r.out = s.event
+      ? `No foe here — decide first:\n${eventScreen(s, p)}`
+      : "Not in a fight. ;x to explore, ;boss for the zone boss, ;help for commands.";
     r.changed = false;
     return r;
   }
@@ -344,23 +352,36 @@ function statusText(s: RpgState, ctx: BuddyCtx, hero: HeroStats, now: number, p:
   const z = zoneById(s.zone);
   const hp = currentHp(s, hero.maxHp);
   const floors = s.floors[String(s.zone)] ?? 0;
-  const lines = [
-    paint(p, C.bold, `${ctx.name} · Power Lv${hero.level}`) +
-      `  ${hpBar(p, hp, hero.maxHp)}  ${energyText(s, now, p)}  ${paint(p, C.yellow, `◎ ${s.gold}g`)}`,
+  const info: string[] = [
+    paint(p, C.bold, ctx.name) + (s.title ? paint(p, C.magenta, ` «${s.title}»`) : "") + paint(p, C.dim, `  Power Lv${hero.level}`),
+    hpBar(p, hp, hero.maxHp, 12),
+    `${energyText(s, now, p)}   ${paint(p, C.yellow, `◎ ${s.gold}g`)}   ☕×${s.items.potion ?? 0}`,
   ];
   if (s.zone >= TOWER_UNLOCK) {
-    lines.push(`📍 Endless Tower — best floor ${s.tower.best}`);
+    info.push(`📍 Endless Tower  floor ${s.tower.floor} · best ${s.tower.best}  ;tower`);
   } else if (z) {
-    const next = floors >= FLOORS_PER_ZONE ? "boss ready! ;boss" : `next: floor ${floors + 1} ;x`;
-    lines.push(`📍 ${z.name} [${bar(floors, FLOORS_PER_ZONE, FLOORS_PER_ZONE)}] ${next}`);
+    const next = floors >= FLOORS_PER_ZONE ? paint(p, C.yellow, "♛ boss ready ;boss") : `floor ${floors + 1} ;x`;
+    info.push(`📍 ${z.name} ${paint(p, C.green, bar(floors, FLOORS_PER_ZONE, FLOORS_PER_ZONE))} ${next}`);
   }
   syncDaily(s, now);
   const done = s.daily.tasks.filter((b) => b.done).length;
   const extras = [`📜 bounties ${done}/${s.daily.tasks.length} ;daily`];
-  if (ctx.standoff && s.hunted !== ctx.standoff.key) extras.push(`🐛 ${ctx.standoff.name} on your status line! ;hunt`);
-  lines.push(extras.join("   "));
-  lines.push(paint(p, C.dim, ";help for commands"));
-  return lines.join("\n");
+  if (s.blessing) extras.push(paint(p, C.magenta, `✨ ${s.blessing.name}`));
+  info.push(extras.join("   "));
+  if (ctx.standoff && s.hunted !== ctx.standoff.key) {
+    info.push(paint(p, C.red, `🐛 ${ctx.standoff.name} is on your status line! ;hunt`));
+  }
+  // Sprite on the left, info on the right — the "town" screen.
+  const sprite = buddySprite(ctx);
+  const sw = sprite.reduce((m, l) => Math.max(m, displayWidth(l)), 0);
+  const rows = Math.max(sprite.length, info.length);
+  const top = Math.max(0, Math.floor((rows - sprite.length) / 2));
+  const body: string[] = [];
+  for (let i = 0; i < rows; i++) {
+    const art = sprite[i - top] ?? "";
+    body.push(`${paint(p, C.cyan, art + " ".repeat(sw - displayWidth(art)))}   ${info[i] ?? ""}`);
+  }
+  return panel(p, "✦ BUDDY QUEST", "", body, paint(p, C.dim, ";x explore · ;bag · ;shop · ;help"));
 }
 
 function dailyText(s: RpgState, now: number, p: Paint): string {
@@ -584,16 +605,25 @@ function bless(s: RpgState, b: Battle): void {
 
 // ─── Events ─────────────────────────────────────────────────────────────────
 
+function wrap(text: string, width: number): string[] {
+  const out: string[] = [];
+  let line = "";
+  for (const w of text.split(" ")) {
+    if (line && line.length + w.length + 1 > width) {
+      out.push(line);
+      line = w;
+    } else line = line ? `${line} ${w}` : w;
+  }
+  if (line) out.push(line);
+  return out;
+}
+
 export function eventScreen(s: RpgState, p: Paint): string {
   const ev = s.event;
   if (!ev) return "";
   const def = EVENTS[ev.id];
-  return [
-    paint(p, C.bold, `✦ ${def.title}`),
-    ...def.art.map((l) => paint(p, C.yellow, `  ${l}`)),
-    def.text,
-    paint(p, C.cyan, `;1 ${def.options[0]}    ;2 ${def.options[1]}`),
-  ].join("\n");
+  const body = [...def.art.map((l) => paint(p, C.yellow, `   ${l}`)), "", ...wrap(def.text, 54)];
+  return `${panel(p, `✦ ${def.title}`, "", body)}\n${paint(p, C.cyan, `;1 ${def.options[0]}    ;2 ${def.options[1]}`)}`;
 }
 
 function choose(
@@ -767,6 +797,9 @@ function turn(
   if (a.type === "item") s.items[a.id] = Math.max(0, (s.items[a.id] ?? 0) - 1);
   const next = act(b, a);
   s.battle = next;
+  if (p.anim) {
+    r.anim = animScenes(p, next, ctx).map((sc) => battleScreen(p, next, ctx, s.skills, s.items, sc));
+  }
   const news = a.type === "skill" ? progress(s, "skills", 1, now) : [];
   if (!next.over) {
     r.out = [screen(s, ctx, p), ...news].join("\n");

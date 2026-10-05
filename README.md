@@ -298,11 +298,17 @@ A full turn-based RPG you play **inside Claude Code** without spending a single 
 ;bag ;equip 3 ;sell junk ;lock 2              ;shop ;buy 5      ;train atk
 ;map ;go 2   travel between zones            ;tower  endless post-game tower
 ;hunt        fight the bug on your status line ;daily  bounty board
+;1 ;2        choose at an event               ;forge weapon  enhance gear +1..+10
+;feats       achievements                     ;title 2       wear an earned title
 ```
 
 - **Six zones, six bosses.** Syntax Meadows → Null Marsh → Callback Caverns → Race Rapids → Leak Mines → Kernel Abyss. Clear five floors to unlock each boss. Every boss has its own mechanic: the *Missing Semicolon* telegraphs a Parse Error you should defend through, the *Null Pointer Lich* drains HP and curses your aim, the *Callback Hydra* grows heads, the *Heisenbug* dodges until you observe it, the *Leaky Golem* outgrows you unless stunned, and the *Segfault Dragon* charges a Core Dump. A first kill unlocks a new skill and the next zone. After the dragon, the **Endless Tower** has an elite every 5 floors and a boss every 10.
 - **Stats layered on your buddy.** Combat stats come from your buddy's level and prestige plus its five personality stats (DEBUGGING → ATK, PATIENCE → HP, WISDOM → DEF, CHAOS → SPD, SNARK → CRIT). Gold-bought **training** ranks and **gear** stack on top.
 - **Gear with rarity and affixes.** Weapon, armor and charm slots. Rarities run common → legendary with up to four affixes (ATK, DEF, HP, SPD, CRIT, LEECH, GOLD). Upgrades are flagged with ▲ in `;bag`. The merchant restocks gear daily.
+- **A story to play through.** There's a prologue, arrival text for each zone, bosses that taunt you, crack at half HP and die with a last line, and an ending when the dragon falls.
+- **Exploration events.** Some floors open on a room instead of a monster: a treasure chest (sometimes a **Mimic**), the Shrine of the Green Build, a Rubber Duck Sage, an ancient forum post, a merge conflict or a lost intern. Pick `;1` or `;2`. Events are free and can leave you with blessings that buff your next fights.
+- **The forge.** `;forge` enhances gear from +1 to +10, adding 10% to every stat per level. It's safe up to +5; beyond that, a failed strike costs you the gold.
+- **Achievements and titles.** 21 feats pay gold, and many unlock titles (`;feats`, `;title`). Buddy level-ups get a fanfare.
 - **Your species matters.** Every one of the 20 species has a passive: turtles get a tanky Shell, owls get Night Vision crits, ducks get Quack Fortune gold, and so on (see `;me`).
 - **Legendary uniques.** Legendary gear rolls one special power: Thorns, Second Wind (survive one lethal hit), First Strike, Midas (+50% gold) or Overclock (faster skill cooldowns).
 - **Hunt the bug on your status line.** When Claude hits errors and a bug squares off against your buddy, `;hunt` fights its shadow turn-based for double gold and a likely drop. The real bug still needs a commit to banish it.
@@ -310,7 +316,8 @@ A full turn-based RPG you play **inside Claude Code** without spending a single 
 - **Coding fuels it.** Fights cost ⚡ energy, which regenerates 1 point per 12 minutes. Every **commit** restores ⚡ and pays gold, with a bounty when the idle bug fight was won. Wins also feed your buddy XP back.
 - **Easy on your machine.** Ordinary prompts exit after a pure-bash prefix check: no jq, no bun, no extra processes. A `;` command is a single ~90 ms bun run. Nothing runs in the background, and HP and energy regen are computed from timestamps when you next look.
 - **HUD.** Once you've played, a dim `⚔ Z2 3/5 ♥40/55 ↯7 ◎120g` row appears under the buddy. Hide it with `;hud off`.
-- **Full screen.** `bun run play` (or `claude-buddy play`) opens the same save in a single-key TUI for another terminal pane. It redraws only on a keypress.
+- **Full screen.** `bun run play` (or `claude-buddy play`) opens the same save in a single-key TUI for another terminal pane. You get a title screen, animated attacks (lunge, impact, damage numbers), and victory, boss and level-up banners. It redraws only on a keypress.
+- **Looks like a game in the prompt too.** Battles render as framed screens with both sprites and damage numbers above them, and the town screen shows your buddy next to its stats.
 
 The game saves to `rpg.json` in the buddy state directory.
 

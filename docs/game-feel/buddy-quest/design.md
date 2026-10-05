@@ -84,6 +84,19 @@ win rate "on curve", ≈85–100% one tier up). Tunables live in `data.ts`
   (`RpgState.hunted` = `bugId:startedAt`), double gold, 60% drop. It never
   clears the standoff — the commit-nudge semantics stay intact.
 
+## "Feels like a game" pass
+
+| Area | Module | Notes |
+| --- | --- | --- |
+| Story | `story.ts` | Prologue (first command, once — `seen[0]`), zone arrivals (`seen[z]`), boss intro/phase/defeat lines (battle log), ending on the first Segfault kill |
+| Events | `events.ts` | 22% of explores (never twice running, never a new player's first) open a free room; pure `resolveEvent` → `EventOutcome` applied by `game.ts`. Mimic = battle kind `event` (2× gold, guaranteed drop, no floor progress) |
+| Blessings | `game.ts` `bless` | Shrine/duck buffs applied to the next N fresh battles, counted down in `conclude` |
+| Forge | `forge.ts` | `GearItem.plus`, +10% all stats per level via `gearStats`; 100% to +5, then 85→30% |
+| Feats | `feats.ts` | 21 predicates over the save; `checkFeats` runs after every command (gold + titles) |
+| Level-up | `cli.ts` | XP award compares buddy level before/after → fanfare line |
+| Presentation | `render.ts` | Open-right panels (no right border: emoji widths vary by terminal), damage-pop row from `Battle.hits`, town screen with the buddy sprite |
+| Animation | `render.ts` `animScenes`, `cli/play.ts` | Per hit: lunge 2 → impact 4 (+pop, hurt eyes) → back, built on `composePose` shift; baked only when `Paint.anim` (TUI), played at 85 ms/frame, keys swallowed meanwhile |
+
 ## Verified in Claude Code
 
 `claude -p ";me"` with the hook registered (Claude Code 2.1.289): the result

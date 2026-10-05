@@ -88,7 +88,17 @@ export interface Battle {
   foe: FoeSide;
   /** Lines produced by the latest turn (or the intro). */
   log: string[];
+  /** Hits landed (or missed) during the latest turn, in order — drives the
+   *  damage pops and the TUI's attack animation. */
+  hits?: Hit[];
   over?: "win" | "lose" | "fled";
+}
+
+export interface Hit {
+  by: "hero" | "foe";
+  /** 0 on a miss/dodge. */
+  dmg: number;
+  crit: boolean;
 }
 
 export type Action =
@@ -243,12 +253,14 @@ function heroHit(b: Battle, rng: () => number, o: HitOpts, log: string[]): numbe
   if (!o.sure) {
     if (hero.fx.blind && rng() < 0.5) {
       log.push("Cursed aim — you miss!");
+      b.hits?.push({ by: "hero", dmg: 0, crit: false });
       return 0;
     }
     let dodge = dodgeChance(foe.spd, hero.spd);
     if (foe.boss === "heisenbug" && !foe.fx.revealed) dodge += 0.4;
     if (rng() < dodge) {
       log.push(`${foe.name} dodges!`);
+      b.hits?.push({ by: "hero", dmg: 0, crit: false });
       return 0;
     }
   }
@@ -261,6 +273,7 @@ function heroHit(b: Battle, rng: () => number, o: HitOpts, log: string[]): numbe
   foe.hp = Math.max(0, foe.hp - dmg);
   hero.fx.sureCrit = false;
   log.push(`${crit ? "CRIT! " : ""}You hit ${foe.name} for ${dmg}.`);
+  b.hits?.push({ by: "hero", dmg, crit });
   if (hero.leech > 0) {
     const heal = Math.floor((dmg * hero.leech) / 100);
     if (heal > 0) hero.hp = Math.min(hero.maxHp, hero.hp + heal);
@@ -273,6 +286,7 @@ function foeHit(b: Battle, rng: () => number, mult: number, log: string[], verb 
   const { hero, foe } = b;
   if (rng() < dodgeChance(hero.spd, foe.spd)) {
     log.push(`You dodge ${foe.name}'s attack.`);
+    b.hits?.push({ by: "foe", dmg: 0, crit: false });
     return 0;
   }
   const crit = rng() < 0.05;
@@ -281,6 +295,7 @@ function foeHit(b: Battle, rng: () => number, mult: number, log: string[], verb 
   const dmg = roll(rng, foeAtk(b), hero.def, m);
   hero.hp = Math.max(0, hero.hp - dmg);
   log.push(`${crit ? "CRIT! " : ""}${foe.name} ${verb} you for ${dmg}.`);
+  b.hits?.push({ by: "foe", dmg, crit });
   if (hero.uniques?.includes("thorns")) {
     const back = Math.max(1, Math.round(dmg * 0.25));
     foe.hp = Math.max(0, foe.hp - back);
@@ -428,6 +443,7 @@ export function act(prev: Battle, a: Action): Battle {
   const log: string[] = [];
   const { hero, foe } = b;
   b.turn++;
+  b.hits = [];
   hero.guard = false;
 
   // ── Hero action ──
