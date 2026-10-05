@@ -8,6 +8,9 @@
 import { displayWidth } from "../art";
 import { CONSUMABLES, SKILLS, type ConsumableId } from "./data";
 import type { RpgState } from "./store";
+import { THEME, fg, style, type Ui } from "../ui/color.ts";
+import { menuBar } from "../ui/menu.ts";
+import { panel as kitPanel } from "../ui/panel.ts";
 
 // ─── Speed ──────────────────────────────────────────────────────────────────
 
@@ -130,7 +133,8 @@ const RESET = "\x1b[0m";
 
 /** The bar (cursor in reverse video) + a description line for the focus.
  *  Items flow onto more lines rather than overflow narrow terminals. */
-export function actionBar(actions: readonly FightAction[], cursor: number, cols: number, color: boolean): string[] {
+export function actionBar(actions: readonly FightAction[], cursor: number, cols: number, color: boolean, ui?: Ui, phase?: number): string[] {
+  if (ui && color) return menuBar(ui, actions, cursor, cols, phase);
   const at = Math.max(0, Math.min(cursor, actions.length - 1));
   const cells = actions.map((a, i) => {
     const text = ` ${a.label}${a.blocked && a.blocked.startsWith("cooldown") ? `(${a.blocked.slice(9)})` : ""} `;
@@ -243,7 +247,17 @@ export interface CardResults {
 }
 
 /** The victory results card; `k` (0..1) counts the numbers up. */
-export function resultsCard(r: CardResults, k: number, color: boolean): string[] {
+export function resultsCard(r: CardResults, k: number, color: boolean, ui?: Ui): string[] {
+  if (ui && color) {
+    const n = (v: number) => Math.round(v * Math.max(0, Math.min(1, k)));
+    const dim = (t: string) => style(t, fg(ui, THEME.dim));
+    const body = [
+      `${dim("Gold")}   ${style(`+${n(r.gold)}g`, `1;${fg(ui, THEME.gold)}`)}`,
+      `${dim("XP  ")}   ${style(`+${n(r.xp)}`, `1;${fg(ui, THEME.xpFrom)}`)} ${dim("buddy XP")}`,
+      ...(r.drops.length ? r.drops : [dim("—")]).map((d, i) => `${dim(i ? "    " : "Loot")}   ${k >= 1 ? d : dim("· · ·")}`),
+    ];
+    return kitPanel(true, ui, { title: r.boss ? "♛ RESULTS ♛" : "★ RESULTS ★", body, minW: 34, accent: THEME.gold }).split("\n");
+  }
   const c = (sgr: string, t: string) => (color ? `\x1b[${sgr}m${t}${RESET}` : t);
   const n = (v: number) => Math.round(v * Math.max(0, Math.min(1, k)));
   const W = 34;
@@ -262,11 +276,11 @@ export function resultsCard(r: CardResults, k: number, color: boolean): string[]
 }
 
 /** The card counting up, then the loot landing (each with a shimmer). */
-export function resultsFrames(base: string, r: CardResults, color: boolean): Timed[] {
+export function resultsFrames(base: string, r: CardResults, color: boolean, ui?: Ui): Timed[] {
   const frames: Timed[] = [];
   const steps = 8;
-  for (let i = 1; i <= steps; i++) frames.push({ text: [base, ...resultsCard(r, i / steps, color)].join("\n"), ms: 40 });
-  const card = resultsCard(r, 1, color);
+  for (let i = 1; i <= steps; i++) frames.push({ text: [base, ...resultsCard(r, i / steps, color, ui)].join("\n"), ms: 40 });
+  const card = resultsCard(r, 1, color, ui);
   frames.push({ text: [base, ...card].join("\n"), ms: 0 });
   return frames;
 }

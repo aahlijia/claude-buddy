@@ -44,7 +44,7 @@ import {
   type SkillId,
   type TrainStat,
 } from "./data";
-import { gearScore, rollGear, sellValue, statLine, type GearItem } from "./gear";
+import { gearScore, gearStats, rollGear, sellValue, statLine, type GearItem } from "./gear";
 import { deriveHero, trainCost, trainError, type HeroStats } from "./hero";
 import {
   C,
@@ -62,6 +62,7 @@ import {
   hpBar,
   paint,
   bar,
+  progressBar,
   type Look,
   type Paint,
 } from "./render";
@@ -73,6 +74,9 @@ import { FORGE_CHANCE, FORGE_MAX, forgeCost, forgeError, strike } from "./forge"
 import { FEATS, checkFeats, unlockedTitles } from "./feats";
 import { ambient, direct, directIntro } from "./anim";
 import { memo, type Lazy } from "./playkit";
+import { RARITY_RGB, THEME, fg, style } from "../ui/color.ts";
+import { menuScreen, selectable, type Menu, type MenuItem } from "../ui/menu.ts";
+import { portrait } from "../ui/portrait.ts";
 
 /** The bug currently standing off on the status line (idle-RPG pending
  *  encounter), if any — `;hunt` fights its shadow. */
@@ -108,6 +112,9 @@ export interface CommandResult {
   loop?: { frames: Lazy[]; ms: number };
   /** A won fight's spoils, for the TUI's results card. */
   results?: FightResults;
+  /** Rich TUI only: the screen is a menu the player can walk with a cursor
+   *  (shop, map, bag); `out` shows it with the cursor on the first row. */
+  menu?: Menu;
 }
 
 export interface FightResults {
@@ -297,7 +304,7 @@ function dispatch(
       r.changed = false;
       return r;
     case "status":
-      r.out = s.battle ? screen(s, ctx, p) : s.event ? eventScreen(s, p) : statusText(s, ctx, hero, now, p);
+      r.out = s.battle ? screen(s, ctx, p) : s.event ? eventScreen(s, p, ctx) : statusText(s, ctx, hero, now, p);
       return r;
     case "choose":
       return choose(s, ctx, hero, Number(args[0]) as 1 | 2, now, p, r);
@@ -344,11 +351,13 @@ function dispatch(
       r.out = dailyText(s, now, p);
       return r;
     case "map":
+      if (p.ui) return showMenu(r, p, mapMenu(s, p));
       r.out = mapText(s, p);
       return r;
     case "travel":
       return travel(s, args[0], p, r);
     case "bag":
+      if (p.ui) return showMenu(r, p, bagMenu(s, p));
       r.out = bagText(s, p);
       return r;
     case "equip":
@@ -360,6 +369,7 @@ function dispatch(
     case "lock":
       return lock(s, args[0], p, r);
     case "shop":
+      if (p.ui) return showMenu(r, p, shopMenu(s, now, p));
       r.out = shopText(s, now, p);
       return r;
     case "buy":
@@ -435,7 +445,7 @@ function statusText(
   } else if (z) {
     const wins = s.floorWins[String(s.zone)] ?? 0;
     const next = floors >= FLOORS_PER_ZONE ? paint(p, C.yellow, "♛ boss ready ;boss") : `floor ${floors + 1} · ${wins}/${FLOOR_WINS} ;x`;
-    info.push(`📍 ${z.name} ${paint(p, C.green, bar(floors, FLOORS_PER_ZONE, FLOORS_PER_ZONE))} ${next}`);
+    info.push(`📍 ${z.name} ${progressBar(p, floors, FLOORS_PER_ZONE, FLOORS_PER_ZONE)} ${next}`);
   }
   syncDaily(s, now);
   const done = s.daily.tasks.filter((b) => b.done).length;
@@ -445,17 +455,21 @@ function statusText(
   if (ctx.standoff && s.hunted !== ctx.standoff.key) {
     info.push(paint(p, C.red, `🐛 ${ctx.standoff.name} is on your status line! ;hunt`));
   }
-  // Sprite on the left, info on the right — the "town" screen.
-  const sprite = buddySprite(ctx, pose);
-  const sw = Math.max(...[0, 1].map((f) => buddySprite(ctx, f as 0 | 1).reduce((m, l) => Math.max(m, displayWidth(l)), 0)), 0);
+  // Sprite on the left, info on the right — the "town" screen. The rich
+  // TUI shows an HD portrait instead (its idle clock follows the pose).
+  const hd = townPortrait(p, ctx, pose);
+  const sprite = hd ?? buddySprite(ctx, pose);
+  const sw = hd ? displayWidth(hd[0]) : Math.max(...[0, 1].map((f) => buddySprite(ctx, f as 0 | 1).reduce((m, l) => Math.max(m, displayWidth(l)), 0)), 0);
   const rows = Math.max(sprite.length, info.length);
   const top = Math.max(0, Math.floor((rows - sprite.length) / 2));
   const body: string[] = [];
   for (let i = 0; i < rows; i++) {
     const art = sprite[i - top] ?? "";
-    body.push(`${paint(p, C.cyan, art + " ".repeat(sw - displayWidth(art)))}   ${info[i] ?? ""}`);
+    const cell = art + " ".repeat(sw - displayWidth(art));
+    body.push(`${hd ? cell : paint(p, C.cyan, cell)}   ${info[i] ?? ""}`);
   }
-  return panel(p, "✦ BUDDY QUEST", "", body, paint(p, C.dim, ";x explore · ;bag · ;shop · ;help"));
+  // The rich TUI shows key chips under the panel instead of the `;` hints.
+  return panel(p, "✦ BUDDY QUEST", "", body, p.ui ? undefined : paint(p, C.dim, ";x explore · ;bag · ;shop · ;help"), undefined, accentOf(ctx));
 }
 
 function dailyText(s: RpgState, now: number, p: Paint): string {
@@ -497,7 +511,133 @@ function sheet(s: RpgState, ctx: BuddyCtx, hero: HeroStats, now: number, p: Pain
       `Bosses ${s.bossKills.length}/${ZONES.length} · kills ${s.stats.kills} · KOs ${s.stats.deaths} · tower best ${s.tower.best} · feats ${s.feats.length}/${FEATS.length}`,
     ),
   );
+  if (p.ui) {
+    // Rich: a character card — the portrait beside the headline stats.
+    const face = (p.ui && portrait(ctx.species, { size: "face", rarity: ctx.rarity, shiny: ctx.shiny, color: p.ui.mode })) ?? buddySprite(ctx);
+    const fw = Math.max(0, ...face.map((l) => displayWidth(l)));
+    const top = Math.max(face.length, 4);
+    const body: string[] = [];
+    for (let i = 0; i < top; i++) {
+      const f = face[i] ?? "";
+      body.push(`${f}${" ".repeat(fw - displayWidth(f))}  ${lines[i] ?? ""}`);
+    }
+    body.push(...lines.slice(top));
+    return panel(p, "✦ CHARACTER", ctx.rarity ? ctx.rarity.toUpperCase() : "", body, undefined, undefined, accentOf(ctx));
+  }
   return lines.join("\n");
+}
+
+/** The rich panels' edge color: the buddy's rarity. */
+function accentOf(ctx: BuddyCtx) {
+  return ctx.rarity ? RARITY_RGB[ctx.rarity] : undefined;
+}
+
+/** Idle clock per town pose, so the HD portrait breathes with the loop. */
+const POSE_T = { 0: 0, 1: 1.3, blink: 0.65 } as const;
+
+function townPortrait(p: Paint, ctx: BuddyCtx, pose: 0 | 1 | "blink"): string[] | null {
+  if (!p.ui) return null;
+  return portrait(ctx.species, { size: "face", rarity: ctx.rarity, shiny: ctx.shiny, color: p.ui.mode, t: POSE_T[pose] });
+}
+
+// ─── Rich menus (TUI) ───────────────────────────────────────────────────────
+
+function showMenu(r: CommandResult, p: Paint, m: Menu): CommandResult {
+  r.menu = m;
+  r.out = menuScreen(p.ui!, m, selectable(m)[0] ?? 0);
+  r.changed = m.source === ";shop"; // the shop restocks by day
+  return r;
+}
+
+function shopMenu(s: RpgState, now: number, p: Paint): Menu {
+  syncShopDay(s, now);
+  const ui = p.ui!;
+  const ids = Object.keys(CONSUMABLES) as ConsumableId[];
+  const items: MenuItem[] = ids.map((id, i) => {
+    const c = CONSUMABLES[id];
+    return {
+      label: `${c.icon} ${c.name.padEnd(13)} ${style(`${String(c.price).padStart(4)}g`, fg(ui, THEME.gold))}  ${style(`have ${s.items[id] ?? 0}`, fg(ui, THEME.dim))}`,
+      cmd: `;buy ${i + 1}`,
+      desc: c.desc,
+      blocked: s.gold < c.price ? "not enough gold" : undefined,
+    };
+  });
+  items.push({ label: style("— today's gear —", fg(ui, THEME.dim)) });
+  shopStock(s, now).forEach((g, i) => {
+    const n = ids.length + i + 1;
+    if (s.shop.bought.includes(i)) return items.push({ label: style("(sold out)", fg(ui, THEME.faint)) });
+    const cur = s.equipped[g.slot];
+    const delta = gearScore(g) - (cur ? gearScore(cur) : 0);
+    items.push({
+      label: `${gearName(p, g)}  ${style(`${shopPrice(g)}g`, fg(ui, THEME.gold))}`,
+      cmd: `;buy ${n}`,
+      desc: `${g.slot} i${g.ilvl} · ${statLine(gearStats(g))}${delta > 0 ? ` · ▲${delta} over yours` : ""}`,
+      blocked: s.gold < shopPrice(g) ? "not enough gold" : undefined,
+    });
+  });
+  return { title: "🏪 Merchant", right: `◎ ${s.gold}g`, items, source: ";shop", stay: true, verb: "buy", accent: THEME.gold };
+}
+
+function mapMenu(s: RpgState, p: Paint): Menu {
+  const ui = p.ui!;
+  const items: MenuItem[] = ZONES.map((z) => {
+    const open = z.id <= s.unlocked;
+    const f = s.floors[String(z.id)] ?? 0;
+    const killed = s.bossKills.includes(z.boss);
+    const here = s.zone === z.id ? style("▶", fg(ui, THEME.gold)) : " ";
+    const label = `${here}${z.id}. ${z.name.padEnd(17)} Lv${String(z.base).padEnd(2)}+`;
+    if (!open) return { label: style(`${stripAnsi(label)} 🔒`, fg(ui, THEME.faint)) };
+    return {
+      label: `${label} ${progressBar(p, f, FLOORS_PER_ZONE, FLOORS_PER_ZONE)} ${killed ? paint(p, C.green, "✓") : paint(p, C.yellow, "♛")}`,
+      cmd: `;go ${z.id}`,
+      desc: `${killed ? "Cleared" : "Boss"}: ${BOSSES[z.boss].name} · floors ${f}/${FLOORS_PER_ZONE}`,
+    };
+  });
+  const towerOpen = s.unlocked >= TOWER_UNLOCK;
+  items.push(
+    towerOpen
+      ? { label: `${s.zone >= TOWER_UNLOCK ? style("▶", fg(ui, THEME.gold)) : " "}7. Endless Tower`, cmd: ";go tower", desc: `Climb forever · best floor ${s.tower.best}` }
+      : { label: style(" 7. Endless Tower       🔒", fg(ui, THEME.faint)) },
+  );
+  return { title: "🗺  World map", items, source: ";map", verb: "travel" };
+}
+
+function bagMenu(s: RpgState, p: Paint): Menu {
+  const header = GEAR_SLOTS.map((slot) => {
+    const g = s.equipped[slot];
+    return `${paint(p, C.dim, slot.padEnd(6))} ${g ? gearLine(p, g) : paint(p, C.dim, "—")}`;
+  });
+  const cons = (Object.keys(CONSUMABLES) as ConsumableId[])
+    .filter((id) => (s.items[id] ?? 0) > 0)
+    .map((id) => `${CONSUMABLES[id].icon} ${id}×${s.items[id]}`);
+  header.push(paint(p, C.dim, cons.length ? `Items: ${cons.join("  ")}` : "Items: —"), "");
+  const items: MenuItem[] = s.bag.map((g, i) => {
+    const cur = s.equipped[g.slot];
+    const delta = gearScore(g) - (cur ? gearScore(cur) : 0);
+    const arrow = delta > 0 ? paint(p, C.green, `▲${delta}`) : delta < 0 ? paint(p, C.red, `▼${-delta}`) : "=";
+    const n = i + 1;
+    return {
+      label: `${String(n).padStart(2)}. ${g.slot.padEnd(6)} ${gearName(p, g)} ${arrow}`,
+      cmd: `;equip ${n}`,
+      desc: `i${g.ilvl} · ${statLine(gearStats(g))}${g.unique ? ` · ★ ${UNIQUES[g.unique].desc}` : ""} · sells for ${sellValue(g)}g`,
+      keys: { s: `;sell ${n}`, l: `;lock ${n}`, f: `;forge ${n}` },
+    };
+  });
+  if (!items.length) items.push({ label: paint(p, C.dim, "(no spare gear — monsters drop it)") });
+  return {
+    title: `🎒 Bag ${s.bag.length}/${INVENTORY_CAP}`,
+    right: `◎ ${s.gold}g`,
+    header,
+    items,
+    source: ";bag",
+    stay: true,
+    verb: "equip",
+    hint: [["s", "sell"], ["l", "lock"], ["f", "forge"]],
+  };
+}
+
+function stripAnsi(t: string): string {
+  return t.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
 function mapText(s: RpgState, p: Paint): string {
@@ -642,7 +782,8 @@ function startFight(
       if (!s.lastEvent && rng() < EVENT_CHANCE) {
         s.lastEvent = true;
         s.event = { id: rollEventId(rng), zone: z.id, level: z.base + floor - 1, seed };
-        r.out = [arrival, eventScreen(s, p)].filter(Boolean).join("\n\n");
+        r.out = [arrival, eventScreen(s, p, ctx)].filter(Boolean).join("\n\n");
+        if (p.anim && p.ui?.motion) r.anim = typewriter(s, p, ctx, arrival);
         return r;
       }
       s.lastEvent = false;
@@ -698,12 +839,44 @@ function bless(s: RpgState, b: Battle): void {
 // ─── Events ─────────────────────────────────────────────────────────────────
 
 
-export function eventScreen(s: RpgState, p: Paint): string {
+export function eventScreen(s: RpgState, p: Paint, look?: BuddyCtx, reveal?: number): string {
   const ev = s.event;
   if (!ev) return "";
   const def = EVENTS[ev.id];
+  if (p.ui && look) {
+    // Rich: a dialogue box — the buddy's portrait beside the story text,
+    // which the TUI types out (`reveal` characters shown).
+    const face = portrait(look.species, { size: "face", rarity: look.rarity, shiny: look.shiny, color: p.ui.mode }) ?? buddySprite(look);
+    const fw = Math.max(0, ...face.map((l) => displayWidth(l)));
+    const text = wrap(def.text, 40);
+    let left = reveal ?? Infinity;
+    const shown = text.map((l) => {
+      const n = Math.max(0, Math.min(l.length, left));
+      left -= l.length;
+      return l.slice(0, n);
+    });
+    const rows = Math.max(face.length, text.length);
+    const body = [...def.art.map((l) => paint(p, C.yellow, `   ${l}`)), ""];
+    for (let i = 0; i < rows; i++) {
+      const f = face[i] ?? "";
+      body.push(`${f}${" ".repeat(fw - displayWidth(f))}  ${shown[i] ?? ""}`);
+    }
+    return `${panel(p, `✦ ${def.title}`, "", body)}\n${paint(p, C.cyan, `;1 ${def.options[0]}    ;2 ${def.options[1]}`)}`;
+  }
   const body = [...def.art.map((l) => paint(p, C.yellow, `   ${l}`)), "", ...wrap(def.text, 54)];
   return `${panel(p, `✦ ${def.title}`, "", body)}\n${paint(p, C.cyan, `;1 ${def.options[0]}    ;2 ${def.options[1]}`)}`;
+}
+
+/** The event's story typed out, a few characters per frame. */
+function typewriter(s: RpgState, p: Paint, look: BuddyCtx, prefix: string): AnimFrame[] {
+  const def = s.event ? EVENTS[s.event.id] : null;
+  if (!def) return [];
+  const total = wrap(def.text, 40).join("").length;
+  const frames: AnimFrame[] = [];
+  for (let k = 0; k < total; k += 3) {
+    frames.push({ text: [prefix, eventScreen(s, p, look, k)].filter(Boolean).join("\n\n"), ms: 18 });
+  }
+  return frames;
 }
 
 function choose(

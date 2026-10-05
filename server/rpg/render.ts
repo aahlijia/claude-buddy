@@ -23,6 +23,9 @@ import {
   type HdScene,
 } from "./hdstage";
 import { lazyTimed, memo } from "./playkit";
+import { THEME, type RGB, type Ui } from "../ui/color.ts";
+import { meter } from "../ui/meter.ts";
+import { panel as kitPanel } from "../ui/panel.ts";
 import {
   CONSUMABLES,
   FLOORS_PER_ZONE,
@@ -39,6 +42,8 @@ export interface Paint {
   color: boolean;
   /** Also bake attack-animation frames (TUI only; the hook can't animate). */
   anim?: boolean;
+  /** The UI kit's rich face (TUI only; see ui/color.ts). */
+  ui?: Ui;
   /** Draw fights on the HD pixel stage (TUI only, when the terminal can show
    *  it). The zero-token hook never sets this, so it never renders pixels. */
   hd?: HdPaint;
@@ -79,6 +84,12 @@ export function gearLine(p: Paint, g: GearItem): string {
   return `${gearName(p, g)} ${paint(p, C.dim, `i${g.ilvl}`)}  ${statLine(gearStats(g))}${u}`;
 }
 
+/** A progress bar: classic `█░` (unpainted — callers color it), or the
+ *  kit's meter in the TUI. */
+export function progressBar(p: Paint, cur: number, max: number, width: number = 10): string {
+  return p.ui && p.color ? meter(p.ui, cur, max, width, { kind: "progress" }) : paint(p, C.green, bar(cur, max, width));
+}
+
 export function bar(cur: number, max: number, width: number = 10): string {
   const n = max > 0 ? Math.round((Math.max(0, cur) / max) * width) : 0;
   return "█".repeat(n) + "░".repeat(width - n);
@@ -86,7 +97,8 @@ export function bar(cur: number, max: number, width: number = 10): string {
 
 /** An HP bar. `was` (HP before this turn) draws the lost chunk as a ghost
  *  segment `▓`, so a glance shows what the last turn cost. */
-export function hpBar(p: Paint, cur: number, max: number, width: number = 10, was?: number): string {
+export function hpBar(p: Paint, cur: number, max: number, width: number = 10, was?: number, pulse?: number): string {
+  if (p.ui && p.color) return `♥ ${cur}/${max} ${meter(p.ui, cur, max, width, { kind: "hp", ghost: was, pulse })}`;
   const ratio = max > 0 ? cur / max : 0;
   const col = ratio > 0.5 ? C.green : ratio > 0.25 ? C.yellow : C.red;
   const fill = (v: number) => (max > 0 ? Math.round((Math.max(0, Math.min(v, max)) / max) * width) : 0);
@@ -97,34 +109,6 @@ export function hpBar(p: Paint, cur: number, max: number, width: number = 10, wa
 }
 
 const GHOST = "\x1b[2;31m";
-
-const EIGHTHS = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
-
-/**
- * The HD stage's HP bar: 1/8-cell precision, a colored fill, and a ghost
- * segment for HP just lost — white for an instant, then dark red as it
- * drains toward the real value. Same width as `hpBar`.
- */
-export function hpBarFine(cur: number, max: number, width: number, ghost: number, fresh: boolean): string {
-  const ratio = max > 0 ? cur / max : 0;
-  const fillC = ratio > 0.5 ? "77" : ratio > 0.25 ? "220" : "203";
-  const ghostC = fresh ? "255" : "88";
-  const track = "236";
-  const eighths = (v: number) => (max > 0 ? Math.round((Math.max(0, Math.min(v, max)) / max) * width * 8) : 0);
-  const f8 = eighths(cur);
-  const g8 = Math.max(f8, eighths(ghost));
-  let out = "";
-  for (let c = 0; c < width; c++) {
-    const f = Math.max(0, Math.min(8, f8 - 8 * c));
-    const g = Math.max(0, Math.min(8, g8 - 8 * c));
-    if (f === 8) out += `\x1b[38;5;${fillC};48;5;${track}m█`;
-    else if (f > 0) out += `\x1b[38;5;${fillC};48;5;${g > f ? ghostC : track}m${EIGHTHS[f]}`;
-    else if (g === 8) out += `\x1b[38;5;${ghostC};48;5;${track}m█`;
-    else if (g > 0) out += `\x1b[38;5;${ghostC};48;5;${track}m${EIGHTHS[g]}`;
-    else out += `\x1b[48;5;${track}m `;
-  }
-  return `♥ ${cur}/${max} ${out}${RESET}`;
-}
 
 export interface Look {
   name: string;
@@ -140,20 +124,10 @@ export interface Look {
 
 const PANEL_W = 58;
 
-/** An open-right panel: rules on top and bottom, a left border on every
- *  body line. Open on the right on purpose — emoji widths differ between
- *  terminals, and a misaligned right border looks worse than none. */
-export function panel(p: Paint, title: string, right: string, body: string[], footer?: string, minW = PANEL_W): string {
-  const w = Math.max(minW, ...body.map((l) => displayWidth(l) + 2));
-  const t = ` ${title} `;
-  const rt = right ? ` ${right} ` : "";
-  const fill = Math.max(2, w - displayWidth(t) - displayWidth(rt) - 2);
-  const edge = (x: string) => paint(p, C.dim, x);
-  const out = [edge("╭─") + paint(p, C.bold, t) + edge("─".repeat(fill)) + rt + edge("─╮")];
-  for (const l of body) out.push(`${edge("│")} ${l}`);
-  const foot = footer ? ` ${footer} ` : "";
-  out.push(edge("╰─") + foot + edge("─".repeat(Math.max(2, w - displayWidth(foot) - 1))) + edge("╯"));
-  return out.join("\n");
+/** An open-right panel (see ui/panel.ts): classic rules and border for the
+ *  hook, the kit's rich face in the TUI. `accent` tints the rich edge. */
+export function panel(p: Paint, title: string, right: string, body: string[], footer?: string, minW = PANEL_W, accent?: RGB): string {
+  return kitPanel(p.color, p.ui, { title, right, body, footer, minW, accent });
 }
 
 /** Greedy word wrap on display width (keeps panels from stretching). */
@@ -197,6 +171,8 @@ export interface BattleView {
   hd?: HdScene;
   ghost?: [number, number];
   fresh?: [boolean, boolean];
+  /** 0..1 phase of the low-HP pulse (idle loops). */
+  pulse?: number;
 }
 
 /** The fight scene at rest: idle pose, persistent marks, this turn's damage. */
@@ -307,6 +283,7 @@ export function battleScreen(
     /* art failure — the bars and log still work */
   }
   const [heroHp, foeHp] = view?.hp ?? [b.hero.hp, b.foe.hp];
+  const pulse = view?.pulse ?? (clock > 0 ? clock % 1 : undefined);
   const [heroWas, foeWas] = b.was ?? [heroHp, foeHp];
   const settled = !view || view.lines >= b.log.length;
   const foeName = b.foe.boss ? paint(p, C.yellow, `♛ ${b.foe.name}`) : b.foe.name;
@@ -314,7 +291,9 @@ export function battleScreen(
   const lw = Math.max(displayWidth(look.name), displayWidth(`${b.foe.boss ? "♛ " : ""}${b.foe.name} Lv${b.foe.level}`)) + 2;
   // HD: the ghost drains during playback and is gone at rest.
   const bar = (cur: number, max: number, was: number, k: 0 | 1) =>
-    cast && p.color ? hpBarFine(cur, max, 14, view?.ghost?.[k] ?? cur, !!view?.fresh?.[k]) : hpBar(p, cur, max, 14, was);
+    cast && p.color
+      ? `♥ ${cur}/${max} ${meter(p.ui ?? { mode: p.hd!.color }, cur, max, 14, { kind: "hp", ghost: view?.ghost?.[k] ?? cur, fresh: !!view?.fresh?.[k], pulse })}`
+      : hpBar(p, cur, max, 14, was, pulse);
   body.push(label(paint(p, C.bold, look.name), lw) + bar(heroHp, b.hero.maxHp, heroWas, 0));
   const intent = foeIntent(b);
   const foeLine = label(`${foeName} Lv${b.foe.level}`, lw) + bar(foeHp, b.foe.maxHp, foeWas, 1);
@@ -334,7 +313,7 @@ export function battleScreen(
     const shown = !view || i < view.lines;
     wrap(l, PANEL_W - 4).forEach((part, j) => body.push(shown ? (j ? "  " : paint(p, C.dim, "» ")) + part : ""));
   });
-  let out = panel(p, battleTitle(b), `Turn ${b.turn}`, body, undefined, minW);
+  let out = panel(p, battleTitle(b), `Turn ${b.turn}`, body, undefined, minW, b.foe.boss ? THEME.boss : undefined);
   if (suffix) {
     // Pixel tiers: the stage rows are blank in the layout; the image is
     // placed from the end of the last stage row (panel row STAGE_ROWS).

@@ -1,9 +1,9 @@
 # NEXT — handoff for the HD overhaul
 
-_A fresh session starts here. Last updated after H2._
+_A fresh session starts here. Last updated after H3._
 
-**Branch:** `feature/living-world` (it now carries all of `feature/rpg` plus
-H2). Develop, commit and push there: `git push -u origin feature/living-world`.
+**Branch:** `feature/living-world`. Develop, commit and push there:
+`git push -u origin feature/living-world`.
 
 ## Where things stand
 
@@ -12,67 +12,78 @@ H2). Develop, commit and push there: `git push -u origin feature/living-world`.
 | Buddy Quest RPG (`;` commands, `bun run play`) | done | [../buddy-quest/design.md](../buddy-quest/design.md), [../buddy-quest/design-animation.md](../buddy-quest/design-animation.md) |
 | H0: framebuffer, tier encoders, HD blob, `bun run gfx-demo` | done | [h0-spike.md](h0-spike.md) |
 | H1: rig format, motion library, HD blob, cat and dragon | done | [h1-rigs.md](h1-rigs.md) |
-| `pikachu` → `sparkit` (an original electric mouse) | done | h1-rigs.md, "Also in this phase" |
 | H2: HD fights in the quest player | done | [h2-quest-player.md](h2-quest-player.md) |
-| **H3: the buddy UI kit** | **next** | this file and [brainstorm.md](brainstorm.md) §4, §8 |
-| H4 buddy-shell diorama, H5 status line, H6 roster | later | brainstorm.md §8 |
+| H3: the buddy UI kit (`server/ui/`) | done | [h3-ui-kit.md](h3-ui-kit.md) |
+| **H4: the buddy-shell diorama** | **next** | this file and [brainstorm.md](brainstorm.md) §3.2, §5, §8 |
+| H5 status line, H6 roster | later | brainstorm.md §8 |
 
 ## Read first (in this order)
 
-1. **[brainstorm.md](brainstorm.md):** §4 (the UI kit) and §8 (the H3 row).
-2. **[h2-quest-player.md](h2-quest-player.md):** the HD stage, `Paint.hd`,
-   lazy frames, `hpBarFine` and the results card. H3 should absorb the bar
-   and the card into the kit rather than keep two styles.
-3. **`server/rpg/render.ts`** (`panel`, `hpBar`, `wrap`) and
-   **`server/rpg/playkit.ts`** (action bar, banners, shimmer, reveal,
-   results card): the pieces the kit replaces or promotes.
+1. **[brainstorm.md](brainstorm.md):** §3.2 (the home diorama), §5 (the
+   buddy-shell row), §0 (kitty placement and native animation) and §8.
+2. **`cli/buddy-shell.ts`:** the PTY wrapper. It reserves the bottom ~20% of
+   the terminal as a panel (`layout()`), sets a scroll region for the child,
+   and repairs the panel after the child clears the screen or resets the
+   scroll region. Runs under Node via tsx (node-pty), not Bun.
+3. **[h2-quest-player.md](h2-quest-player.md)** and
+   **[h3-ui-kit.md](h3-ui-kit.md):** the scene → framebuffer → tier pipeline
+   (`server/rpg/hdstage.ts` is the model to copy), particles, portraits and
+   the kit's panel/legend.
+4. **`cli/biomes.ts`** and the living-world docs in `docs/game-feel/`: the
+   15 biomes, weather and ground props that should become the diorama.
 
-## H3 goal
+## H4 goal
 
-One visual language for the quest player, the Ink TUI (`cli/tui.tsx`) and
-the shop: panels, bars, key prompts, banners and portraits as a shared
-`server/ui/` kit, pure and testable, with the T0 (plain) output unchanged
-for the hook path.
+The always-on wow: the buddy-shell panel becomes a small pixel diorama —
+the buddy living in a parallax biome scene with a day/night cycle and
+weather particles, reacting to Claude Code hooks — at near-zero cost while
+idle.
 
-## H3 checklist
+## H4 checklist
 
-- [ ] **`server/ui/` kit:** panels (rounded borders, gradient title bar,
-      rarity accent edge, inner shadow), with slide/fade-in frames. Keep the
-      open-right rule for emoji-width safety, or prove a right border is safe.
-- [ ] **Bars:** promote `hpBarFine` (1/8-cell precision, ghost) to the kit;
-      gradient fills (green → yellow → red), a low-HP pulse; XP bars too.
-- [ ] **Key prompts:** pill chips (`⟨ Enter ⟩ Confirm`) in a consistent
-      bottom-right legend. Generic key glyphs only, no console button symbols.
-- [ ] **Menus:** bounce cursor, highlight sweep on the selected row, a
-      description pane, a slot-in stagger when a menu opens (shop, bag, map).
-- [ ] **Banners:** "VICTORY", "LEVEL UP", "BOSS" as pixel-font renders
-      (`server/gfx/font.ts`) on T1–T3, figlet-style blocks on T0. Replace
-      `bannerFrames` in play.ts.
-- [ ] **Portraits:** a bust per HD species from the rig's head at 2×, for
-      dialogue boxes (with the existing typewriter), the stats screen and
-      later H6 cut-ins.
-- [ ] **Ink TUI:** use the kit's components; for T3 images, a raw kitty
-      placement at the measured box position after each render.
-- [ ] **Accessibility:** the same gates as H2 (`gameFeel`, `reduceMotion`,
-      flash cap).
-- [ ] **Tests:** kit components render to fixed widths, plain mode has no
-      escapes, the hook output is byte-identical, golden strings or hashes
-      for key components.
-- [ ] **Docs:** `h3-ui-kit.md` with screenshots, mark H3 done in
-      brainstorm.md §8, and update this file for H4.
+- [ ] **A pure diorama scene** (`server/gfx/diorama.ts` or similar):
+      `f(biome, clock, weather, buddy state, seed) → Framebuffer`. Three
+      parallax layers per biome, painted procedurally or as small
+      palette-indexed sprites (text, reviewable).
+- [ ] **Day/night** from the real clock: sky gradient lerp, stars and lit
+      windows at night, a warm dusk.
+- [ ] **Weather as particles** (extend `server/gfx/particles.ts`: rain,
+      snow, leaves, sparkles) fed by the living-world weather state.
+- [ ] **The buddy** on the diorama ground with `renderHd`: idle, wander
+      (walk), and short reactions to hook events (flinch on an error, cheer
+      on passing tests, nod on a commit, a "thinking" pose while Claude works).
+      Species without HD art keep the ASCII panel.
+- [ ] **Placement:** kitty (z below text or a reserved region, one image id
+      swapped in place, ideally native animation so idle costs ~0 bytes),
+      iTerm2, then half-blocks inside the panel rows. Repaired by the existing
+      redraw hooks; never touches the child's region.
+- [ ] **Cost:** the panel animates at ≤ 12 fps, sleeps when the terminal is
+      unfocused or idle, and caps bytes per second (measure it).
+- [ ] **Gates:** `gameFeel` off → today's panel; subtle → no weather flashes
+      (lightning) or shake; `reduceMotion` → still frames on change only.
+- [ ] **Tests:** scene determinism and golden hashes per biome/time of day,
+      particle determinism, placement escape sequences, the gating, and that
+      the child's region is never written.
+- [ ] **Docs:** `h4-diorama.md` with a contact sheet, mark H4 done in
+      brainstorm.md §8, and update this file for H5.
 
-## Loose ends from H2
+## Loose ends
 
-- Hats and gear on HD rigs (anchors exist in rig.ts).
-- Kitty native animation (upload frames once, let the terminal play them).
-- A smaller HD stage for terminals under 66 × 34 instead of the ASCII
-  fallback.
+- From H2: hats and gear on HD rigs; kitty native animation for the fight
+  stage; a smaller HD stage for terminals under 66 × 34.
+- From H3: skills, feats and the bounty board as menus; kitty/iTerm
+  portraits; a pixel-type title logo.
 
 ## How to see your work
 
 - `bun run gfx-demo --species dragon --bg` shows the H1 rigs live; `1`–`6`
   play the animations, `c` cycles species.
 - `bun run scripts/h2-sheet.ts` re-renders the H2 fight contact sheet.
+- Screenshots of text UIs: feed a captured terminal stream to `pyte`
+  (`pip install pyte`), turn the screen into HTML (one span per cell;
+  draw `▀▄█` and the eighths as CSS gradients), and screenshot it with
+  `/opt/pw-browsers/chromium-1194/chrome-linux/chrome --headless
+  --screenshot`. That's how `h3-screens.png` was made.
 - `bun run play` is the quest TUI. Test it headless with
   `script -qfc "stty rows 50 cols 120; bun run cli/play.ts" /dev/null` and
   piped keys; `BUDDY_GFX=halfblock` forces the HD stage's text tier, and

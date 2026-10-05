@@ -37,6 +37,11 @@ import {
   type SearchCriteria, type SearchResult, type BuddyBones,
 } from "../server/engine.ts";
 import { getArtFrame, HAT_ART } from "../server/art.ts";
+import { detectTier } from "../server/gfx/detect.ts";
+import type { Ui } from "../server/ui/color.ts";
+import { legend, parseHint } from "../server/ui/keys.ts";
+import { meter } from "../server/ui/meter.ts";
+import { portrait } from "../server/ui/portrait.ts";
 import {
   ACHIEVEMENTS, loadUnlocked, loadEvents,
   type Achievement, type UnlockedAchievement, type EventCounters,
@@ -47,6 +52,11 @@ import {
 type Section = "menagerie" | "settings" | "achievements" | "hunt" | "verify" | "doctor" | "backup" | "system";
 type Focus = "sidebar" | "list" | "edit";
 interface SlotEntry { slot: string; companion: Companion }
+
+/** The UI kit's rich face (key chips, meters, HD portraits) unless this
+ *  terminal is plain. The dashboard doesn't animate, so no motion. */
+const gfx = detectTier(process.env);
+const UI: Ui | undefined = gfx.tier === "ascii" ? undefined : { mode: gfx.color, motion: false, flash: false };
 
 const RARITY_COLOR: Record<string, string> = {
   common: "gray", uncommon: "green", rare: "blue",
@@ -270,6 +280,8 @@ const SETTINGS_ITEMS = [
   { key: "bubblePosition", label: "Bubble Position" },
   { key: "showRarity", label: "Show Rarity" },
   { key: "statusLineEnabled", label: "Status Line" },
+  { key: "gameFeel", label: "Game Feel" },
+  { key: "reduceMotion", label: "Reduce Motion" },
 ] as const;
 
 function SettingsListPane({ cursor, config, focused }: {
@@ -280,7 +292,7 @@ function SettingsListPane({ cursor, config, focused }: {
       <Text bold color={focused ? "cyan" : "gray"}>{" 🔧 Settings"}</Text>
       <Text>{""}</Text>
       {SETTINGS_ITEMS.map((item, i) => {
-        const val = String(config[item.key as keyof BuddyConfig]);
+        const val = String(config[item.key as keyof BuddyConfig] ?? SETTING_DEFS[i]?.default);
         const isCursor = focused && i === cursor;
         return (
           <Box key={item.key}
@@ -1351,7 +1363,7 @@ function HuntNamingPane({ nameInput, chosenBones }: {
 
 // ─── Right: Buddy Card ──────────────────────────────────────────────────────
 
-function BuddyCardPane({ companion, slot, isActive, editablePersonality, editCursor = 0 }: {
+export function BuddyCardPane({ companion, slot, isActive, editablePersonality, editCursor = 0 }: {
   companion: Companion; slot: string; isActive: boolean;
   editablePersonality?: string;
   editCursor?: number;
@@ -1369,9 +1381,12 @@ function BuddyCardPane({ companion, slot, isActive, editablePersonality, editCur
   const overLimit = isEditing && (editablePersonality?.length ?? 0) > 500;
 
   const mkBar = (val: number) => {
+    if (UI) return meter(UI, val, 100, 10, { kind: "stat" });
     const f = Math.round(val / 10);
     return "█".repeat(f) + "░".repeat(10 - f);
   };
+  // HD species get a portrait instead of the ASCII frame.
+  const face = UI ? portrait(b.species, { size: "face", rarity: b.rarity, shiny: b.shiny, color: UI.mode }) : null;
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={color} paddingX={2} paddingY={1} width={48}>
@@ -1382,9 +1397,11 @@ function BuddyCardPane({ companion, slot, isActive, editablePersonality, editCur
         <Text dimColor>{b.species.toUpperCase()}</Text>
       </Box>
 
-      {/* ASCII art */}
-      <Box flexDirection="column" marginTop={2} marginBottom={2}>
-        {art.map((line, i) => line.trim() ? <Text key={i}>{"  "}{line}</Text> : null)}
+      {/* Portrait (HD species) or ASCII art */}
+      <Box flexDirection="column" marginTop={face ? 1 : 2} marginBottom={face ? 1 : 2}>
+        {face
+          ? face.map((line, i) => <Text key={i}>{"  "}{line}</Text>)
+          : art.map((line, i) => line.trim() ? <Text key={i}>{"  "}{line}</Text> : null)}
       </Box>
 
       {/* Name */}
@@ -1464,13 +1481,15 @@ const SETTING_DEFS: SettingDef[] = [
   { key: "bubblePosition", label: "Bubble Position", description: ["Bubble placement.", "", "top → above buddy", "left → beside buddy"], type: "options", options: ["top", "left"], default: "top" },
   { key: "showRarity", label: "Show Rarity", description: ["Show rarity stars in", "the status line.", "", "true → ★★★★ visible", "false → hidden"], type: "options", options: ["true", "false"], default: "true" },
   { key: "statusLineEnabled", label: "Status Line", description: ["Animated buddy in Claude Code's", "status line bar.", "", "true  → patches settings.json", "false → removes it", "", "Restart Claude Code after toggle."], type: "options", options: ["true", "false"], default: "false" },
+  { key: "gameFeel", label: "Game Feel", description: ["How much juice: animations,", "flashes, shake, the HD stage.", "", "off    → still, ASCII fights", "subtle → no shake or flashes", "full   → everything"], type: "options", options: ["off", "subtle", "full"], default: "subtle" },
+  { key: "reduceMotion", label: "Reduce Motion", description: ["Keep the HD art but drop", "screen shake, flashes and", "camera moves (buddy play).", "", "Also: BUDDY_REDUCED_MOTION=1"], type: "options", options: ["false", "true"], default: "false" },
 ];
 
 function SettingDetailPane({ settingIndex, config, editing, numInput, optCursor }: {
   settingIndex: number; config: BuddyConfig; editing: boolean; numInput: string; optCursor: number;
 }) {
   const def = SETTING_DEFS[settingIndex];
-  const currentVal = String(config[def.key as keyof BuddyConfig]);
+  const currentVal = String(config[def.key as keyof BuddyConfig] ?? def.default);
   const inBuddyShell = process.env.BUDDY_SHELL === "1";
   const showBuddyShellHint = def.key === "statusLineEnabled" && inBuddyShell;
   return (
@@ -1857,7 +1876,7 @@ function App() {
       if (isSelect) {
         const def = SETTING_DEFS[settCursor];
         if (def.type === "options") {
-          const current = String(config[def.key as keyof BuddyConfig]);
+          const current = String(config[def.key as keyof BuddyConfig] ?? def.default);
           setOptCursor(def.options!.indexOf(current));
         } else {
           setNumInput(String(config[def.key as keyof BuddyConfig]));
@@ -2317,7 +2336,9 @@ function App() {
       </Box>
       {message ? <Box><Text color="green" bold>{"  "}{message}</Text></Box> : null}
       <Box>
-        <Text dimColor>{"─ "}{helpText}{" "}{"─".repeat(Math.max(0, cols - helpText.length - 4))}</Text>
+        {UI
+          ? <Text>{" "}{legend(UI, parseHint(helpText), cols - 2, "left").join("\n ")}</Text>
+          : <Text dimColor>{"─ "}{helpText}{" "}{"─".repeat(Math.max(0, cols - helpText.length - 4))}</Text>}
       </Box>
     </Box>
   );
@@ -2325,9 +2346,10 @@ function App() {
 
 // ─── Entry ──────────────────────────────────────────────────────────────────
 
-if (!process.stdin.isTTY) {
-  console.error("claude-buddy tui requires an interactive terminal (TTY)");
-  process.exit(1);
+if (import.meta.main) {
+  if (!process.stdin.isTTY) {
+    console.error("claude-buddy tui requires an interactive terminal (TTY)");
+    process.exit(1);
+  }
+  render(<App />);
 }
-
-render(<App />);

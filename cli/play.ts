@@ -42,6 +42,11 @@ import {
 import { detectTier, tmuxWrap } from "../server/gfx/detect.ts";
 import { kittyDelete } from "../server/gfx/encode/kitty.ts";
 import { KITTY_STAGE_ID, STAGE_COLS, hdFeel, type HdPaint } from "../server/rpg/hdstage.ts";
+import { rgb, type RGB, type Ui } from "../server/ui/color.ts";
+import { portrait } from "../server/ui/portrait.ts";
+import { legend, type KeyItem } from "../server/ui/keys.ts";
+import { bannerFrames as kitBannerFrames, banner as kitBanner } from "../server/ui/banner.ts";
+import { menuOpenFrames, menuScreen, moveCursor, selectable, type Menu } from "../server/ui/menu.ts";
 
 if (!process.stdin.isTTY) {
   console.error("Buddy Quest needs an interactive terminal. In Claude Code, type ;help instead.");
@@ -80,10 +85,8 @@ const HD_MIN_COLS = STAGE_COLS + 6;
 
 const gfx = detectTier(process.env);
 
-/** HD paint settings for this terminal, or undefined for the ASCII stage
- *  (gameFeel off, no pixel tier, or a terminal too small to fit it). */
-function hdPaint(): HdPaint | undefined {
-  if (gfx.tier === "ascii" || rows() < HD_MIN_ROWS || cols() < HD_MIN_COLS) return undefined;
+/** gameFeel and reduce-motion, read fresh (settings can change mid-run). */
+function feelSettings(): { gameFeel: string | undefined; reduce: boolean } {
   let gameFeel: string | undefined;
   let reduce = !!process.env.BUDDY_REDUCED_MOTION && process.env.BUDDY_REDUCED_MOTION !== "0";
   try {
@@ -94,8 +97,23 @@ function hdPaint(): HdPaint | undefined {
   } catch {
     /* defaults */
   }
+  return { gameFeel, reduce };
+}
+
+/** HD paint settings for this terminal, or undefined for the ASCII stage
+ *  (gameFeel off, no pixel tier, or a terminal too small to fit it). */
+function hdPaint(): HdPaint | undefined {
+  if (gfx.tier === "ascii" || rows() < HD_MIN_ROWS || cols() < HD_MIN_COLS) return undefined;
+  const { gameFeel, reduce } = feelSettings();
   const feel = hdFeel(gameFeel, reduce);
   return feel ? { tier: gfx.tier, color: gfx.color, tmux: gfx.tmux, feel } : undefined;
+}
+
+/** The UI kit's rich face — unless this terminal is plain (NO_COLOR, dumb). */
+function uiPaint(): Ui | undefined {
+  if (gfx.tier === "ascii") return undefined;
+  const { gameFeel, reduce } = feelSettings();
+  return { mode: gfx.color, motion: speed !== "off" && gameFeel !== "off", flash: gameFeel === "full" && !reduce };
 }
 
 function saveSpeed(s: AnimSpeed): void {
@@ -120,6 +138,10 @@ let focused = true;
 let lastInput = Date.now();
 /** The idle loop that belongs to `body` (restarted when focus returns). */
 let lastLoop: RunResult["loop"];
+/** A walkable menu on screen (shop, map, bag — rich face only). */
+let menu: { m: Menu; cursor: number } | null = null;
+/** A one-line result shown above the next screen (e.g. "Bought 1× Coffee"). */
+let toast = "";
 
 /** A playing animation: frames are full screens. */
 let reel: { frames: Timed[]; i: number; timer: ReturnType<typeof setTimeout> | null; done: () => void } | null = null;
@@ -173,6 +195,8 @@ function footer(playing = !!reel): string[] {
   const w = cols();
   if (typing !== null) return [`${cyan(`;${typing}`)}█`, dim("[enter] run · [esc] cancel")];
   if (playing) return [dim(`[space] skip · any key acts · [~] animation: ${speed}`)];
+  const ui = uiPaint();
+  if (ui) return kitFooter(ui, w);
   const fight = !!snap?.battle && !snap.battle.over;
   if (fight) {
     const actions = fightActions(snap!);
@@ -207,6 +231,34 @@ function footer(playing = !!reel): string[] {
     ],
     w,
   ).map(dim);
+}
+
+/** The rich footer: the fight's action bar and a key legend of chips. */
+function kitFooter(ui: Ui, w: number): string[] {
+  const fight = !!snap?.battle && !snap.battle.over;
+  const anim: KeyItem = ["~", `anim: ${speed}`];
+  if (fight) {
+    const actions = fightActions(snap!);
+    cursor = Math.min(cursor, actions.length - 1);
+    return [
+      ...actionBar(actions, cursor, w, true, ui),
+      ...legend(ui, [["←→", "select"], ["⏎", "act"], ["a", "attack"], ["d", "defend"], ["1-7", "skills"], ["p e o z", "items"], ["f", "flee"], [":", "command"], anim, ["q", "quit"]], w),
+    ];
+  }
+  if (menu) {
+    const m = menu.m;
+    return legend(ui, [["↑↓", "select"], ["⏎", m.verb ?? "choose"], ...(m.hint ?? []), ["esc", "back"], ["q", "quit"]], w);
+  }
+  if (snap?.event) return legend(ui, [["1", "/ 2 choose"], ["c", "char"], ["i", "bag"], [":", "command"], ["q", "quit"]], w);
+  return legend(
+    ui,
+    [
+      ["x", "explore"], ["b", "boss"], ["t", "tower"], ["u", "hunt"], ["m", "map"], ["i", "bag"], ["s", "shop"], ["f", "forge"],
+      ["g", "train"], ["r", "rest"], ["c", "char"], ["k", "skills"], ["v", "feats"], ["n", "bounties"], ["l", "log"], ["h", "help"],
+      [":", "cmd"], anim, ["q", "quit"],
+    ],
+    w,
+  );
 }
 
 function compose(text: string, bannerLine = banner, playing = !!reel): string {
@@ -268,13 +320,23 @@ function stopLoop(repaint = false): void {
 
 // ─── Banners ────────────────────────────────────────────────────────────────
 
-function bannerFor(text: string): { text: string; sgr: string } | null {
-  if (text.includes("LEVEL UP")) return { text: "⭐  L E V E L   U P  ⭐", sgr: "1;33" };
-  if (text.includes("T H E   E N D")) return { text: "★  T H E   E N D  ★", sgr: "1;35" };
-  if (text.includes("defeated for the first time")) return { text: "♛  B O S S   D O W N  ♛", sgr: "1;33" };
-  if (text.includes("Victory")) return { text: "★  V I C T O R Y  ★", sgr: "1;32" };
-  if (text.includes("Knocked out")) return { text: "✖  D E F E A T E D  ✖", sgr: "1;31" };
-  if (text.includes("You slip away") || text.includes("vanish in smoke")) return { text: "~  E S C A P E D  ~", sgr: "1;36" };
+interface BannerSpec {
+  text: string;
+  sgr: string;
+  /** The kit's pixel-font banner: shorter text and a gradient. */
+  big: string;
+  from: RGB;
+  to: RGB;
+}
+
+function bannerFor(text: string): BannerSpec | null {
+  const b = (t: string, sgr: string, big: string, from: string, to: string) => ({ text: t, sgr, big, from: rgb(from), to: rgb(to) });
+  if (text.includes("LEVEL UP")) return b("⭐  L E V E L   U P  ⭐", "1;33", "✦ LEVEL UP ✦", "#fff6b0", "#ffa030");
+  if (text.includes("T H E   E N D")) return b("★  T H E   E N D  ★", "1;35", "✦ THE END ✦", "#ffd0ff", "#b050ff");
+  if (text.includes("defeated for the first time")) return b("♛  B O S S   D O W N  ♛", "1;33", "♛ BOSS DOWN ♛", "#fff0a0", "#ff6a3a");
+  if (text.includes("Victory")) return b("★  V I C T O R Y  ★", "1;32", "✦ VICTORY ✦", "#d0ffb0", "#30c070");
+  if (text.includes("Knocked out")) return b("✖  D E F E A T E D  ✖", "1;31", "DEFEATED", "#ffb0b0", "#c02030");
+  if (text.includes("You slip away") || text.includes("vanish in smoke")) return b("~  E S C A P E D  ~", "1;36", "ESCAPED", "#c0f8ff", "#3090d0");
   return null;
 }
 
@@ -284,7 +346,7 @@ function exec(cmd: string): void {
   stopLoop();
   let res: RunResult;
   try {
-    res = runFull(cmd, true, true, Date.now(), hdPaint());
+    res = runFull(cmd, true, true, Date.now(), hdPaint(), uiPaint());
   } catch (e) {
     banner = "";
     body = `Error: ${(e as Error).message}`;
@@ -296,12 +358,36 @@ function exec(cmd: string): void {
   if (!wasFight && snap?.battle) cursor = 0;
   banner = "";
   const bn = bannerFor(res.out);
+  const ui = uiPaint();
+  const note = toast;
+  toast = "";
+
+  // A walkable menu: open it with a slot-in stagger, then idle with the
+  // cursor bouncing. Re-opening the same menu keeps the cursor.
+  if (ui && res.menu && selectable(res.menu).length) {
+    const m = res.menu;
+    const sel = selectable(m);
+    const keep = menu && menu.m.source === m.source ? menu.cursor : -1;
+    const at = keep >= 0 ? (sel.includes(keep) ? keep : sel.filter((i) => i <= keep).pop() ?? sel[0]) : sel[0];
+    const reopened = keep >= 0;
+    menu = { m, cursor: at };
+    const top = note ? toastLine(note) : "";
+    const opening = ui.motion && !reopened ? menuOpenFrames(ui, m, at).map((f) => lazyTimed(() => compose(f.text, top, true), f.ms)) : [];
+    return play(scaleFrames(opening, speed), () => {
+      body = menuScreen(ui, m, at);
+      banner = top;
+      lastLoop = menuLoop();
+      draw();
+      if (lastLoop) startLoop(lastLoop.frames, lastLoop.ms);
+    });
+  }
+  menu = null;
 
   // Every playback frame is a full screen with the "skip" footer (built
   // when played: HD frames rasterize on demand).
   const frame = (f: Timed, bannerLine = ""): Timed => lazyTimed(() => compose(f.text, bannerLine, true), f.ms);
   // A won fight ends on its results card.
-  const final = res.results ? `${res.out}\n${resultsCard(res.results, 1, true).join("\n")}` : res.out;
+  const final = res.results ? `${res.out}\n${resultsCard(res.results, 1, true, ui).join("\n")}` : res.out;
 
   // 1 · the turn / intro choreography
   const frames: Timed[] = scaleFrames(res.anim, speed).map((f) => frame(f));
@@ -315,22 +401,84 @@ function exec(cmd: string): void {
 
   // 3 · the results card counts up under the rewards
   if (res.results && speed !== "off") {
-    frames.push(...scaleFrames(resultsFrames(res.out, res.results, true), speed).map((f) => frame(f)));
+    frames.push(...scaleFrames(resultsFrames(res.out, res.results, true, ui), speed).map((f) => frame(f)));
   }
 
   // 4 · the banner opens over the final screen
   if (bn && speed !== "off") {
-    frames.push(...scaleFrames(bannerFrames(bn.text, bn.sgr, cols()), speed).map((f) => frame({ text: final, ms: f.ms }, f.text)));
+    if (ui) {
+      for (const f of kitBannerFrames(ui, bn.big, bn, cols())) frames.push(...scaleFrames([{ text: final, ms: f.ms }], speed).map((x) => frame(x, f.lines.join("\n"))));
+    } else frames.push(...scaleFrames(bannerFrames(bn.text, bn.sgr, cols()), speed).map((f) => frame({ text: final, ms: f.ms }, f.text)));
   }
 
   const land = () => {
     body = final;
-    banner = bn ? center(`${ESC}${bn.sgr}m${bn.text}${ESC}0m`, cols()) : "";
+    banner = bn ? (ui ? kitBanner(ui, bn.big, bn, cols()).join("\n") : center(`${ESC}${bn.sgr}m${bn.text}${ESC}0m`, cols())) : note ? toastLine(note) : "";
     lastLoop = res.loop;
     draw();
     if (res.loop) startLoop(res.loop.frames, res.loop.ms);
   };
   play(frames, land);
+}
+
+/** A result message shown over the screen that follows it. */
+function toastLine(text: string): string {
+  const first = text.split("\n").find((l) => l.trim()) ?? "";
+  return `${ESC}1;32m▸${ESC}0m ${first}`;
+}
+
+/** Cursor bounce and highlight sweep for the open menu (lazy frames). */
+function menuLoop(): RunResult["loop"] {
+  const ui = uiPaint();
+  if (!menu || !ui?.motion) return undefined;
+  const { m, cursor: at } = menu;
+  const n = 10;
+  return { frames: Array.from({ length: n }, (_, i) => () => menuScreen(ui, m, at, { phase: i / n })), ms: 120 };
+}
+
+/** Keys while a menu is open. Returns true when handled. */
+function menuKey(key: Key): boolean {
+  const ui = uiPaint();
+  if (!menu || !ui) return false;
+  const { m } = menu;
+  const move = (dir: 1 | -1) => {
+    menu!.cursor = moveCursor(m, menu!.cursor, dir);
+    stopLoop();
+    body = menuScreen(ui, m, menu!.cursor);
+    lastLoop = menuLoop();
+    draw();
+    if (lastLoop) startLoop(lastLoop.frames, lastLoop.ms);
+    return true;
+  };
+  if (key === "up" || key === "k" || key === "left") return move(-1);
+  if (key === "down" || key === "j" || key === "right" || key === "\t") return move(1);
+  const item = m.items[menu.cursor];
+  const cmd = key === "\r" ? item?.cmd : typeof key === "string" ? item?.keys?.[key] : undefined;
+  if (cmd) {
+    if (!m.stay || !m.source) {
+      menu = null;
+      exec(cmd);
+      return true;
+    }
+    // Act, then re-open the menu with the result as a toast.
+    let out = "";
+    try {
+      out = runFull(cmd, true, false, Date.now()).out;
+    } catch (e) {
+      out = `Error: ${(e as Error).message}`;
+    }
+    toast = out;
+    exec(m.source);
+    return true;
+  }
+  if (key === "esc") {
+    menu = null;
+    exec(";");
+    return true;
+  }
+  // Anything else leaves the menu and acts as a normal key.
+  menu = null;
+  return false;
 }
 
 // ─── Title ──────────────────────────────────────────────────────────────────
@@ -360,11 +508,18 @@ function titleScreen(t: TitleState): string {
     lines.push(" ".repeat(Math.max(0, Math.floor((w - LOGO[0].length) / 2))) + row);
   }
   lines.push("", dim(center("a turn-based RPG that lives inside Claude Code", w)), "");
-  const sprite = buddySprite(ctx, t.pose);
-  const ref = buddySprite(ctx, 0);
-  const sw = Math.max(...[...sprite, ...ref].map((l) => l.length));
-  for (let i = 0; i < Math.max(sprite.length, ref.length); i++) {
-    lines.push(cyan(" ".repeat(Math.max(0, Math.floor((w - sw) / 2))) + (sprite[i] ?? "").padEnd(sw)));
+  const ui = uiPaint();
+  // Rich face: the buddy's HD bust; it breathes with the title loop.
+  const bust = ui ? portrait(ctx.species, { rarity: ctx.rarity, shiny: ctx.shiny, color: ui.mode, t: { 0: 0, 1: 1.3, blink: 0.65 }[t.pose] }) : null;
+  if (bust) {
+    for (const l of bust) lines.push(" ".repeat(Math.max(0, Math.floor((w - 32) / 2))) + l);
+  } else {
+    const sprite = buddySprite(ctx, t.pose);
+    const ref = buddySprite(ctx, 0);
+    const sw = Math.max(...[...sprite, ...ref].map((l) => l.length));
+    for (let i = 0; i < Math.max(sprite.length, ref.length); i++) {
+      lines.push(cyan(" ".repeat(Math.max(0, Math.floor((w - sw) / 2))) + (sprite[i] ?? "").padEnd(sw)));
+    }
   }
   lines.push("", center(`${ctx.name} is ready.`, w), "");
   const prompt = "— press any key —";
@@ -493,6 +648,7 @@ function onKey(key: Key): void {
     else if (key.length === 1 && key >= " ") typing += key;
     return draw();
   }
+  if (key !== "q" && menuKey(key)) return;
   if (key === "q" || key === "esc") return quit();
   if (key === ":" || key === ";") {
     stopLoop();

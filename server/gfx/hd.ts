@@ -11,7 +11,7 @@ import type { Rarity, Species } from "../engine.ts";
 import { BLOB_H, BLOB_W, RIM_BLOB, SPARK, backdrop, blobPalette, glow, motes, renderBlob } from "./blob.ts";
 import { Framebuffer } from "./framebuffer.ts";
 import { ANIM_INFO, poseRig, type Anim } from "./motion.ts";
-import { renderRig, type RigDef } from "./rig.ts";
+import { anchorOf, renderRig, type RigDef } from "./rig.ts";
 import { CAT } from "./species/cat.ts";
 import { DRAGON } from "./species/dragon.ts";
 
@@ -72,4 +72,13 @@ function flipX(fb: Framebuffer): Framebuffer {
   const out = new Framebuffer(fb.width, fb.height);
   for (let y = 0; y < fb.height; y++) for (let x = 0; x < fb.width; x++) out.set(fb.width - 1 - x, y, fb.get(x, y));
   return out;
+}
+
+/** Where the head sits at rest (rig pixels, facing right): the pivot of
+ *  the head part, which rigs put at the neck. The blob is all head. */
+export function headAt(species: Species): [number, number] | null {
+  if (species === "blob") return [BLOB_W / 2, 38];
+  const rig = RIGS[species];
+  if (!rig) return null;
+  return anchorOf(rig, poseRig(rig, "idle", 0, 1), "head");
 }
