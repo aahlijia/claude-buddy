@@ -32,7 +32,7 @@ if (typeof (globalThis as { Bun?: unknown }).Bun !== "undefined") {
 }
 
 import { execSync } from "node:child_process";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -40,6 +40,8 @@ import { buddyStateDir } from "../server/path.ts";
 import { getArtFrame, HAT_ART } from "../server/art.ts";
 import type { Species, Eye, Hat } from "../server/engine.ts";
 import { getBiome, listBiomes } from "./biomes.ts";
+import { DioramaPanel, dioramaEnabled, kittyPlaysAnimations, type PanelConfig, type PanelStatus } from "./diorama-panel.ts";
+import { detectTier } from "../server/gfx/detect.ts";
 import xtermPkg from "@xterm/headless";
 import serializePkg from "@xterm/addon-serialize";
 
@@ -70,9 +72,18 @@ if (process.argv.includes("--biomes")) {
   process.exit(0);
 }
 
-// Parse --biome <name> from args
-const biomeArgIdx = process.argv.indexOf("--biome");
-const biomeOverride = biomeArgIdx >= 0 ? process.argv[biomeArgIdx + 1] : undefined;
+// Our own flags (stripped before the child's argv):
+//   --biome <name>     force a biome
+//   --hour <0-24>      pin the diorama's clock (previews, screenshots)
+//   --weather <kind>   force the diorama's weather (rain|snow|storm|drizzle|sparkle)
+//   --no-diorama       keep the ASCII panel
+const VALUE_FLAGS = ["--biome", "--hour", "--weather"];
+const flagValue = (name: string) => {
+  const i = process.argv.indexOf(name);
+  return i >= 0 ? process.argv[i + 1] : undefined;
+};
+const biomeOverride = flagValue("--biome");
+const hourFlag = flagValue("--hour");
 
 const ESC = "\x1b";
 const CSI = `${ESC}[`;
@@ -327,15 +338,97 @@ let pauseOutput = false; // when true, swallow PTY output (Claude is "hidden")
 const MENU_ITEMS = ["Dashboard"];
 let panelMessage = "";
 
-function setupPanel() {
+// ─── The diorama (H4, docs/game-feel/hd-overhaul/h4-diorama.md) ─────────────
+//
+// For buddies with HD art, the panel is a small pixel world instead of the
+// ASCII landscape. cli/diorama-panel.ts decides what to draw and returns
+// the bytes; this file only feeds it events and writes what it returns.
+
+const gfx = detectTier(process.env);
+const diorama = new DioramaPanel({
+  tier: gfx.tier,
+  color: gfx.color,
+  tmux: gfx.tmux,
+  kittyNative: kittyPlaysAnimations(process.env),
+  biome: biomeOverride,
+  hour: hourFlag !== undefined && !Number.isNaN(Number(hourFlag)) ? Number(hourFlag) : undefined,
+  weather: flagValue("--weather"),
+  maxBytesPerSec: Number(process.env.BUDDY_DIORAMA_BPS) || undefined,
+});
+const noDiorama = process.argv.includes("--no-diorama") || process.env.BUDDY_DIORAMA === "0";
+const showRate = !!process.env.BUDDY_DIORAMA_STATS;
+
+function loadConfig(): PanelConfig {
+  try {
+    const c = JSON.parse(readFileSync(join(STATE_DIR, "config.json"), "utf8"));
+    return { gameFeel: c.gameFeel, reduceMotion: c.reduceMotion === true };
+  } catch { return {}; }
+}
+
+let dioramaOn = false;
+
+function useDiorama(s: Record<string, any> | null, cfg: PanelConfig): boolean {
+  return !noDiorama && dioramaEnabled(gfx.tier, s as PanelStatus | null, cfg, layout());
+}
+
+function separator(cols: number, code: number): string {
+  const clrLine = panelFocus ? `${CSI}33m` : CYAN;
+  const label = panelFocus ? " buddy [FOCUS] " : " buddy  ";
+  let hint = panelFocus ? " esc back " : " Ctrl+Space / F2 to open ";
+  if (showRate && dioramaOn) {
+    const r = diorama.rate(Date.now());
+    hint += `· ${diorama.tier} ${(r.bps / 1024).toFixed(1)} KB/s `;
+  }
+  const used = label.length + hint.length + 2;
+  return moveTo(code + 1, 1) +
+    `${clrLine}─${label}${DIM}${hint}${NC}${clrLine}${"─".repeat(Math.max(0, cols - used))}${NC}`;
+}
+
+/** Feed the diorama the latest status and paint one frame (full = redraw everything). */
+function paintDiorama(full: boolean): void {
+  const now = Date.now();
+  diorama.setChrome(panelFocus, panelMessage);
+  const frame = diorama.paint(now, new Date(now), full);
+  if (frame) process.stdout.write(frame);
+}
+
+let dioramaTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** (Re)arm the frame timer; the panel says how long to wait, or to sleep. */
+function scheduleDiorama(): void {
+  if (dioramaTimer || !dioramaOn || pauseOutput) return;
+  const delay = diorama.nextDelay(Date.now());
+  if (delay === null) return;
+  dioramaTimer = setTimeout(() => {
+    dioramaTimer = null;
+    if (!dioramaOn || pauseOutput) return;
+    paintDiorama(false);
+    scheduleDiorama();
+  }, delay);
+}
+
+function setupPanel(full = true) {
   const { cols, code, panel } = layout();
   const s = loadStatus();
   const bones = loadStats();
+  const cfg = loadConfig();
 
   const out: string[] = [];
 
   // Set scroll region to code area only
   out.push(setScrollRegion(1, code));
+
+  const wasOn = dioramaOn;
+  dioramaOn = useDiorama(s, cfg);
+  if (dioramaOn) {
+    diorama.update(Date.now(), s as PanelStatus, bones, cfg);
+    out.push(separator(cols, code));
+    process.stdout.write(out.join(""));
+    paintDiorama(full || !wasOn);
+    scheduleDiorama();
+    return;
+  }
+  if (wasOn) process.stdout.write(diorama.hide(true));
 
   // Clear panel area
   for (let i = 0; i < panel; i++) {
@@ -343,14 +436,7 @@ function setupPanel() {
   }
 
   // Separator line with focus hint
-  {
-    const clrLine = panelFocus ? `${CSI}33m` : CYAN;
-    const label = panelFocus ? " buddy [FOCUS] " : " buddy  ";
-    const hint = panelFocus ? " esc back " : " Ctrl+Space / F2 to open ";
-    const used = label.length + hint.length + 2;
-    out.push(moveTo(code + 1, 1) +
-      `${clrLine}─${label}${DIM}${hint}${NC}${clrLine}${"─".repeat(Math.max(0, cols - used))}${NC}`);
-  }
+  out.push(separator(cols, code));
 
   if (!s) {
     out.push(moveTo(code + 2, 1) +
@@ -533,6 +619,7 @@ function containsDestructive(data: string): boolean {
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 const { cols, code } = layout();
+diorama.resize(layout());
 
 process.stdin.setRawMode(true);
 process.stdin.resume();
@@ -547,9 +634,9 @@ process.stdout.write(`${CSI}?1049h`);
 process.stdout.write(`${CSI}2J${moveTo(1, 1)}`);
 setupPanel();
 
-// Spawn PTY (filter out --biome args)
+// Spawn PTY (filter out our own flags)
 const rawArgs = process.argv.slice(2).filter((a, i, arr) =>
-  a !== "--biome" && (i === 0 || arr[i - 1] !== "--biome")
+  !VALUE_FLAGS.includes(a) && a !== "--no-diorama" && !(i > 0 && VALUE_FLAGS.includes(arr[i - 1]))
 );
 const cmd = rawArgs[0] || "claude";
 const args = rawArgs.slice(1);
@@ -614,6 +701,9 @@ function scheduleRender() {
 pty.onData((data: string) => {
   xterm.write(data);
   if (!pauseOutput) scheduleRender();
+  // Claude streaming output = "thinking" for the diorama buddy.
+  diorama.output(Date.now());
+  scheduleDiorama();
 });
 
 // Enable SGR mouse tracking: 1002 = button-event (press + motion while held),
@@ -621,10 +711,27 @@ pty.onData((data: string) => {
 // own selection + clipboard because native terminal selection can't stay in
 // sync when we scroll xterm's virtual buffer.
 process.stdout.write(`${CSI}?1002h${CSI}?1006h`);
+// Focus reporting (\x1b[I / \x1b[O): the diorama sleeps while the terminal
+// is in the background. Forwarded to the child only if it asked for them.
+process.stdout.write(`${CSI}?1004h`);
 
 // Keyboard → PTY or panel
 process.stdin.on("data", (data: Buffer) => {
-  const s = data.toString();
+  let s = data.toString();
+
+  if (s.includes("\x1b[I") || s.includes("\x1b[O")) {
+    const now = Date.now();
+    const childWants = !!xterm.modes?.sendFocusMode;
+    for (const m of s.matchAll(/\x1b\[([IO])/g)) {
+      diorama.focus(m[1] === "I", now);
+      if (childWants) pty.write(m[0]);
+    }
+    s = s.replace(/\x1b\[[IO]/g, "");
+    scheduleDiorama();
+    if (!s) return;
+  }
+  diorama.input(Date.now());
+  scheduleDiorama();
 
   // SGR mouse events: \x1b[<btn;x;y[Mm]
   // M = press/motion, m = release
@@ -730,7 +837,7 @@ process.stdin.on("data", (data: Buffer) => {
 
 function refreshPanel() {
   process.stdout.write(`${ESC}7`);
-  setupPanel();
+  setupPanel(false);
   process.stdout.write(`${ESC}8`);
 }
 
@@ -743,6 +850,8 @@ function refreshPanel() {
 // is contained in the alt buffer which the terminal discards on exit.
 function launchDashboard() {
   pauseOutput = true;
+  if (dioramaTimer) { clearTimeout(dioramaTimer); dioramaTimer = null; }
+  process.stdout.write(diorama.hide());
 
   // Release terminal state the TUI conflicts with, but keep alt screen.
   process.stdout.write(`${CSI}?1002l${CSI}?1006l`); // disable our mouse tracking
@@ -784,6 +893,7 @@ function launchDashboard() {
 // history across resize, but avoids ghost echoes.
 process.stdout.on("resize", () => {
   const l = layout();
+  diorama.resize(l);
   const innerCols = l.cols - SCROLLBAR_RESERVED;
   xterm.reset();
   xterm.resize(innerCols, l.code);
@@ -795,19 +905,44 @@ process.stdout.on("resize", () => {
 });
 
 // Periodic panel refresh (repairs gradual damage). Skipped while the TUI
-// dashboard owns the terminal — pauseOutput is set during that window.
+// dashboard owns the terminal — pauseOutput is set during that window. The
+// diorama only diffs (status changes show up within 3 s) and fully repaints
+// every 30 s; the ASCII panel redraws each time, as before.
+let refreshes = 0;
 const timer = setInterval(() => {
   if (pauseOutput) return;
+  refreshes++;
   process.stdout.write(`${ESC}7`);
-  setupPanel();
+  setupPanel(!dioramaOn || refreshes % 10 === 0);
   process.stdout.write(`${ESC}8`);
 }, 3000);
+
+// Claude Code hooks → reactions. The hooks write reaction.<session>.json
+// (server/state.ts saveReaction); a new timestamp is a new event.
+const reactionPath = join(STATE_DIR, `reaction.${process.env.TMUX_PANE ? process.env.TMUX_PANE.replace(/^%/, "") : "default"}.json`);
+let reactionStamp = 0;
+try { reactionStamp = statSync(reactionPath).mtimeMs; } catch {}
+const reactionTimer = setInterval(() => {
+  if (pauseOutput || !dioramaOn) return;
+  try {
+    const mtime = statSync(reactionPath).mtimeMs;
+    if (mtime === reactionStamp) return;
+    reactionStamp = mtime;
+    const r = JSON.parse(readFileSync(reactionPath, "utf8"));
+    diorama.react(r.reason, Date.now());
+    diorama.update(Date.now(), (loadStatus() ?? {}) as PanelStatus, loadStats(), loadConfig());
+    scheduleDiorama();
+  } catch {}
+}, 1000);
 
 // Cleanup: leave alt screen — original terminal content comes back
 pty.onExit(({ exitCode }) => {
   clearInterval(timer);
+  clearInterval(reactionTimer);
+  if (dioramaTimer) clearTimeout(dioramaTimer);
+  process.stdout.write(diorama.hide(true));          // free the diorama's images
   process.stdout.write(`${CSI}r`);                   // reset scroll region
-  process.stdout.write(`${CSI}?1002l${CSI}?1006l`);   // disable mouse tracking
+  process.stdout.write(`${CSI}?1002l${CSI}?1006l${CSI}?1004l`); // disable mouse + focus reporting
   process.stdout.write(`${CSI}?1049l`);              // leave alt screen
   process.stdout.write(`${CSI}?25h`);                // show cursor
   try { process.stdin.setRawMode(false); } catch {}

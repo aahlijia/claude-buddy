@@ -1,6 +1,6 @@
 # HD Overhaul — brainstorm
 
-_Status: brainstorm · H0 ([h0-spike.md](h0-spike.md)), H1 ([h1-rigs.md](h1-rigs.md)), H2 ([h2-quest-player.md](h2-quest-player.md)) and H3 ([h3-ui-kit.md](h3-ui-kit.md)) done_
+_Status: brainstorm · H0 ([h0-spike.md](h0-spike.md)), H1 ([h1-rigs.md](h1-rigs.md)), H2 ([h2-quest-player.md](h2-quest-player.md)), H3 ([h3-ui-kit.md](h3-ui-kit.md)) and H4 ([h4-diorama.md](h4-diorama.md)) done_
 
 **Goal:** make claude-buddy look and move like a console game instead of a
 pile of ASCII. That means HD buddies with real shading, motion with weight,
@@ -301,6 +301,6 @@ Name it the **buddy UI kit** (`server/ui/`):
 | **H1 Rig + style bible** ✅ ([h1-rigs.md](h1-rigs.md)) | Rig format, ease/motion library, 3 pilot species (blob, cat, dragon) with idle/walk/attack/hit/KO/victory, and a palette and rarity lighting pass | The rig pipeline scales and looks good |
 | **H2 Quest player HD** ✅ ([h2-quest-player.md](h2-quest-player.md)) | Framebuffer stage in `play.ts`, camera, particles, hit-stop, damage ghost bars, battle transition, victory results card | The "PlayStation moment" |
 | **H3 UI kit** ✅ ([h3-ui-kit.md](h3-ui-kit.md)) | Panels, bars, key prompts, banners and portraits across play, TUI and shop | One visual language |
-| **H4 buddy-shell diorama** | Parallax biomes, day/night, weather particles, live hook reactions | The always-on wow |
+| **H4 buddy-shell diorama** ✅ ([h4-diorama.md](h4-diorama.md)) | Parallax biomes, day/night, weather particles, live hook reactions | The always-on wow |
 | **H5 Status line T1** | Baked half-block sprites with key-pose cycling; bash unchanged except for the frame source | HD reaches every user |
 | **H6 Roster** | The remaining 17 species, the hatch cinematic, loot beams, special-move cut-ins, boss cinematics | Content complete |

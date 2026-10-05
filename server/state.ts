@@ -832,6 +832,15 @@ export interface StatusState {
   /** Falling weather: 6-hex RGB (`SKY_FALL_COLOR[theme][kind]`) the shell
    *  tints `weatherFallGapGlyph` with. Present iff `weatherFallGapFrames` is. */
   weatherFallGapColor?: string;
+  /** buddy-shell diorama (H4, hd-overhaul/h4-diorama.md): the living-world
+   *  weather the pixel scene paints as particles. `rain`/`snow` is the
+   *  session's ground-weather window (independent of the `groundEnabled`
+   *  floor), `drizzle`/`sparkle` the idle-FX weather, `storm` both rain and a
+   *  rough error streak. Absent when the sky is clear. */
+  sceneWeather?: "rain" | "snow" | "storm" | "drizzle" | "sparkle";
+  /** The effective (auto-quiet clamped) game-feel, so the shell's diorama
+   *  gates the same way every other delight does. */
+  gameFeel?: GameFeel;
   /** Buddy Quest one-line HUD (`Z2 3/5 ♥40/55 ↯7 ◎120g`), patched in by
    *  `rpg/cli.ts` and carried forward by every status write. */
   rpgHud?: string;
@@ -1647,6 +1656,31 @@ export function writeStatusState(
     }
   }
 
+  // Diorama weather (H4): the same schedule the ground weather reads, but not
+  // behind the `groundEnabled` floor opt-out or the full-only idle gate — the
+  // shell's diorama applies its own gates (gameFeel off → no diorama at all).
+  let sceneWeather: StatusState["sceneWeather"];
+  if (cfg.worldDressing) {
+    try {
+      const { loadSnapshot } = require("./session.ts") as typeof import("./session.ts");
+      const startedAt = loadSnapshot()?.startedAt;
+      if (typeof startedAt === "number") {
+        const { pickSessionWeather, isWeatherActive } =
+          require("./ground.ts") as typeof import("./ground.ts");
+        const forcedKind: string | undefined = process.env.BUDDY_FORCE_WEATHER;
+        const schedule: WeatherSchedule | null =
+          forcedKind === "snow" || forcedKind === "rain"
+            ? { kind: forcedKind as GroundWeather, startMs: 0, durationMs: Number.MAX_SAFE_INTEGER }
+            : pickSessionWeather(startedAt);
+        if (isWeatherActive(schedule, Date.now() - startedAt * 1000)) sceneWeather = schedule!.kind;
+      }
+    } catch {
+      // Best-effort, like the ground weather.
+    }
+  }
+  if (sceneWeather === "rain" && weather === "drizzle") sceneWeather = "storm";
+  else if (!sceneWeather && weather) sceneWeather = weather;
+
   const state: StatusState = {
     name: companion.name,
     species: companion.bones.species,
@@ -1700,6 +1734,8 @@ export function writeStatusState(
       }
       : {}),
     ...(rpgHud ? { rpgHud } : {}),
+    ...(sceneWeather ? { sceneWeather } : {}),
+    gameFeel: gate,
   };
   // Atomic write (game-feel §2.6): the MCP server, the award-xp.ts process, and
   // react.sh's jq patch all touch status.json — tmp+rename avoids torn reads.

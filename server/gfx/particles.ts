@@ -185,3 +185,160 @@ export function drawParticles(fb: Framebuffer, emitters: readonly Emitter[], t: 
     }
   }
 }
+
+// ─── Weather and ambient fields (H4 diorama) ────────────────────────────────
+//
+// A burst lives a second; a field lives forever: rain over the whole panel,
+// snow, falling leaves or petals, twinkles, rising embers and bubbles,
+// fireflies. Same rules as bursts — closed form in `t`, seeded, no state —
+// plus one more: every field repeats exactly every FIELD_LOOP seconds (each
+// particle makes a whole number of trips per loop), so the kitty tier can
+// upload one loop of frames and let the terminal play it.
+
+export const FIELD_KINDS = ["rain", "snow", "leaves", "sparkles", "embers", "bubbles", "fireflies"] as const;
+export type FieldKind = (typeof FIELD_KINDS)[number];
+
+/** Every field is periodic with this period (seconds). */
+export const FIELD_LOOP = 6;
+
+export interface Field {
+  kind: FieldKind;
+  seed: number;
+  /** Count multiplier (1 = the kind's normal density). */
+  density?: number;
+  colors?: readonly RGBA[];
+  /** Horizontal drift per trip, as a fraction of the height (rain slant, leaf wind). */
+  wind?: number;
+}
+
+interface FieldSpec {
+  /** Particles per scene unit of width, at a reference height of 18 units. */
+  perUnit: number;
+  /** Whole trips per loop: [min, max]. 0 = stationary (twinkles, fireflies). */
+  trips: [number, number];
+  /** Rises instead of falls. */
+  up?: boolean;
+  /** Side-to-side sway amplitude, in units. */
+  sway: number;
+  colors: readonly RGBA[];
+  glow: boolean;
+  wind: number;
+}
+
+const FIELD: Record<FieldKind, FieldSpec> = {
+  rain: { perUnit: 1.3, trips: [10, 13], sway: 0, colors: ["#d0e0ff", "#a8c0e8", "#e8f0ff"].map(hex), glow: false, wind: 0.18 },
+  snow: { perUnit: 1.1, trips: [1, 2], sway: 1.4, colors: ["#ffffff", "#e8f0ff", "#d0dcf0"].map(hex), glow: false, wind: 0.1 },
+  leaves: { perUnit: 0.12, trips: [1, 1], sway: 2.6, colors: ["#e0902a", "#c8582a", "#e8c040", "#a8682a"].map(hex), glow: false, wind: -0.6 },
+  sparkles: { perUnit: 0.22, trips: [0, 0], sway: 0, colors: ["#ffffff", "#fff2b0", "#c8e8ff"].map(hex), glow: true, wind: 0 },
+  embers: { perUnit: 0.16, trips: [1, 2], up: true, sway: 1.2, colors: ["#fff0a0", "#ffb040", "#ff6020", "#c02810"].map(hex), glow: true, wind: 0.15 },
+  bubbles: { perUnit: 0.09, trips: [1, 2], up: true, sway: 0.8, colors: ["#e0f8ff", "#a0e0f8", "#70c0e8"].map(hex), glow: false, wind: 0 },
+  fireflies: { perUnit: 0.06, trips: [0, 0], sway: 0, colors: ["#f0ff90", "#c8f060", "#fff8c0"].map(hex), glow: true, wind: 0 },
+};
+
+export interface FieldParticle extends Particle {
+  /** Rain: streak length in pixels, and its horizontal slant per pixel of fall. */
+  len?: number;
+  slant?: number;
+}
+
+/** Every particle of a field at time `t` on a `w`×`h` canvas whose scene unit is `unit` px. */
+export function fieldAt(f: Field, w: number, h: number, t: number, unit: number): FieldParticle[] {
+  const spec = FIELD[f.kind];
+  const colors = f.colors ?? spec.colors;
+  const rng = mulberry32((f.seed ^ Math.imul(FIELD_KINDS.indexOf(f.kind) + 11, 0x85ebca6b)) >>> 0);
+  const n = Math.max(1, Math.round(spec.perUnit * (w / unit) * (h / unit / 18) * (f.density ?? 1)));
+  const u = (((t % FIELD_LOOP) + FIELD_LOOP) % FIELD_LOOP) / FIELD_LOOP; // loop phase 0..1
+  const TAU = Math.PI * 2;
+  const wind = (f.wind ?? spec.wind) * h;
+  const out: FieldParticle[] = [];
+  for (let i = 0; i < n; i++) {
+    const x0 = rng() * w;
+    const y0 = rng();
+    const ph = rng();
+    const trips = spec.trips[0] + Math.floor(rng() * (spec.trips[1] - spec.trips[0] + 1));
+    const swayK = 1 + Math.floor(rng() * 3);
+    const near = rng(); // depth: near particles are bigger and brighter
+    const color = colors[Math.floor(rng() * colors.length)];
+    const pulseK = 1 + Math.floor(rng() * 3);
+    const big = near > 0.72;
+    if (f.kind === "sparkles") {
+      const a = Math.max(0, Math.sin(TAU * (pulseK * u + ph))) ** 6;
+      if (a < 0.05) continue;
+      out.push({ x: x0, y: y0 * h * 0.85, color, alpha: a, size: unit >= 2 ? Math.max(1, Math.round(unit * (big ? 0.5 : 0.3))) : 1, glow: true });
+      continue;
+    }
+    if (f.kind === "fireflies") {
+      const x = x0 + Math.sin(TAU * (swayK * u + ph)) * 3 * unit;
+      const y = h * (0.35 + 0.5 * y0) + Math.sin(TAU * (pulseK * u + near)) * 1.5 * unit;
+      const a = 0.25 + 0.75 * Math.max(0, Math.sin(TAU * (pulseK * u + ph * 2))) ** 2;
+      out.push({ x: ((x % w) + w) % w, y, color, alpha: a, size: 1, glow: true });
+      continue;
+    }
+    const margin = Math.max(2, unit * 3);
+    const span = h + margin * 2;
+    const frac = (((trips * u + ph) % 1) + 1) % 1; // trip progress 0..1
+    let y = frac * span - margin;
+    if (spec.up) y = h + margin - frac * span;
+    let x = x0 + wind * frac + Math.sin(TAU * (swayK * u + ph)) * spec.sway * unit;
+    x = ((x % w) + w) % w;
+    const p: FieldParticle = { x, y, color, alpha: 0.55 + 0.45 * near, size: 1, glow: spec.glow };
+    if (f.kind === "rain") {
+      p.len = Math.max(2, Math.round(unit * (big ? 3 : 2)));
+      p.slant = f.wind ?? spec.wind;
+      p.alpha = 0.45 + 0.45 * near;
+    } else if (f.kind === "snow" || f.kind === "leaves") {
+      p.size = Math.max(1, Math.round(unit * (big ? 0.8 : 0.45)));
+      if (f.kind === "leaves") {
+        // Flutter: show the pale underside half the time.
+        if (Math.sin(TAU * (swayK * 2 * u + ph)) > 0.3) p.color = mix(color, hex("#fff0c0"), 0.35);
+        p.size = Math.max(1, Math.round(unit * 0.55));
+      }
+    } else if (f.kind === "embers") {
+      p.alpha = (spec.up ? frac : 1 - frac) < 0.15 ? 0 : 1 - frac * 0.8;
+      p.color = mix(colors[0], colors[colors.length - 1], frac);
+      p.size = Math.max(1, Math.round(unit * 0.3));
+    } else if (f.kind === "bubbles") {
+      p.size = Math.max(1, Math.round(unit * (big ? 0.6 : 0.35)));
+      p.alpha = 0.5 + 0.3 * near;
+    }
+    out.push(p);
+  }
+  return out;
+}
+
+/** Draw a field at time `t`. */
+export function drawField(fb: Framebuffer, f: Field, t: number, unit: number, opacity = 1): void {
+  for (const p of fieldAt(f, fb.width, fb.height, t, unit)) {
+    const a = p.alpha * opacity;
+    if (a <= 0) continue;
+    const x0 = Math.round(p.x);
+    const y0 = Math.round(p.y);
+    if (p.len) {
+      // A streak trailing up-and-back from the drop's head.
+      for (let k = 0; k < p.len; k++) {
+        const fade = 1 - k / p.len;
+        fb.blend(Math.round(p.x - (p.slant ?? 0) * k), y0 - k, p.color, a * fade);
+      }
+      continue;
+    }
+    if (f.kind === "bubbles" && p.size >= 2) {
+      // A ring with a highlight reads as a bubble at pixel scale.
+      for (let j = 0; j < p.size; j++) for (let i = 0; i < p.size; i++) {
+        const edge = i === 0 || j === 0 || i === p.size - 1 || j === p.size - 1;
+        fb.blend(x0 + i, y0 + j, p.color, a * (edge ? 1 : 0.25));
+      }
+      fb.add(x0 + 1, y0, hex("#ffffff"), a);
+      continue;
+    }
+    for (let j = 0; j < p.size; j++) {
+      for (let i = 0; i < p.size; i++) {
+        if (p.glow) fb.add(x0 + i, y0 + j, p.color, a);
+        else fb.blend(x0 + i, y0 + j, p.color, a);
+      }
+    }
+    if (p.glow && (f.kind === "fireflies" || f.kind === "sparkles")) {
+      // A soft cross of light around the core.
+      for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) fb.add(x0 + ox * p.size, y0 + oy * p.size, p.color, a * 0.45);
+    }
+  }
+}
