@@ -1,6 +1,6 @@
 # HD Overhaul — brainstorm
 
-_Status: brainstorm / not started · branch `feature/rpg`_
+_Status: brainstorm · H0 spike done ([h0-spike.md](h0-spike.md)) · branch `feature/rpg`_
 
 **Goal:** make claude-buddy look and move like a console game instead of a
 pile of ASCII. That means HD buddies with real shading, motion with weight,
